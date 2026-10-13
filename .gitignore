@@ -1,0 +1,19 @@
+# Gradle / Android
+.gradle/
+build/
+local.properties
+captures/
+.externalNativeBuild/
+.cxx/
+*.apk
+*.aab
+.kotlin/
+
+# Nothing Glyph SDK (downloaded at build time by tools/fetch-glyph-sdk.sh; not redistributed in this repo)
+app/libs/glyph-*.aar
+
+# IDEs
+.idea/
+*.iml
+.vscode/
+.DS_Store
