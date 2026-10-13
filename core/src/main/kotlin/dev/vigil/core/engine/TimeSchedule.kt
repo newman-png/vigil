@@ -3,8 +3,8 @@ package dev.vigil.core.engine
 import dev.vigil.core.plan.Directive
 import dev.vigil.core.plan.Trigger
 import java.time.Instant
+import java.time.LocalDateTime
 import java.time.ZoneId
-import java.time.ZonedDateTime
 
 /** One moment at which one or more time-triggered directives fire. */
 data class TimeFire(val at: Instant, val directiveIds: List<String>)
@@ -78,9 +78,17 @@ object TimeSchedule {
         for (offset in 0..8L) {
             val date = start.plusDays(offset)
             if (date.dayOfWeek !in t.days) continue
-            val candidate = ZonedDateTime.of(date, t.at, zone).toInstant()
+            val candidate = occurrence(LocalDateTime.of(date, t.at), zone)
             if (candidate.isAfter(after)) return candidate
         }
         return null
+    }
+
+    private fun occurrence(local: LocalDateTime, zone: ZoneId): Instant {
+        // java.time would move a skipped time forward by the gap's length (01:30 -> 02:30), after later times.
+        val transition = zone.rules.getTransition(local)
+        if (transition != null && transition.isGap) return transition.instant
+        // In an overlap atZone picks the earlier offset, i.e. the first occurrence.
+        return local.atZone(zone).toInstant()
     }
 }

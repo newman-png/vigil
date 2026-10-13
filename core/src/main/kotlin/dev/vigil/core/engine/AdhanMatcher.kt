@@ -65,7 +65,7 @@ object AdhanMatcher {
         return best
     }
 
-    /** Lowercase, strip accents, turn every run of non-letters/digits into one space. */
+    /** Lowercase, strip accents and apostrophes, turn every run of other non-letters/digits into one space. */
     fun normalize(s: String): String {
         val decomposed = Normalizer.normalize(s, Normalizer.Form.NFD)
         val sb = StringBuilder(decomposed.length)
@@ -73,8 +73,8 @@ object AdhanMatcher {
         for (ch in decomposed) {
             when {
                 Character.getType(ch) == Character.NON_SPACING_MARK.toInt() -> Unit
-                // Apostrophes inside words ("It's", "Jumu'ah") are dropped rather than splitting the word.
-                ch == '\'' || ch == '’' || ch == 'ʼ' || ch == '`' -> Unit
+                // Apostrophes inside words ("It's", "Jumu‘ah", "ʿIshāʾ") are dropped rather than splitting the word.
+                ch in APOSTROPHES -> Unit
                 ch.isLetterOrDigit() -> {
                     sb.append(ch.lowercaseChar())
                     lastSpace = false
@@ -100,6 +100,9 @@ object AdhanMatcher {
         }
         return -1
     }
+
+    /** ' ` ´ ‘ ’ and the modifier letters ʻ ʼ ʽ ʾ ʿ that transliterations use for ʿayn and hamza. */
+    private const val APOSTROPHES = "'`\u00B4\u2018\u2019\u02BB\u02BC\u02BD\u02BE\u02BF"
 }
 
 /** Ignores repeats of the same key within a time window (adhan apps often re-post or update a notification). */

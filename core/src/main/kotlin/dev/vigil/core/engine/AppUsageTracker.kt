@@ -10,6 +10,9 @@ import dev.vigil.core.plan.UsageLimit
  * An "open" is a switch from any app outside a trigger's list to an app in it. Turning the screen off
  * (or VIGIL's own takeover appearing) counts as leaving, so coming back counts as a new open and
  * restarts continuous use. Not thread-safe: call from one thread.
+ *
+ * Pass every call the same map of all the active plan's app_usage triggers (directive id -> trigger):
+ * a directive missing from the map is forgotten, so a filtered map would wipe the other counts.
  */
 class AppUsageTracker {
     private class State {
@@ -74,7 +77,7 @@ class AppUsageTracker {
         return fired
     }
 
-    /** Opens currently counted for a directive (for the settings/debug screen). */
+    /** Opens counted for a directive as of its latest open (for the settings/debug screen). */
     fun openCount(directiveId: String): Int = states[directiveId]?.opens?.size ?: 0
 
     /** Forget all counts, e.g. after a new plan is imported. */
