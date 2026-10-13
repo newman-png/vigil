@@ -38,7 +38,8 @@ object ActivePlanResolver {
      * Picks what to run. Expiry never makes the app go silent: an expired plan drops to its fallback_plan,
      * and without one to the built-in minimal plan (prayer, water, sleep).
      *
-     * On a bad day the fallback and default plans keep everything, because they are already minimal.
+     * On a bad day the fallback plan keeps everything: it has no bad_day list of its own (the plan's list can only
+     * name the plan's own directives) and is already minimal. The built-in plan uses its own bad_day.keep.
      */
     fun resolve(plan: Plan?, builtinDefault: Plan, now: LocalDateTime): ActiveSet {
         if (plan != null && now.isBefore(plan.expires)) {
@@ -57,7 +58,7 @@ object ActivePlanResolver {
         return ActiveSet(
             PlanSource.DEFAULT,
             builtinDefault.directives,
-            builtinDefault.directives.map { it.id }.toSet(),
+            builtinDefault.badDay.keep.toSet(),
             plan?.dayBoundary ?: builtinDefault.dayBoundary,
             plan,
         )

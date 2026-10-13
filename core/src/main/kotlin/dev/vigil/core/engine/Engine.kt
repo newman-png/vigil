@@ -9,9 +9,11 @@ import dev.vigil.core.plan.Trigger
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import java.time.Instant
+import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.OffsetDateTime
 import java.time.ZoneId
+import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 
 /** A directive that has fired and is showing, or waiting for the one before it to finish. */
@@ -27,6 +29,11 @@ data class Ticket(
     @SerialName("steps_done") val stepsDone: Int = 0,
     /** When the current step appeared, for its min_seconds lock and duration. Null until shown. */
     @SerialName("step_shown_at_ms") val stepShownAtMs: Long? = null,
+    /**
+     * When it became the active takeover; null while pending. The timeout counts from here, so a takeover
+     * that waited behind another still gets its full time on screen. Durations still count from [firedAtMs].
+     */
+    @SerialName("active_since_ms") val activeSinceMs: Long? = null,
 )
 
 /** A directive held during quiet mode (quiet: queue). */
@@ -75,7 +82,9 @@ data class Env(
     val localNow: LocalDateTime get() = LocalDateTime.ofInstant(now, zone)
     val today: String get() = ActivePlanResolver.dayKey(localNow, active.dayBoundary).toString()
 
-    fun timestamp(): String = OffsetDateTime.ofInstant(now, zone).truncatedTo(ChronoUnit.SECONDS).toString()
+    /** Always with seconds: OffsetDateTime.toString() would drop ":00" on the minute. */
+    fun timestamp(): String =
+        DateTimeFormatter.ISO_OFFSET_DATE_TIME.format(OffsetDateTime.ofInstant(now, zone).truncatedTo(ChronoUnit.SECONDS))
 }
 
 /** The result of an engine step: the new state, what to log, and whether a takeover should be on screen. */
@@ -106,7 +115,7 @@ object Engine {
             QuietPolicy.QUEUE -> Decision.Queue
             QuietPolicy.SILENT -> Decision.Fire(silent = true)
             QuietPolicy.IGNORE -> Decision.Skip(EventType.SKIPPED_QUIET)
-            QuietPolicy.OVERRIDE -> Decision.Fire(silent = !allowOverride)
+            QuietPolicy.OVERRIDE -> Decision.Fire(silent = !(allowOverride && directive.tier == 3))
         }
     }
 
@@ -114,8 +123,8 @@ object Engine {
 
     /**
      * Housekeeping to run before anything else: ends bad-day mode when its day is over, notices a switch
-     * to the fallback/default plan, drops tickets whose directive no longer exists, and times out a
-     * takeover that has been open too long.
+     * to the fallback/default plan, drops tickets and queued directives that no longer exist (or whose
+     * directive changed so the ticked steps no longer fit), and times out a takeover that has been open too long.
      */
     fun refresh(state: RuntimeState, env: Env): Outcome {
         val events = mutableListOf<LogEvent>()
@@ -132,27 +141,28 @@ object Engine {
             s = s.copy(lastSource = source)
         }
         val known = env.active.directives.map { it.id }.toSet() + DEMO_ID
-        s.pending.filter { it.directiveId !in known }.forEach {
-            events += LogEvent(env.timestamp(), EventType.DROPPED, directiveId = it.directiveId, takeoverId = it.takeoverId, detail = "no longer in the active plan")
-        }
-        s = s.copy(
-            pending = s.pending.filter { it.directiveId in known },
-            quietQueue = s.quietQueue.filter { it.directiveId in known },
-        )
+        fun dropped(directiveId: String, takeoverId: String?, detail: String = GONE) =
+            LogEvent(env.timestamp(), EventType.DROPPED, directiveId = directiveId, takeoverId = takeoverId, detail = detail)
         val active = s.active
-        if (active != null && active.directiveId !in known) {
-            events += LogEvent(env.timestamp(), EventType.DROPPED, directiveId = active.directiveId, takeoverId = active.takeoverId, detail = "no longer in the active plan")
-            s = promote(s.copy(active = null))
-        } else if (active != null && env.nowMs - active.firedAtMs >= MAX_TAKEOVER_MINUTES * 60_000) {
-            val d = env.active.find(active.directiveId)
+        val d = active?.let { directiveFor(env, it) }
+        if (active != null && (d == null || active.stepsDone >= d.steps.size)) {
+            events += dropped(active.directiveId, active.takeoverId, if (d == null) GONE else "changed in the active plan")
+            s = s.copy(active = null)
+        } else if (active != null && env.nowMs - (active.activeSinceMs ?: active.firedAtMs) >= MAX_TAKEOVER_MINUTES * 60_000) {
             events += LogEvent(
                 env.timestamp(), EventType.DIRECTIVE_TIMED_OUT, directiveId = active.directiveId, tier = d?.tier,
                 takeoverId = active.takeoverId, durationS = secondsSince(active.firedAtMs, env),
                 stepsDone = active.stepsDone, stepsTotal = d?.steps?.size,
             )
-            s = promote(s.copy(active = null))
+            s = s.copy(active = null)
         }
-        return Outcome(s, events)
+        s.pending.filter { it.directiveId !in known }.forEach { events += dropped(it.directiveId, it.takeoverId) }
+        s.quietQueue.filter { it.directiveId !in known }.forEach { events += dropped(it.directiveId, null) }
+        s = s.copy(
+            pending = s.pending.filter { it.directiveId in known },
+            quietQueue = s.quietQueue.filter { it.directiveId in known },
+        )
+        return Outcome(promote(s, env), events)
     }
 
     /** One or more directives were triggered. Unknown ids and unsupported triggers are ignored. */
@@ -205,7 +215,7 @@ object Engine {
             for (q in queue) {
                 val d = env.active.find(q.directiveId) ?: continue
                 if (badDay && d.id !in env.active.badDayKeep) {
-                    events += LogEvent(env.timestamp(), EventType.SKIPPED_BAD_DAY, directiveId = d.id, tier = d.tier, trigger = EventType.QUEUED_QUIET)
+                    events += LogEvent(env.timestamp(), EventType.SKIPPED_BAD_DAY, directiveId = d.id, tier = d.tier, trigger = TRIGGER_QUIET_QUEUE)
                     continue
                 }
                 val r = fire(s, env, d, TRIGGER_QUIET_QUEUE, silent = false, scheduledFor = null)
@@ -218,7 +228,8 @@ object Engine {
 
     /**
      * "I'm not okay today". On: until the day boundary only bad_day.keep directives fire; a showing or
-     * waiting takeover that is not kept is closed as bypassed_bad_day (never as a failure).
+     * waiting takeover that is not kept is closed as bypassed_bad_day (never as a failure), and a directive
+     * held by quiet mode that is not kept is logged as skipped_bad_day.
      */
     fun setBadDay(state: RuntimeState, env: Env, on: Boolean): Outcome {
         val refreshed = refresh(state, env)
@@ -230,7 +241,8 @@ object Engine {
             return Outcome(s.copy(badDay = null), events)
         }
         if (isBadDay(s, env)) return refreshed
-        events += LogEvent(env.timestamp(), EventType.BAD_DAY_ON, detail = "until ${env.active.dayBoundary} tomorrow")
+        val until = LocalDate.parse(env.today).plusDays(1).atTime(env.active.dayBoundary)
+        events += LogEvent(env.timestamp(), EventType.BAD_DAY_ON, detail = "until $until")
         s = s.copy(badDay = env.today)
         val keep = env.active.badDayKeep
         fun bypass(t: Ticket) {
@@ -240,17 +252,21 @@ object Engine {
                 durationS = secondsSince(t.firedAtMs, env), stepsDone = t.stepsDone, stepsTotal = d?.steps?.size,
             )
         }
+        val active = s.active
+        if (active != null && active.directiveId !in keep) bypass(active)
         s.pending.filter { it.directiveId !in keep }.forEach(::bypass)
+        s.quietQueue.filter { it.directiveId !in keep }.forEach {
+            events += LogEvent(
+                env.timestamp(), EventType.SKIPPED_BAD_DAY, directiveId = it.directiveId, tier = env.active.find(it.directiveId)?.tier,
+                trigger = TRIGGER_QUIET_QUEUE,
+            )
+        }
         s = s.copy(
+            active = active?.takeIf { it.directiveId in keep },
             pending = s.pending.filter { it.directiveId in keep },
             quietQueue = s.quietQueue.filter { it.directiveId in keep },
         )
-        val active = s.active
-        if (active != null && active.directiveId !in keep) {
-            bypass(active)
-            s = promote(s.copy(active = null))
-        }
-        return Outcome(s, events)
+        return Outcome(promote(s, env), events)
     }
 
     /** The current step appeared on screen; its min_seconds lock starts now. */
@@ -276,8 +292,9 @@ object Engine {
         val active = state.active ?: return Outcome(state, emptyList())
         if (active.takeoverId != takeoverId || active.stepsDone != stepIndex) return Outcome(state, emptyList())
         val d = directiveFor(env, active) ?: return Outcome(state, emptyList())
+        // getOrNull: a newer plan may have given the directive fewer steps.
+        val step = d.steps.getOrNull(stepIndex) ?: return Outcome(state, emptyList())
         if (active.stepShownAtMs == null || lockRemainingSeconds(active, d, env.nowMs) > 0) return Outcome(state, emptyList())
-        val step = d.steps[stepIndex]
         val events = mutableListOf(
             LogEvent(
                 env.timestamp(), EventType.STEP_COMPLETED, directiveId = d.id, tier = d.tier, takeoverId = takeoverId,
@@ -292,7 +309,7 @@ object Engine {
             env.timestamp(), EventType.DIRECTIVE_COMPLETED, directiveId = d.id, tier = d.tier, takeoverId = takeoverId,
             trigger = active.trigger, durationS = secondsSince(active.firedAtMs, env), stepsDone = done, stepsTotal = d.steps.size,
         )
-        return Outcome(promote(state.copy(active = null)), events)
+        return Outcome(promote(state.copy(active = null), env), events)
     }
 
     /** The dismiss button was held to the end. Logged as dismissed, never dropped silently. */
@@ -304,7 +321,7 @@ object Engine {
             env.timestamp(), EventType.DIRECTIVE_DISMISSED, directiveId = active.directiveId, tier = d?.tier, takeoverId = takeoverId,
             trigger = active.trigger, durationS = secondsSince(active.firedAtMs, env), stepsDone = active.stepsDone, stepsTotal = d?.steps?.size,
         )
-        return Outcome(promote(state.copy(active = null)), listOf(event))
+        return Outcome(promote(state.copy(active = null), env), listOf(event))
     }
 
     /** Looks up the directive a ticket refers to (including the debug demo). */
@@ -319,18 +336,19 @@ object Engine {
             env.timestamp(), EventType.DIRECTIVE_FIRED, directiveId = d.id, tier = d.tier, trigger = trigger,
             takeoverId = ticket.takeoverId, scheduledFor = scheduledFor, silent = silent, stepsTotal = d.steps.size,
         )
-        val next = if (s.active == null) s.copy(active = ticket) else s.copy(pending = s.pending + ticket)
+        val next = if (s.active == null) s.copy(active = ticket.copy(activeSinceMs = env.nowMs)) else s.copy(pending = s.pending + ticket)
         return Outcome(next, listOf(event))
     }
 
-    private fun promote(s: RuntimeState): RuntimeState {
+    private fun promote(s: RuntimeState, env: Env): RuntimeState {
         if (s.active != null || s.pending.isEmpty()) return s
-        return s.copy(active = s.pending.first(), pending = s.pending.drop(1))
+        return s.copy(active = s.pending.first().copy(activeSinceMs = env.nowMs), pending = s.pending.drop(1))
     }
 
     private fun secondsSince(ms: Long, env: Env): Long = ((env.nowMs - ms).coerceAtLeast(0)) / 1000
 
     const val TRIGGER_QUIET_QUEUE = "quiet_queue"
+    private const val GONE = "no longer in the active plan"
 
     /** A built-in directive for the debug "demo takeover" button, so the takeover can be tried without a plan. */
     const val DEMO_ID = "vigil-demo"
