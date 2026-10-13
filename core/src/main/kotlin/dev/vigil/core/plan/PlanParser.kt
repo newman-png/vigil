@@ -1,13 +1,11 @@
 package dev.vigil.core.plan
 
-import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
-import kotlinx.serialization.json.longOrNull
 import java.time.DayOfWeek
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -43,12 +41,26 @@ object PlanParser {
     const val MAX_STEP_SECONDS = 3600
     const val MAX_WINDOW_MIN = 1440
 
+    /** A real plan nests about 6 levels deep. The limit keeps absurd input from overflowing the stack. */
+    const val MAX_NESTING = 64
+
+    /** Errors (and warnings) listed per import; the rest are summed up in one final line. */
+    const val MAX_ISSUES = 100
+
     private val ID_PATTERN = Regex("^[a-z0-9][a-z0-9_-]{0,47}$")
     private val TIME_PATTERN = Regex("^([01][0-9]|2[0-3]):[0-5][0-9]$")
     private val DATE_PATTERN = Regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")
     private val DATETIME_PATTERN = Regex("^[0-9]{4}-[0-9]{2}-[0-9]{2}T([01][0-9]|2[0-3]):[0-5][0-9](:[0-5][0-9])?$")
-    private val PACKAGE_PATTERN = Regex("^[A-Za-z][A-Za-z0-9_]*(\\.[A-Za-z0-9_]+)+$")
-    private val OFFSET_PATTERN = Regex("(?i)(z|[+-][0-9]{2}:?[0-9]{2})$")
+    private val DATETIME_WITH_OFFSET_PATTERN =
+        Regex("(?i)^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}(:[0-9]{2}(\\.[0-9]+)?)?(z|[+-][0-9]{2}(:?[0-9]{2})?)$")
+
+    /** Integers exactly as JSON writes them. The JSON reader alone would also take things like `01` or `1e`. */
+    private val INTEGER_PATTERN = Regex("^-?(0|[1-9][0-9]*)$")
+
+    // A package name is checked one dot-separated segment at a time: a single regex with a repeated group,
+    // like ^[A-Za-z]\w*(\.\w+)+$, overflows the stack on a name with many thousands of dots.
+    private val PACKAGE_FIRST_SEGMENT = Regex("^[A-Za-z][A-Za-z0-9_]*$")
+    private val PACKAGE_SEGMENT = Regex("^[A-Za-z0-9_]+$")
 
     val DAY_CODES: Map<String, DayOfWeek> = linkedMapOf(
         "mon" to DayOfWeek.MONDAY,
@@ -70,24 +82,33 @@ object PlanParser {
     private val ADHAN_KEYS = setOf("type", "prayer")
     private val APP_USAGE_KEYS = setOf("type", "apps", "opens", "window_min", "continuous_min", "cooldown_min")
 
-    private val lenientJson = Json { isLenient = false }
+    private val strictJson = Json { isLenient = false }
 
-    fun parse(text: String): ParseResult {
+    fun parse(input: String): ParseResult {
         val ctx = Ctx()
-        if (text.length > MAX_FILE_CHARS) {
+        if (input.length > MAX_FILE_CHARS) {
             ctx.error("", "This file is too large to be a plan (over 1 MB).")
             return ctx.failure()
         }
+        // Editors on Windows often save a byte order mark at the start; it is not part of the JSON.
+        val text = input.removePrefix("\uFEFF")
         if (text.isBlank()) {
             ctx.error("", "This file is empty.")
             return ctx.failure()
         }
-        val root = try {
-            lenientJson.parseToJsonElement(text.removePrefix("﻿"))
-        } catch (e: SerializationException) {
-            ctx.error("", describeSyntaxError(text, e))
+        val tooDeepAt = tooDeepOffset(text)
+        if (tooDeepAt != null) {
+            ctx.error(
+                "",
+                "This file has lists or objects nested more than $MAX_NESTING levels deep${location(text, tooDeepAt)}. " +
+                    "A plan never needs that; look for stray '[' or '{' characters.",
+            )
             return ctx.failure()
-        } catch (e: IllegalArgumentException) {
+        }
+        val root = try {
+            strictJson.parseToJsonElement(text)
+        } catch (e: RuntimeException) {
+            // Normally a SerializationException; anything else the reader throws is reported the same way.
             ctx.error("", describeSyntaxError(text, e))
             return ctx.failure()
         }
@@ -97,7 +118,7 @@ object PlanParser {
         }
         val plan = readPlan(root, ctx)
         return if (plan != null && ctx.errors.isEmpty()) {
-            ParseResult.Success(plan, ctx.warnings.toList())
+            ctx.success(plan)
         } else {
             ctx.failure()
         }
@@ -122,7 +143,7 @@ object PlanParser {
             }
         }
 
-        val dayBoundary = if (obj.containsKey("day_boundary")) {
+        val dayBoundary = if (obj.has("day_boundary")) {
             ctx.requireTime(obj, "", "day_boundary")
         } else {
             Plan.DEFAULT_DAY_BOUNDARY
@@ -140,7 +161,7 @@ object PlanParser {
         val ids = mutableMapOf<String, String>() // id -> path where it was first seen
         val directives = readDirectiveList(obj, "", "directives", ctx, ids, required = true)
 
-        val badDay = readBadDay(obj, ctx, directives)
+        val badDay = readBadDay(obj, ctx)
 
         val fallback = when (val raw = obj["fallback_plan"]) {
             null, JsonNull -> null
@@ -185,21 +206,21 @@ object PlanParser {
                 ctx.error("expires", "\"$raw\" is not a real date.")
                 null
             }
-            OFFSET_PATTERN.containsMatchIn(value) -> {
+            DATETIME_WITH_OFFSET_PATTERN.matches(value) -> {
                 ctx.error(
                     "expires",
-                    "Write expires in the phone's local time without a timezone, like 2026-10-26T04:00 (got \"$raw\").",
+                    "Write expires in the phone's local time without a timezone, like 2026-10-26T04:00 (got \"${clip(raw)}\").",
                 )
                 null
             }
             else -> {
-                ctx.error("expires", "expires must look like 2026-10-26T04:00 or 2026-10-26 (got \"$raw\").")
+                ctx.error("expires", "expires must look like 2026-10-26T04:00 or 2026-10-26 (got \"${clip(raw)}\").")
                 null
             }
         }
     }
 
-    private fun readBadDay(obj: JsonObject, ctx: Ctx, directives: List<Directive>?): BadDay {
+    private fun readBadDay(obj: JsonObject, ctx: Ctx): BadDay {
         val raw = obj["bad_day"]
         if (raw == null || raw == JsonNull) {
             ctx.warn("bad_day", "No bad_day list: in \"I'm not okay today\" mode nothing will fire.")
@@ -215,20 +236,24 @@ object PlanParser {
             ctx.error("bad_day.keep", "bad_day.keep must be a list of directive ids.")
             return BadDay.NONE
         }
-        val known = directives?.map { it.id }?.toSet()
-        val keep = mutableListOf<String>()
+        if (keepRaw.isEmpty()) {
+            ctx.warn("bad_day.keep", "bad_day.keep is empty: in \"I'm not okay today\" mode nothing will fire.")
+        }
+        // Read straight from the JSON so these ids are checked even when some directive has other problems.
+        val known = (obj["directives"] as? JsonArray)?.mapNotNull { stringOrNull((it as? JsonObject)?.get("id")) }?.toSet()
+        val keep = linkedSetOf<String>()
         keepRaw.forEachIndexed { i, el ->
             val path = "bad_day.keep[$i]"
-            val id = (el as? JsonPrimitive)?.takeIf { it.isString }?.content
+            val id = stringOrNull(el)
             when {
                 id == null -> ctx.error(path, "Each entry in bad_day.keep must be a directive id (text).")
                 known != null && id !in known ->
-                    ctx.error(path, "bad_day.keep lists \"$id\", but there is no directive with that id.")
-                id in keep -> ctx.warn(path, "\"$id\" is listed twice in bad_day.keep.")
+                    ctx.error(path, "bad_day.keep lists \"${clip(id)}\", but no directive in \"directives\" has that id.")
+                id in keep -> ctx.warn(path, "\"${clip(id)}\" is listed twice in bad_day.keep.")
                 else -> keep += id
             }
         }
-        return BadDay(keep)
+        return BadDay(keep.toList())
     }
 
     // ---------------------------------------------------------------- directives
@@ -278,7 +303,7 @@ object PlanParser {
             if (!ID_PATTERN.matches(id)) {
                 ctx.error(
                     "$path.id",
-                    "\"$id\" is not a valid id. Use 1-48 lowercase letters, digits, '-' or '_', starting with a letter or digit.",
+                    "\"${clip(id)}\" is not a valid id. Use 1-48 lowercase letters, digits, '-' or '_', starting with a letter or digit.",
                 )
             } else {
                 val first = ids[id]
@@ -306,7 +331,7 @@ object PlanParser {
 
         val quiet = ctx.requireString(obj, path, "quiet")?.let { raw ->
             QuietPolicy.fromJson(raw) ?: run {
-                ctx.error("$path.quiet", "quiet must be \"queue\", \"silent\", \"ignore\" or \"override\" (got \"$raw\").")
+                ctx.error("$path.quiet", "quiet must be \"queue\", \"silent\", \"ignore\" or \"override\" (got \"${clip(raw)}\").")
                 null
             }
         }
@@ -400,10 +425,15 @@ object PlanParser {
             Trigger.Adhan.TYPE -> readAdhanTrigger(raw, tPath, ctx)
             Trigger.AppUsage.TYPE -> readAppUsageTrigger(raw, tPath, ctx)
             else -> {
-                val reserved = if (type in Trigger.RESERVED_TYPES) " It is reserved for a future version." else ""
+                val nearMiss = type.trim().lowercase().replace('-', '_').replace(' ', '_')
+                val hint = when {
+                    type in Trigger.RESERVED_TYPES -> " It is reserved for a future version."
+                    nearMiss in Trigger.SUPPORTED_TYPES -> " Did you mean \"$nearMiss\"?"
+                    else -> ""
+                }
                 ctx.warn(
                     "$tPath.type",
-                    "Trigger type \"$type\" isn't supported by this app.$reserved This directive is kept but will never fire. " +
+                    "Trigger type \"${clip(type)}\" isn't supported by this app.$hint This directive is kept but will never fire. " +
                         "Supported types: ${Trigger.SUPPORTED_TYPES.joinToString()}.",
                 )
                 Trigger.Unsupported(type)
@@ -429,10 +459,10 @@ object PlanParser {
                 val set = linkedSetOf<DayOfWeek>()
                 var ok = true
                 daysRaw.forEachIndexed { i, el ->
-                    val code = (el as? JsonPrimitive)?.takeIf { it.isString }?.content
+                    val code = stringOrNull(el)
                     val day = code?.let { DAY_CODES[it] }
                     if (day == null) {
-                        ctx.error("$path.days[$i]", "Days are written mon, tue, wed, thu, fri, sat, sun (got ${el}).")
+                        ctx.error("$path.days[$i]", "Days are written mon, tue, wed, thu, fri, sat, sun (got ${show(el)}).")
                         ok = false
                     } else if (!set.add(day)) {
                         ctx.warn("$path.days[$i]", "\"$code\" is listed twice.")
@@ -450,7 +480,7 @@ object PlanParser {
         val raw = ctx.requireString(obj, path, "prayer") ?: return null
         val prayer = Prayer.fromJson(raw)
         if (prayer == null) {
-            ctx.error("$path.prayer", "prayer must be one of fajr, dhuhr, asr, maghrib, isha (got \"$raw\").")
+            ctx.error("$path.prayer", "prayer must be one of fajr, dhuhr, asr, maghrib, isha (got \"${clip(raw)}\").")
             return null
         }
         return Trigger.Adhan(prayer)
@@ -461,27 +491,27 @@ object PlanParser {
         val errorsBefore = ctx.errors.size
 
         val appsRaw = obj["apps"]
-        val apps = mutableListOf<String>()
+        val apps = linkedSetOf<String>()
         when {
             appsRaw == null || appsRaw == JsonNull ->
                 ctx.error("$path.apps", "\"apps\" is missing. List Android package names, e.g. [\"com.instagram.android\"].")
             appsRaw !is JsonArray -> ctx.error("$path.apps", "\"apps\" must be a list of Android package names.")
             appsRaw.isEmpty() -> ctx.error("$path.apps", "\"apps\" is empty. List at least one Android package name.")
             else -> appsRaw.forEachIndexed { i, el ->
-                val pkg = (el as? JsonPrimitive)?.takeIf { it.isString }?.content
+                val pkg = stringOrNull(el)
                 when {
-                    pkg == null || !PACKAGE_PATTERN.matches(pkg) -> ctx.error(
+                    pkg == null || !isPackageName(pkg) -> ctx.error(
                         "$path.apps[$i]",
-                        "${el} is not an Android package name. Use the app's package id, like \"com.zhiliaoapp.musically\" for TikTok.",
+                        "${show(el)} is not an Android package name. Use the app's package id, like \"com.zhiliaoapp.musically\" for TikTok.",
                     )
-                    pkg in apps -> ctx.warn("$path.apps[$i]", "\"$pkg\" is listed twice.")
+                    pkg in apps -> ctx.warn("$path.apps[$i]", "\"${clip(pkg)}\" is listed twice.")
                     else -> apps += pkg
                 }
             }
         }
 
-        val hasOpens = obj.containsKey("opens") || obj.containsKey("window_min")
-        val hasContinuous = obj.containsKey("continuous_min")
+        val hasOpens = obj.has("opens") || obj.has("window_min")
+        val hasContinuous = obj.has("continuous_min")
         val limit: UsageLimit? = when {
             hasOpens && hasContinuous -> {
                 ctx.error(path, "Use either \"opens\" + \"window_min\" or \"continuous_min\", not both.")
@@ -513,7 +543,7 @@ object PlanParser {
             }
         }
 
-        val cooldown = if (obj.containsKey("cooldown_min")) {
+        val cooldown = if (obj.has("cooldown_min")) {
             ctx.requireInt(obj, path, "cooldown_min")?.also {
                 if (it !in 0..MAX_WINDOW_MIN) ctx.error("$path.cooldown_min", "cooldown_min must be between 0 and $MAX_WINDOW_MIN (got $it).")
             }
@@ -539,18 +569,62 @@ object PlanParser {
 
     private fun join(parent: String, key: String) = if (parent.isEmpty()) key else "$parent.$key"
 
+    /** Optional fields written as `null` count as left out. */
+    private fun JsonObject.has(key: String) = this[key].let { it != null && it != JsonNull }
+
+    private fun stringOrNull(el: JsonElement?): String? = (el as? JsonPrimitive)?.takeIf { it.isString }?.content
+
+    private fun isPackageName(value: String): Boolean {
+        val segments = value.split('.')
+        return segments.size >= 2 && PACKAGE_FIRST_SEGMENT.matches(segments[0]) &&
+            segments.drop(1).all { PACKAGE_SEGMENT.matches(it) }
+    }
+
+    /** Shortens a value the planner wrote before it is quoted back in a message. */
+    private fun clip(value: String): String = if (value.length <= 60) value else value.take(57) + "..."
+
+    /** A value quoted back in a message: short, and never a whole list or object. */
+    private fun show(el: JsonElement): String = when (el) {
+        is JsonNull -> "null"
+        is JsonPrimitive -> if (el.isString) "\"${clip(el.content)}\"" else clip(el.content)
+        is JsonArray -> "a list"
+        is JsonObject -> "an object"
+    }
+
     private fun describeSyntaxError(text: String, e: Exception): String {
-        val offset = Regex("offset (\\d+)").find(e.message.orEmpty())?.groupValues?.get(1)?.toIntOrNull()
-        val where = if (offset != null && offset <= text.length) {
-            val before = text.substring(0, offset)
-            val line = before.count { it == '\n' } + 1
-            val column = offset - (before.lastIndexOf('\n') + 1) + 1
-            " (problem near line $line, column $column)"
-        } else {
-            ""
-        }
-        return "This file isn't valid JSON$where. Look for a missing comma, quote or bracket, " +
+        val message = e.message.orEmpty()
+        val offset = Regex("offset (\\d+)").find(message)?.groupValues?.get(1)?.toIntOrNull()
+            ?: if ("end of the input" in message) text.trimEnd().length else null
+        return "This file isn't valid JSON${location(text, offset)}. Look for a missing comma, quote or bracket, " +
             "or a comma after the last item in a list."
+    }
+
+    private fun location(text: String, offset: Int?): String {
+        if (offset == null || offset !in 0..text.length) return ""
+        val before = text.substring(0, offset)
+        val line = before.count { it == '\n' } + 1
+        val column = offset - (before.lastIndexOf('\n') + 1) + 1
+        return " (problem near line $line, column $column)"
+    }
+
+    /** Where nesting first goes past [MAX_NESTING], or null. Brackets inside strings don't count. */
+    private fun tooDeepOffset(text: String): Int? {
+        var depth = 0
+        var inString = false
+        var escaped = false
+        text.forEachIndexed { i, c ->
+            when {
+                inString -> when {
+                    escaped -> escaped = false
+                    c == '\\' -> escaped = true
+                    c == '"' -> inString = false
+                }
+                c == '"' -> inString = true
+                c == '[' || c == '{' -> if (++depth > MAX_NESTING) return i
+                c == ']' || c == '}' -> depth--
+            }
+        }
+        return null
     }
 
     private class Ctx {
@@ -565,13 +639,23 @@ object PlanParser {
             warnings += Issue(path, message)
         }
 
-        fun failure() = ParseResult.Failure(errors.toList(), warnings.toList())
+        fun failure() = ParseResult.Failure(capped(errors, "problems"), capped(warnings, "warnings"))
+
+        fun success(plan: Plan) = ParseResult.Success(plan, capped(warnings, "warnings"))
+
+        /** A list of thousands of identical mistakes would bury the import screen; list the first ones only. */
+        private fun capped(issues: List<Issue>, noun: String): List<Issue> =
+            if (issues.size <= MAX_ISSUES) {
+                issues.toList()
+            } else {
+                issues.take(MAX_ISSUES) + Issue("", "${issues.size - MAX_ISSUES} more $noun are not listed. Fix the ones above first.")
+            }
 
         /** Keys starting with "_" are comments (like "_readme") and are always allowed. */
         fun warnUnknownKeys(obj: JsonObject, path: String, known: Set<String>) {
             for (key in obj.keys) {
                 if (key.startsWith("_") || key in known) continue
-                warn(join(path, key), "Unknown field \"$key\" is ignored by this version of the app.")
+                warn(join(path, key), "Unknown field \"${clip(key)}\" is ignored by this version of the app.")
             }
         }
 
@@ -583,7 +667,7 @@ object PlanParser {
                     null
                 }
                 is JsonPrimitive -> if (el.isString) el.content else {
-                    error(p, "\"$key\" must be text in quotes (got $el).")
+                    error(p, "\"$key\" must be text in quotes (got ${show(el)}).")
                     null
                 }
                 else -> {
@@ -597,7 +681,7 @@ object PlanParser {
             val el = obj[key]
             if (el == null || el == JsonNull) return null
             if (el is JsonPrimitive && el.isString) return el.content
-            error(join(path, key), "\"$key\" must be text in quotes.")
+            error(join(path, key), "\"$key\" must be text in quotes (got ${show(el)}).")
             return null
         }
 
@@ -609,21 +693,22 @@ object PlanParser {
                     null
                 }
                 is JsonPrimitive -> {
-                    val long = if (el.isString) null else el.longOrNull
+                    val number = el.content.takeIf { !el.isString && INTEGER_PATTERN.matches(it) }
+                    val int = number?.toIntOrNull()
                     when {
                         el.isString -> {
-                            error(p, "\"$key\" must be a number without quotes (got \"${el.content}\").")
+                            error(p, "\"$key\" must be a number without quotes (got ${show(el)}).")
                             null
                         }
-                        long == null -> {
-                            error(p, "\"$key\" must be a whole number (got ${el.content}).")
+                        number == null -> {
+                            error(p, "\"$key\" must be a whole number like 3 (got ${show(el)}).")
                             null
                         }
-                        long < Int.MIN_VALUE || long > Int.MAX_VALUE -> {
-                            error(p, "\"$key\" is far too large (${el.content}).")
+                        int == null -> {
+                            error(p, "\"$key\" is far outside the allowed range (got ${clip(number)}).")
                             null
                         }
-                        else -> long.toInt()
+                        else -> int
                     }
                 }
                 else -> {
@@ -636,7 +721,11 @@ object PlanParser {
         fun requireTime(obj: JsonObject, path: String, key: String): LocalTime? {
             val raw = requireString(obj, path, key) ?: return null
             if (!TIME_PATTERN.matches(raw)) {
-                error(join(path, key), "\"$key\" must be a 24-hour time like 05:30 or 21:00 (got \"$raw\").")
+                error(
+                    join(path, key),
+                    "\"$key\" must be a 24-hour time from 00:00 to 23:59 with two-digit hours, like 05:30 or 21:00 " +
+                        "(got \"${clip(raw)}\").",
+                )
                 return null
             }
             return LocalTime.parse(raw)
@@ -645,7 +734,7 @@ object PlanParser {
         fun requireDate(obj: JsonObject, path: String, key: String): LocalDate? {
             val raw = requireString(obj, path, key) ?: return null
             if (!DATE_PATTERN.matches(raw)) {
-                error(join(path, key), "\"$key\" must be a date like 2026-10-19 (got \"$raw\").")
+                error(join(path, key), "\"$key\" must be a date like 2026-10-19 (got \"${clip(raw)}\").")
                 return null
             }
             return parseDate(raw) ?: run {
