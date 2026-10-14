@@ -35,6 +35,8 @@ import dev.vigil.data.PlanRepository
 import dev.vigil.engine.Vigil
 import dev.vigil.service.VigilService
 import dev.vigil.trigger.TriggerSetup
+import dev.vigil.ui.settings.SettingsScreen
+import dev.vigil.ui.settings.TriggerSettings
 import dev.vigil.ui.home.DeveloperScreen
 import dev.vigil.ui.setup.SetupScreen
 import dev.vigil.ui.components.scanlines
@@ -51,6 +53,7 @@ class MainActivity : ComponentActivity() {
         data object Home : Screen
         data object Setup : Screen
         data object Developer : Screen
+        data object Settings : Screen
         data class ImportResult(val outcome: PlanRepository.ImportOutcome) : Screen
     }
 
@@ -111,6 +114,7 @@ class MainActivity : ComponentActivity() {
                             demoTakeover = { Vigil.fireNow(Engine.DEMO_ID) },
                             openSetup = { screen = Screen.Setup },
                             openDeveloper = { screen = Screen.Developer },
+                            openSettings = { screen = Screen.Settings },
                         ),
                         appLabel = ::appLabel,
                     )
@@ -124,6 +128,7 @@ class MainActivity : ComponentActivity() {
                         },
                     )
                     Screen.Developer -> DeveloperScreen { screen = Screen.Home }
+                    Screen.Settings -> SettingsScreen(::appLabel, extraSections = { TriggerSettings(::appLabel) }) { screen = Screen.Home }
                     is Screen.ImportResult -> ImportResultScreen(s.outcome) { screen = Screen.Home }
                 }
             }

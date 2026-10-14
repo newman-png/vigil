@@ -38,6 +38,7 @@ class HomeActions(
     val openSetup: () -> Unit,
     /** Hidden: seven taps on the title. */
     val openDeveloper: () -> Unit,
+    val openSettings: () -> Unit,
 )
 
 @Composable
@@ -96,6 +97,8 @@ fun HomeScreen(actions: HomeActions, appLabel: (String) -> String) {
         PixelButton("IMPORT PLAN", actions.importPlan, Modifier.fillMaxWidth())
         Spacer(Modifier.height(8.dp))
         PixelButton("SETUP & PERMISSIONS", actions.openSetup, Modifier.fillMaxWidth())
+        Spacer(Modifier.height(8.dp))
+        PixelButton("SETTINGS", actions.openSettings, Modifier.fillMaxWidth())
 
         Rule()
         PixelText("DIRECTIVES", Type.Heading)

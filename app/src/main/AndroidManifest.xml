@@ -86,6 +86,17 @@
             </intent-filter>
         </receiver>
 
+        <!-- The adhan trigger: reads the adhan app's prayer notification. -->
+        <service
+            android:name=".trigger.AdhanListener"
+            android:exported="true"
+            android:label="VIGIL adhan trigger"
+            android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
         <!-- adb escape hatch: only the shell and the system hold DUMP. See README. -->
         <receiver
             android:name=".engine.KillSwitchReceiver"
