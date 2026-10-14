@@ -9,6 +9,9 @@ import dev.vigil.core.engine.RuntimeState
 import dev.vigil.core.log.EventType
 import dev.vigil.core.log.LogEvent
 import dev.vigil.data.PlanRepository
+import dev.vigil.takeover.BadDayResult
+import dev.vigil.takeover.StepResult
+import dev.vigil.takeover.TakeoverLauncher
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
@@ -49,6 +52,41 @@ object Vigil {
     /** Debug: show a directive (or the built-in demo) right now. */
     fun fireNow(directiveId: String) {
         exec { state, env -> Engine.fireNow(state, env, directiveId) }
+        showIfActive()
+    }
+
+    fun stepShown(takeoverId: String) {
+        exec { state, env -> Engine.stepShown(state, env, takeoverId) }
+    }
+
+    fun stepDone(takeoverId: String, index: Int): StepResult {
+        val outcome = exec { state, env -> Engine.stepDone(state, env, takeoverId, index) }
+        return when {
+            outcome.events.any { it.type == EventType.DIRECTIVE_COMPLETED } -> StepResult.COMPLETED
+            outcome.events.any { it.type == EventType.STEP_COMPLETED } -> StepResult.NEXT
+            else -> StepResult.IGNORED
+        }
+    }
+
+    fun dismiss(takeoverId: String) {
+        exec { state, env -> Engine.dismiss(state, env, takeoverId) }
+    }
+
+    /** "I'm not okay today" held. Tells the takeover whether it was closed by it. */
+    fun notOkay(takeoverId: String): BadDayResult {
+        val outcome = setBadDay(true)
+        return if (outcome.events.any { it.type == EventType.BYPASSED_BAD_DAY && it.takeoverId == takeoverId }) {
+            BadDayResult.BYPASSED
+        } else {
+            BadDayResult.KEPT
+        }
+    }
+
+    fun setBadDay(on: Boolean): Outcome = exec { state, env -> Engine.setBadDay(state, env, on) }
+
+    /** Makes sure the takeover is on screen if the engine has one active. */
+    fun showIfActive() {
+        if (Graph.state.current.active != null) TakeoverLauncher.ensureShowing(Graph.app)
     }
 
     /** Runs one engine step against the current state and world. */

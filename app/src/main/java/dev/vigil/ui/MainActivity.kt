@@ -5,7 +5,6 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
-import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
@@ -53,6 +52,11 @@ class MainActivity : ComponentActivity() {
         setContent { App() }
     }
 
+    override fun onResume() {
+        super.onResume()
+        Vigil.showIfActive()
+    }
+
     @Composable
     private fun App() {
         var screen by remember { mutableStateOf<Screen>(Screen.Home) }
@@ -85,8 +89,8 @@ class MainActivity : ComponentActivity() {
                     Screen.Home -> HomeScreen(
                         HomeActions(
                             importPlan = { picker.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) },
-                            fireDirective = { fire(it) },
-                            demoTakeover = { fire(Engine.DEMO_ID) },
+                            fireDirective = { Vigil.fireNow(it) },
+                            demoTakeover = { Vigil.fireNow(Engine.DEMO_ID) },
                         ),
                         appLabel = ::appLabel,
                     )
@@ -94,11 +98,6 @@ class MainActivity : ComponentActivity() {
                 }
             }
         }
-    }
-
-    private fun fire(directiveId: String) {
-        Vigil.fireNow(directiveId)
-        Toast.makeText(this, "Logged. The takeover screen arrives in the next milestone.", Toast.LENGTH_SHORT).show()
     }
 
     /** Reads the picked file (off the main thread): its name and text, or null text if it can't be read. */

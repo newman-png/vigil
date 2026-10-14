@@ -2,12 +2,18 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <!-- Lets the app show the label of the apps named in app_usage triggers. -->
+    <uses-permission android:name="android.permission.VIBRATE" />
+    <!-- Nothing Glyph lights (ignored on other phones). -->
+    <uses-permission android:name="com.nothing.ketchum.permission.ENABLE" />
+
+    <!-- Launcher apps: to show the label of the apps named in app_usage triggers.
+         com.nothing.thirdparty: the Glyph service the Nothing Glyph SDK binds to. -->
     <queries>
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
         </intent>
+        <package android:name="com.nothing.thirdparty" />
     </queries>
 
     <application
@@ -20,6 +26,9 @@
         android:theme="@style/Theme.Vigil"
         tools:ignore="DataExtractionRules">
 
+        <!-- Glyph SDK: "test" is Nothing's debug key; on Android 16 with targetSdk 36 no key is needed. -->
+        <meta-data android:name="NothingKey" android:value="test" />
+
         <activity
             android:name=".ui.MainActivity"
             android:exported="true"
@@ -29,6 +38,19 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <activity
+            android:name=".takeover.TakeoverActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|navigation|uiMode|density|fontScale"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleInstance"
+            android:screenOrientation="portrait"
+            android:showWhenLocked="true"
+            android:taskAffinity="dev.vigil.takeover"
+            android:theme="@style/Theme.Vigil"
+            android:turnScreenOn="true"
+            tools:ignore="DiscouragedApi,LockedOrientationActivity" />
 
     </application>
 </manifest>
