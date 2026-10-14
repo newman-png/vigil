@@ -15,17 +15,27 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import dev.vigil.glyph.GlyphFactory
+import dev.vigil.Graph
+import dev.vigil.core.plan.DayMode
+import dev.vigil.core.plan.Trigger
+import dev.vigil.engine.Device
+import dev.vigil.engine.Vigil
+import dev.vigil.trigger.AdhanListener
+import dev.vigil.trigger.TriggerSetup
+import dev.vigil.trigger.UsageWatcher
 import dev.vigil.ui.components.PixelButton
 import dev.vigil.ui.components.PixelText
-import dev.vigil.ui.components.Rule
+import dev.vigil.ui.components.ScreenTitle
+import dev.vigil.ui.components.Section
 import dev.vigil.ui.theme.Palette
 import dev.vigil.ui.theme.Type
 
@@ -39,73 +49,160 @@ class SetupItem(
     val onAction: () -> Unit,
 )
 
+/** Everything Android must allow: the base items and each trigger's own (notification access, usage access, ...). */
+fun permissionItems(context: Context, requestNotifications: () -> Unit): List<SetupItem> =
+    baseItems(context, requestNotifications) + TriggerSetup.items(context)
+
+/** How many required permissions are missing (the home screen's SETUP hint). */
+fun missingPermissions(context: Context): Int =
+    permissionItems(context, requestNotifications = {}).count { it.granted == false && !it.optional }
+
 /**
- * The first-run checklist (also reachable from the home screen). Everything VIGIL needs to fire reliably
- * on a sideloaded install, with a button straight to the right settings page.
+ * Everything about this phone, in collapsible sections: PERMISSIONS, BATTERY, ADHAN, APP USAGE, TAKEOVER and
+ * SAFETY. Anything about the week belongs in the plan instead. On the first run it ends with DONE.
  *
- * [extraItems] lets each trigger add its own permissions (notification access, usage access, ...).
+ * [refreshKey] changes on every resume, so statuses are re-read after a visit to system settings.
  */
 @Composable
 fun SetupScreen(
-    @Suppress("UNUSED_PARAMETER") refreshKey: Int,
+    refreshKey: Int,
+    firstRun: Boolean,
     requestNotifications: () -> Unit,
-    extraItems: List<SetupItem>,
     onDone: () -> Unit,
 ) {
     val context = LocalContext.current
-    val items = baseItems(context, requestNotifications) + extraItems
+    val items = remember(refreshKey, requestNotifications) { permissionItems(context, requestNotifications) }
     val missing = items.count { it.granted == false && !it.optional }
+    val state by Graph.state.state.collectAsState()
+    val snapshot by Graph.plans.snapshot.collectAsState()
+    val settingsVersion by Graph.settings.version.collectAsState()
+    val connected by AdhanListener.connected.collectAsState()
+    val active = remember(snapshot, state) { Graph.activeSet() }
+    val dayMode = remember(snapshot, state) { Vigil.dayMode() }
+    val batteryOk = remember(refreshKey) {
+        context.getSystemService(PowerManager::class.java)?.isIgnoringBatteryOptimizations(context.packageName) ?: false
+    }
 
-    Column {
-        PixelText("SETUP", Type.Title)
-        PixelText(
-            "VIGIL can only keep its promises if Android lets it. Grant each item; come back here any time from the home screen.",
-            Type.Small,
+    Column(Modifier.fillMaxWidth()) {
+        ScreenTitle(
+            "SETUP",
+            "VIGIL can only keep its promises if Android lets it. Everything here is about this phone; " +
+                "everything about the week is in the plan.",
         )
-        Spacer(Modifier.height(8.dp))
-        PixelText(if (missing == 0) "ALL REQUIRED ITEMS GRANTED" else "$missing REQUIRED ITEMS MISSING", Type.Heading, color = if (missing == 0) Palette.White else Palette.Red)
-        for (item in items) {
-            Rule()
-            SetupRow(item)
+
+        Section(
+            "PERMISSIONS",
+            hint = if (missing == 0) "ALL GRANTED" else "$missing MISSING",
+            hintColor = if (missing == 0) Palette.Dim else Palette.Red,
+            initiallyOpen = firstRun || missing > 0,
+        ) {
+            for ((i, item) in items.withIndex()) {
+                if (i > 0) Spacer(Modifier.height(12.dp))
+                PermissionRow(item)
+            }
         }
-        Rule()
-        PixelText("NOTHING PHONE", Type.Heading)
-        PixelText(
-            "Battery: Settings › Apps › VIGIL › Battery › Unrestricted (the battery item above opens this). " +
-                "If directives stop firing after a while, don't swipe VIGIL away in Recents.",
-            Type.Small,
-        )
-        Spacer(Modifier.height(6.dp))
-        PixelText(
-            if (GlyphFactory.AVAILABLE) {
-                "Glyph lights: included. On Android 16 they work without setup. On Android 15, enable Glyph debug mode " +
-                    "from a computer (lasts 48 hours): adb shell settings put global nt_glyph_interface_debug_enable 1"
-            } else {
-                "Glyph lights: this build was made without Nothing's Glyph SDK."
+
+        Section("BATTERY", hint = if (batteryOk) "UNRESTRICTED" else "RESTRICTED", hintColor = if (batteryOk) Palette.Dim else Palette.Red) {
+            BatterySection(batteryOk)
+        }
+
+        // Red only when the running plan has adhan directives that cannot fire properly.
+        val hasAdhan = active.directives.any { it.trigger is Trigger.Adhan }
+        val adhanPackages = remember(settingsVersion) { Graph.settings.adhanPackages }
+        val adhanHint = when {
+            !connected -> "NOT CONNECTED"
+            adhanPackages.isEmpty() -> "ANY APP"
+            adhanPackages.size == 1 -> "1 APP"
+            else -> "${adhanPackages.size} APPS"
+        }
+        val adhanUrgent = hasAdhan && (!connected || adhanPackages.isEmpty())
+        Section("ADHAN", hint = adhanHint, hintColor = if (adhanUrgent) Palette.Red else Palette.Dim) {
+            AdhanSection()
+        }
+
+        val hasUsage = active.directives.any { it.trigger is Trigger.AppUsage }
+        val usageHint = remember(refreshKey) {
+            when {
+                UsageWatcher.accessibilityConnected -> "INSTANT"
+                Device.hasUsageAccess(context) -> "EVERY ~5 S"
+                else -> "OFF"
+            }
+        }
+        Section("APP USAGE", hint = usageHint, hintColor = if (hasUsage && usageHint == "OFF") Palette.Red else Palette.Dim) {
+            AppUsageSection()
+        }
+
+        Section("TAKEOVER") {
+            TakeoverSection()
+        }
+
+        Section(
+            "SAFETY",
+            hint = when (dayMode) {
+                DayMode.BAD_DAY -> "NOT OKAY TODAY"
+                DayMode.MINIMUM -> "MINIMUM DAY"
+                DayMode.NORMAL -> null
             },
-            Type.Small,
-        )
-        Spacer(Modifier.height(16.dp))
-        PixelButton(if (missing == 0) "DONE" else "CONTINUE ANYWAY", onDone, Modifier.fillMaxWidth())
+        ) {
+            SafetySection(dayMode, active)
+        }
+
+        if (firstRun) {
+            Spacer(Modifier.height(24.dp))
+            PixelButton(if (missing == 0) "DONE" else "CONTINUE ANYWAY", onDone, Modifier.fillMaxWidth())
+        }
         Spacer(Modifier.height(24.dp))
     }
 }
 
 @Composable
-private fun SetupRow(item: SetupItem) {
-    Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+private fun PermissionRow(item: SetupItem) {
+    Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
         Column(Modifier.weight(1f)) {
             val status = when (item.granted) {
-                true -> "[OK]"
-                false -> if (item.optional) "[OPTIONAL]" else "[MISSING]"
-                null -> "[CHECK]"
+                true -> "OK"
+                false -> if (item.optional) "OPTIONAL" else "MISSING"
+                null -> "CHECK"
             }
-            PixelText("$status ${item.title}", Type.Body, color = if (item.granted == false && !item.optional) Palette.Red else Palette.White)
+            Row {
+                PixelText(item.title, Type.Body, Modifier.weight(1f))
+                Spacer(Modifier.width(8.dp))
+                PixelText(status, Type.Label, color = if (item.granted == false && !item.optional) Palette.Red else Palette.Dim)
+            }
             PixelText(item.why, Type.Small)
         }
-        Spacer(Modifier.width(8.dp))
-        if (item.granted != true) PixelButton(item.action, item.onAction)
+        if (item.granted != true) {
+            Spacer(Modifier.width(12.dp))
+            PixelButton(item.action, item.onAction)
+        }
     }
+}
+
+@Composable
+private fun BatterySection(batteryOk: Boolean) {
+    val context = LocalContext.current
+    PixelText(
+        if (batteryOk) "Android lets VIGIL run in the background." else "Android may put VIGIL to sleep, and directives would fire late or not at all.",
+        Type.Small,
+    )
+    Spacer(Modifier.height(8.dp))
+    PixelText(
+        "Nothing phones: Settings › Apps › VIGIL › Battery › Unrestricted. " +
+            "If directives stop firing after a while, don't swipe VIGIL away in Recents.",
+        Type.Small,
+    )
+    Spacer(Modifier.height(12.dp))
+    PixelButton(
+        "OPEN APP INFO",
+        {
+            TriggerSetup.open(
+                context,
+                Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:${context.packageName}")),
+                Intent(Settings.ACTION_SETTINGS),
+            )
+        },
+        Modifier.fillMaxWidth(),
+    )
 }
 
 private fun baseItems(context: Context, requestNotifications: () -> Unit): List<SetupItem> {
@@ -114,12 +211,8 @@ private fun baseItems(context: Context, requestNotifications: () -> Unit): List<
     val nm = context.getSystemService(NotificationManager::class.java)
     val pm = context.getSystemService(PowerManager::class.java)
     val am = context.getSystemService(AlarmManager::class.java)
-    fun open(intent: Intent) {
-        runCatching { context.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)) }
-            .onFailure {
-                context.startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, packageUri).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
-            }
-    }
+    val appInfo = Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, packageUri)
+    fun open(intent: Intent) = TriggerSetup.open(context, intent, appInfo)
     return listOf(
         SetupItem(
             "NOTIFICATIONS",

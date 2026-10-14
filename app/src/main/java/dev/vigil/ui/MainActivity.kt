@@ -1,7 +1,7 @@
 package dev.vigil.ui
 
 import android.Manifest
-import android.content.pm.PackageManager
+import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
@@ -26,63 +26,105 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.vigil.Graph
-import dev.vigil.core.engine.Engine
-import dev.vigil.data.LogExporter
+import dev.vigil.core.plan.Issue
+import dev.vigil.data.BundleExporter
 import dev.vigil.data.PlanRepository
+import dev.vigil.engine.Notifications
 import dev.vigil.engine.Vigil
 import dev.vigil.service.VigilService
 import dev.vigil.takeover.TakeoverActivity
-import dev.vigil.trigger.TriggerSetup
-import dev.vigil.ui.settings.SettingsScreen
-import dev.vigil.ui.settings.TriggerSettings
-import dev.vigil.ui.home.DeveloperScreen
-import dev.vigil.ui.log.LogScreen
-import dev.vigil.ui.setup.SetupScreen
 import dev.vigil.ui.components.scanlines
 import dev.vigil.ui.home.HomeActions
 import dev.vigil.ui.home.HomeScreen
 import dev.vigil.ui.importer.ImportResultScreen
+import dev.vigil.ui.plan.PlanCompleteScreen
+import dev.vigil.ui.plan.PlanScreen
+import dev.vigil.ui.setup.SetupScreen
+import dev.vigil.ui.test.TestScreen
 import dev.vigil.ui.theme.Palette
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
+/**
+ * VIGIL's own screens: HOME and the four places it leads (SETUP, PLAN, TEST; QUIET is a switch), plus PLAN
+ * COMPLETE and the import result. Back always returns HOME. Takeovers have their own activity.
+ */
 class MainActivity : ComponentActivity() {
     private sealed interface Screen {
         data object Home : Screen
         data object Setup : Screen
-        data object Developer : Screen
-        data object Settings : Screen
-        data object Log : Screen
+        data object Plan : Screen
+        data object PlanComplete : Screen
+        data class Test(val revealKillSwitch: Boolean) : Screen
         data class ImportResult(val outcome: PlanRepository.ImportOutcome) : Screen
     }
 
     /** Bumped on every resume so permission statuses are re-read after visiting system settings. */
     private var resumeTick by mutableIntStateOf(0)
 
+    private var screen by mutableStateOf<Screen>(Screen.Home)
+
+    /** PLAN COMPLETE opens by itself once per visit (until the bundle is exported), not on every resume. */
+    private var planCompleteShown = false
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // The app is always black, so the system bars always use light icons.
         enableEdgeToEdge(SystemBarStyle.dark(Color.TRANSPARENT), SystemBarStyle.dark(Color.TRANSPARENT))
+        planCompleteShown = savedInstanceState?.getBoolean(KEY_PLAN_COMPLETE_SHOWN) ?: false
+        screen = when {
+            !Graph.settings.setupDone -> Screen.Setup
+            savedInstanceState != null -> restore(savedInstanceState.getString(KEY_SCREEN))
+            else -> Screen.Home
+        }
+        // A recreated activity still carries its first intent; it was handled the first time.
+        if (savedInstanceState == null) handleOpen(intent)
         setContent { App() }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleOpen(intent)
     }
 
     override fun onResume() {
         super.onResume()
         resumeTick++
         VigilService.start(this)
+        // Opening VIGIL counts as being at the phone: a due morning check-in shows now.
+        Vigil.onUserPresent()
+        // The week is over and its bundle not exported yet: say so when VIGIL opens on HOME.
+        if (!planCompleteShown && screen == Screen.Home && Vigil.planComplete()) {
+            planCompleteShown = true
+            screen = Screen.PlanComplete
+        }
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        outState.putBoolean(KEY_PLAN_COMPLETE_SHOWN, planCompleteShown)
+        outState.putString(KEY_SCREEN, save(screen))
+    }
+
+    /** The "plan complete" notification opens PLAN COMPLETE (or HOME, if the bundle was exported meanwhile). */
+    private fun handleOpen(intent: Intent?) {
+        val i = intent ?: return
+        if (i.getStringExtra(Notifications.EXTRA_OPEN) != Notifications.OPEN_PLAN_COMPLETE) return
+        i.removeExtra(Notifications.EXTRA_OPEN)
+        if (!Graph.settings.setupDone) return
+        planCompleteShown = true
+        screen = if (Vigil.planComplete()) Screen.PlanComplete else Screen.Home
     }
 
     @Composable
     private fun App() {
-        var screen by remember { mutableStateOf<Screen>(if (Graph.settings.setupDone) Screen.Home else Screen.Setup) }
         val scope = rememberCoroutineScope()
         val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
             resumeTick++
@@ -98,15 +140,22 @@ class MainActivity : ComponentActivity() {
             }
         }
 
-        var exportThisWeek by rememberSaveable { mutableStateOf(true) }
         val exporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
             if (uri != null) {
                 scope.launch {
-                    val ok = withContext(Dispatchers.IO) { LogExporter.write(this@MainActivity, uri, exportThisWeek) }
-                    Toast.makeText(this@MainActivity, if (ok) "log.json saved." else "Could not save the log.", Toast.LENGTH_SHORT).show()
+                    val ok = withContext(Dispatchers.IO) { BundleExporter.write(this@MainActivity, uri) }
+                    Toast.makeText(
+                        this@MainActivity,
+                        if (ok) "Bundle saved. Give it to your planner." else "Could not save the bundle.",
+                        Toast.LENGTH_SHORT,
+                    ).show()
+                    // PLAN COMPLETE has done its job.
+                    if (ok && screen == Screen.PlanComplete) screen = Screen.Home
                 }
             }
         }
+        val pickPlan = { picker.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) }
+        val startExport = { exporter.launch(BundleExporter.suggestedName()) }
 
         BackHandler(enabled = screen != Screen.Home) { screen = Screen.Home }
 
@@ -114,7 +163,7 @@ class MainActivity : ComponentActivity() {
             Modifier
                 .fillMaxSize()
                 .background(Palette.Black)
-                .scanlines(),
+                .scanlines(0.12f),
         ) {
             // Each screen keeps its own scroll position.
             key(screen) {
@@ -122,44 +171,31 @@ class MainActivity : ComponentActivity() {
                     Modifier
                         .safeDrawingPadding()
                         .verticalScroll(rememberScrollState())
-                        .padding(16.dp),
+                        .padding(horizontal = 24.dp, vertical = 16.dp),
                 ) {
                     when (val s = screen) {
                         Screen.Home -> HomeScreen(
-                            HomeActions(
-                                importPlan = { picker.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) },
-                                fireDirective = { Vigil.fireNow(it) },
-                                demoTakeover = { Vigil.fireNow(Engine.DEMO_ID) },
+                            refreshKey = resumeTick,
+                            actions = HomeActions(
                                 openSetup = { screen = Screen.Setup },
-                                openDeveloper = { screen = Screen.Developer },
-                                openSettings = { screen = Screen.Settings },
-                                openLog = { screen = Screen.Log },
+                                openPlan = { screen = Screen.Plan },
+                                openTest = { reveal -> screen = Screen.Test(reveal) },
                                 openTakeover = { startActivity(TakeoverActivity.intent(this@MainActivity)) },
                             ),
-                            appLabel = ::appLabel,
                         )
                         Screen.Setup -> SetupScreen(
                             refreshKey = resumeTick,
+                            firstRun = !Graph.settings.setupDone,
                             requestNotifications = { notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS) },
-                            extraItems = TriggerSetup.items(this@MainActivity),
                             onDone = {
                                 Graph.settings.setupDone = true
                                 screen = Screen.Home
                             },
                         )
-                        Screen.Developer -> DeveloperScreen { screen = Screen.Home }
-                        Screen.Log -> LogScreen(
-                            exportWeek = {
-                                exportThisWeek = true
-                                exporter.launch(LogExporter.suggestedName())
-                            },
-                            exportAll = {
-                                exportThisWeek = false
-                                exporter.launch(LogExporter.suggestedName())
-                            },
-                        ) { screen = Screen.Home }
-                        Screen.Settings -> SettingsScreen(::appLabel, extraSections = { TriggerSettings(::appLabel) }) { screen = Screen.Home }
-                        is Screen.ImportResult -> ImportResultScreen(s.outcome) { screen = Screen.Home }
+                        Screen.Plan -> PlanScreen(importPlan = pickPlan, exportBundle = startExport)
+                        Screen.PlanComplete -> PlanCompleteScreen(export = startExport)
+                        is Screen.Test -> TestScreen(revealKillSwitch = s.revealKillSwitch)
+                        is Screen.ImportResult -> ImportResultScreen(s.outcome) { screen = Screen.Plan }
                     }
                 }
             }
@@ -188,7 +224,7 @@ class MainActivity : ComponentActivity() {
         val (name, text) = read
         return if (text == null) {
             PlanRepository.ImportOutcome.Rejected(
-                listOf(dev.vigil.core.plan.Issue("", "Could not read that file (it may be too large or not a text file).")),
+                listOf(Issue("", "Could not read that file (it may be too large or not a text file).")),
                 emptyList(),
             )
         } else {
@@ -196,14 +232,27 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun appLabel(packageName: String): String = try {
-        val info = packageManager.getApplicationInfo(packageName, PackageManager.ApplicationInfoFlags.of(0))
-        packageManager.getApplicationLabel(info).toString()
-    } catch (e: PackageManager.NameNotFoundException) {
-        packageName
+    /** A screen as a string for the saved state; the import result is not kept (PLAN shows the plan instead). */
+    private fun save(s: Screen): String = when (s) {
+        Screen.Home -> "home"
+        Screen.Setup -> "setup"
+        Screen.Plan, is Screen.ImportResult -> "plan"
+        Screen.PlanComplete -> "plan_complete"
+        is Screen.Test -> if (s.revealKillSwitch) "test_kill" else "test"
+    }
+
+    private fun restore(saved: String?): Screen = when (saved) {
+        "setup" -> Screen.Setup
+        "plan" -> Screen.Plan
+        "plan_complete" -> Screen.PlanComplete
+        "test" -> Screen.Test(revealKillSwitch = false)
+        "test_kill" -> Screen.Test(revealKillSwitch = true)
+        else -> Screen.Home
     }
 
     private companion object {
         const val MAX_IMPORT_BYTES = 1_000_000
+        const val KEY_SCREEN = "screen"
+        const val KEY_PLAN_COMPLETE_SHOWN = "plan_complete_shown"
     }
 }
