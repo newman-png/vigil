@@ -1,4 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">VIGIL</string>
+    <string name="accessibility_description">VIGIL uses this only to notice which app comes to the front, so app-usage directives (like opening TikTok too often) fire instantly. It never reads what is on the screen.</string>
 </resources>

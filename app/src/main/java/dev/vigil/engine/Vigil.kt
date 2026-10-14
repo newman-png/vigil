@@ -17,6 +17,7 @@ import dev.vigil.takeover.BadDayResult
 import dev.vigil.takeover.StepResult
 import dev.vigil.takeover.TakeoverLauncher
 import dev.vigil.trigger.AlarmScheduler
+import dev.vigil.trigger.UsageWatcher
 import dev.vigil.ui.Format
 import java.time.Instant
 import java.time.LocalDateTime
@@ -53,6 +54,7 @@ object Vigil {
                     ),
                 )
                 // A new plan starts from now: nothing from before the import is replayed.
+                UsageWatcher.reset()
                 onClock(catchUp = false)
             }
             is PlanRepository.ImportOutcome.Rejected -> Graph.eventLog.append(
@@ -135,20 +137,21 @@ object Vigil {
     // ------------------------------------------------------------------ device events
 
     /**
-     * Every few seconds from the service. Housekeeping only: ends bad-day mode at the day boundary and
-     * times out a takeover left open too long.
+     * Every few seconds from the service: housekeeping (ends bad-day mode at the day boundary, times out a
+     * takeover left open too long) and app-usage polling.
      */
     fun onServiceTick(context: Context) {
         val before = Graph.state.current
         val outcome = exec(launch = false) { state, env -> Engine.refresh(state, env) }
         if (outcome.state != before) VigilService.refreshNotification(context)
+        UsageWatcher.poll(context, System.currentTimeMillis())
     }
 
     fun onScreenOn(context: Context) {
         if (Graph.state.current.active != null) TakeoverLauncher.onScreenOn(context)
     }
 
-    fun onScreenOff(context: Context) = Unit
+    fun onScreenOff(context: Context) = UsageWatcher.onScreenOff(System.currentTimeMillis())
 
     /** Opening the app while a takeover waits brings the takeover back. */
     fun showIfActive() {

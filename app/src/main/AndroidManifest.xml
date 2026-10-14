@@ -13,6 +13,10 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Usage access is granted by the user in system settings (Setup screen). -->
+    <uses-permission
+        android:name="android.permission.PACKAGE_USAGE_STATS"
+        tools:ignore="ProtectedPermissions" />
     <!-- Nothing Glyph lights (ignored on other phones). -->
     <uses-permission android:name="com.nothing.ketchum.permission.ENABLE" />
 
@@ -95,6 +99,20 @@
             <intent-filter>
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
+        </service>
+
+        <!-- Optional instant app-switch detection for the app_usage trigger. -->
+        <service
+            android:name=".trigger.UsageAccessibilityService"
+            android:exported="true"
+            android:label="VIGIL app-usage trigger"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/usage_accessibility" />
         </service>
 
         <!-- adb escape hatch: only the shell and the system hold DUMP. See README. -->
