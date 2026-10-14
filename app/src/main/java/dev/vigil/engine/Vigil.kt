@@ -91,7 +91,7 @@ object Vigil {
     // ------------------------------------------------------------------ takeover
 
     fun stepShown(takeoverId: String) {
-        exec(launch = false) { state, env -> Engine.stepShown(state, env, takeoverId) }
+        exec { state, env -> Engine.stepShown(state, env, takeoverId) }
     }
 
     fun stepDone(takeoverId: String, index: Int): StepResult {
@@ -131,7 +131,7 @@ object Vigil {
 
     fun resume() {
         Graph.settings.suspendedUntilMs = 0
-        afterChange()
+        VigilService.refreshNotification(Graph.app)
     }
 
     // ------------------------------------------------------------------ device events
@@ -141,9 +141,7 @@ object Vigil {
      * takeover left open too long) and app-usage polling.
      */
     fun onServiceTick(context: Context) {
-        val before = Graph.state.current
-        val outcome = exec(launch = false) { state, env -> Engine.refresh(state, env) }
-        if (outcome.state != before) VigilService.refreshNotification(context)
+        exec { state, env -> Engine.refresh(state, env) }
         UsageWatcher.poll(context, System.currentTimeMillis())
     }
 
@@ -153,10 +151,6 @@ object Vigil {
 
     fun onScreenOff(context: Context) = UsageWatcher.onScreenOff(System.currentTimeMillis())
 
-    /** Opening the app while a takeover waits brings the takeover back. */
-    fun showIfActive() {
-        if (Graph.state.current.active != null) TakeoverLauncher.ensureShowing(Graph.app)
-    }
 
     // ------------------------------------------------------------------ status
 
@@ -187,11 +181,14 @@ object Vigil {
     // ------------------------------------------------------------------ plumbing
 
     /**
-     * Runs one engine step against the current state and world, then applies its side effects.
+     * Runs one engine step against the current state and world, then applies its side effects. Only a
+     * takeover that has just become active is put on screen (and may wake it); one that was already
+     * waiting comes back through the screen-on, unlock and escape paths instead.
      * While the developer kill switch is on, anything that fires is dropped straight away (and logged).
      */
-    internal fun exec(launch: Boolean = true, step: (RuntimeState, Env) -> Outcome): Outcome {
+    internal fun exec(step: (RuntimeState, Env) -> Outcome): Outcome {
         val env = Graph.env()
+        val before = Graph.state.current
         val suspended = Graph.settings.isSuspended(env.nowMs)
         val outcome = Graph.state.update { current ->
             val o = step(current, env)
@@ -202,13 +199,19 @@ object Vigil {
                 o
             }
         }
-        if (launch || outcome.events.isNotEmpty()) afterChange()
+        if (outcome.state != before || outcome.events.isNotEmpty()) afterChange(before, outcome.state, env)
         return outcome
     }
 
-    private fun afterChange() {
+    private fun afterChange(before: RuntimeState, after: RuntimeState, env: Env) {
         val app = Graph.app
-        if (Graph.state.current.active != null) TakeoverLauncher.ensureShowing(app) else TakeoverLauncher.onClosed(app)
-        VigilService.refreshNotification(app)
+        val active = after.active
+        when {
+            active == null -> TakeoverLauncher.onClosed(app)
+            active.takeoverId != before.active?.takeoverId -> TakeoverLauncher.ensureShowing(app)
+        }
+        // A new active takeover moves the next wake-up (its hard maximum); so do mode changes.
+        if (active?.takeoverId != before.active?.takeoverId) AlarmScheduler.schedule(app, Scheduling.nextWakeFor(after, env))
+        if (after != before) VigilService.refreshNotification(app)
     }
 }

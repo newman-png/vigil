@@ -13,6 +13,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
+import dev.vigil.Graph
 import dev.vigil.engine.Notifications
 import dev.vigil.engine.Vigil
 
@@ -40,7 +41,7 @@ class VigilService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        val notification = Notifications.service(this, Vigil.statusLine())
+        val notification = Notifications.service(this, Vigil.statusLine(), Graph.state.current.quiet)
         try {
             if (Build.VERSION.SDK_INT >= 34) {
                 startForeground(Notifications.ID_SERVICE, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
@@ -103,7 +104,7 @@ class VigilService : Service() {
         fun refreshNotification(context: Context) {
             if (!running) return
             context.getSystemService(NotificationManager::class.java)
-                ?.notify(Notifications.ID_SERVICE, Notifications.service(context, Vigil.statusLine()))
+                ?.notify(Notifications.ID_SERVICE, Notifications.service(context, Vigil.statusLine(), Graph.state.current.quiet))
         }
     }
 }

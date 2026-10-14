@@ -208,6 +208,11 @@ object Engine {
         val events = refreshed.events.toMutableList()
         events += LogEvent(env.timestamp(), if (on) EventType.QUIET_ON else EventType.QUIET_OFF)
         s = s.copy(quiet = on)
+        if (on) {
+            val r = applyQuietToFired(s, env)
+            s = r.state
+            events += r.events
+        }
         if (!on && s.quietQueue.isNotEmpty()) {
             val queue = s.quietQueue
             s = s.copy(quietQueue = emptyList())
@@ -224,6 +229,37 @@ object Engine {
             }
         }
         return Outcome(s, events)
+    }
+
+    /**
+     * Quiet mode switched on while takeovers had already fired: the one on screen goes silent unless it may
+     * override quiet mode; waiting ones follow their quiet rule (held until quiet ends, skipped, or silent).
+     */
+    private fun applyQuietToFired(state: RuntimeState, env: Env): Outcome {
+        val events = mutableListOf<LogEvent>()
+        var queue = state.quietQueue
+        val pending = mutableListOf<Ticket>()
+        for (t in state.pending) {
+            val d = env.active.find(t.directiveId)
+            when (val decision = if (d == null) null else decide(d, quiet = true, badDay = false, keep = emptySet(), allowOverride = env.allowQuietOverride)) {
+                Decision.Queue -> {
+                    events += LogEvent(env.timestamp(), EventType.DROPPED, directiveId = t.directiveId, tier = d?.tier, takeoverId = t.takeoverId, trigger = t.trigger, detail = DETAIL_HELD_FOR_QUIET)
+                    events += LogEvent(env.timestamp(), EventType.QUEUED_QUIET, directiveId = t.directiveId, tier = d?.tier, trigger = t.trigger, scheduledFor = t.scheduledFor)
+                    if (queue.none { it.directiveId == t.directiveId }) queue = queue + Queued(t.directiveId, t.trigger, env.nowMs)
+                }
+                is Decision.Skip -> events += LogEvent(
+                    env.timestamp(), EventType.DROPPED, directiveId = t.directiveId, tier = d?.tier, takeoverId = t.takeoverId, trigger = t.trigger, detail = DETAIL_SKIPPED_FOR_QUIET,
+                )
+                is Decision.Fire -> pending += if (decision.silent) t.copy(silent = true) else t
+                null -> pending += t
+            }
+        }
+        val active = state.active?.let { t ->
+            val d = env.active.find(t.directiveId)
+            val keepsSound = d != null && decide(d, quiet = true, badDay = false, keep = emptySet(), allowOverride = env.allowQuietOverride) == Decision.Fire(silent = false)
+            if (keepsSound) t else t.copy(silent = true)
+        }
+        return Outcome(state.copy(active = active, pending = pending, quietQueue = queue), events)
     }
 
     /**
@@ -329,8 +365,13 @@ object Engine {
         env.active.find(ticket.directiveId) ?: if (ticket.directiveId == DEMO_ID) DEMO else null
 
     private fun fire(s: RuntimeState, env: Env, d: Directive, trigger: String, silent: Boolean, scheduledFor: String?): Outcome {
-        // The same directive already showing or waiting: don't stack a second copy.
-        if (s.active?.directiveId == d.id || s.pending.any { it.directiveId == d.id }) return Outcome(s, emptyList())
+        // The same directive already showing or waiting: don't stack a second copy, but log the repeat.
+        if (s.active?.directiveId == d.id || s.pending.any { it.directiveId == d.id }) {
+            val repeat = LogEvent(
+                env.timestamp(), EventType.REPEATED, directiveId = d.id, tier = d.tier, trigger = trigger, scheduledFor = scheduledFor,
+            )
+            return Outcome(s, listOf(repeat))
+        }
         val ticket = Ticket(env.newId(), d.id, trigger, silent, env.nowMs, scheduledFor)
         val event = LogEvent(
             env.timestamp(), EventType.DIRECTIVE_FIRED, directiveId = d.id, tier = d.tier, trigger = trigger,
@@ -348,6 +389,10 @@ object Engine {
     private fun secondsSince(ms: Long, env: Env): Long = ((env.nowMs - ms).coerceAtLeast(0)) / 1000
 
     const val TRIGGER_QUIET_QUEUE = "quiet_queue"
+
+    /** Details of the `dropped` events for waiting takeovers when quiet mode is switched on. */
+    const val DETAIL_HELD_FOR_QUIET = "quiet mode switched on: held until it ends (quiet: queue)"
+    const val DETAIL_SKIPPED_FOR_QUIET = "quiet mode switched on: skipped (quiet: ignore)"
     private const val GONE = "no longer in the active plan"
 
     /** A built-in directive for the debug "demo takeover" button, so the takeover can be tried without a plan. */

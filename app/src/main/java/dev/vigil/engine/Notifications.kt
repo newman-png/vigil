@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.graphics.drawable.Icon
 import dev.vigil.R
 import dev.vigil.takeover.TakeoverActivity
 import dev.vigil.ui.MainActivity
@@ -34,15 +35,26 @@ object Notifications {
         )
     }
 
-    fun service(context: Context, text: String): Notification =
-        Notification.Builder(context, CHANNEL_SERVICE)
+    fun service(context: Context, text: String, quiet: Boolean): Notification {
+        val toggle = PendingIntent.getBroadcast(
+            context, 2, Intent(context, QuietToggleReceiver::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val action = Notification.Action.Builder(
+            Icon.createWithResource(context, R.drawable.ic_stat_eye),
+            if (quiet) "END QUIET MODE" else "QUIET MODE",
+            toggle,
+        ).build()
+        return Notification.Builder(context, CHANNEL_SERVICE)
             .setSmallIcon(R.drawable.ic_stat_eye)
-            .setContentTitle("VIGIL")
+            .setContentTitle(if (quiet) "VIGIL · QUIET" else "VIGIL")
             .setContentText(text)
             .setOngoing(true)
             .setShowWhen(false)
             .setContentIntent(openApp(context))
+            .addAction(action)
             .build()
+    }
 
     /**
      * The notification behind every takeover. With [fullScreen] the system opens the takeover by itself when

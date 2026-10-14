@@ -80,6 +80,10 @@
             android:exported="false" />
 
         <receiver
+            android:name=".engine.QuietToggleReceiver"
+            android:exported="false" />
+
+        <receiver
             android:name=".trigger.SystemEventReceiver"
             android:exported="true">
             <intent-filter>

@@ -20,7 +20,12 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.vigil.Graph
+import dev.vigil.core.engine.ActiveSet
+import dev.vigil.core.engine.Engine
 import dev.vigil.core.engine.PlanSource
+import dev.vigil.core.engine.RuntimeState
+import dev.vigil.engine.Vigil
+import dev.vigil.ui.components.HoldButton
 import dev.vigil.core.plan.Directive
 import dev.vigil.ui.Format
 import dev.vigil.ui.components.PixelButton
@@ -39,6 +44,9 @@ class HomeActions(
     /** Hidden: seven taps on the title. */
     val openDeveloper: () -> Unit,
     val openSettings: () -> Unit,
+    val openLog: () -> Unit,
+    /** Opens the takeover that is waiting (it does not come back by itself over VIGIL's own screens). */
+    val openTakeover: () -> Unit,
 )
 
 @Composable
@@ -66,6 +74,13 @@ fun HomeScreen(actions: HomeActions, appLabel: (String) -> String) {
         PixelText("THE APP NEVER THINKS. IT ONLY EXECUTES.", Type.Small)
         Spacer(Modifier.height(16.dp))
 
+        if (state.active != null) {
+            PixelText("A DIRECTIVE IS WAITING", Type.Heading, color = Palette.Red)
+            Spacer(Modifier.height(6.dp))
+            PixelButton("OPEN IT", actions.openTakeover, Modifier.fillMaxWidth(), color = Palette.Red)
+            Spacer(Modifier.height(16.dp))
+        }
+
         val suspendedUntil = remember(settingsVersion) { Graph.settings.suspendedUntilMs }
         if (suspendedUntil > System.currentTimeMillis()) {
             PixelText("SUSPENDED BY THE KILL SWITCH", Type.Heading, color = Palette.Red)
@@ -89,6 +104,12 @@ fun HomeScreen(actions: HomeActions, appLabel: (String) -> String) {
             }
         }
         snapshot.loadError?.let { PixelText(it, Type.Small, color = Palette.Red) }
+        val needsAdhanApp = remember(settingsVersion, active) {
+            Graph.settings.adhanPackages.isEmpty() && active.directives.any { it.trigger is dev.vigil.core.plan.Trigger.Adhan }
+        }
+        if (needsAdhanApp) {
+            PixelText("Pick your adhan app in SETTINGS: until then any app saying \"time for Isha\" counts, even a chat message.", Type.Small, color = Palette.Red)
+        }
         if (snapshot.warnings.isNotEmpty() && active.source == PlanSource.PLAN) {
             PixelText("${snapshot.warnings.size} WARNINGS AT IMPORT", Type.Small)
         }
@@ -99,6 +120,11 @@ fun HomeScreen(actions: HomeActions, appLabel: (String) -> String) {
         PixelButton("SETUP & PERMISSIONS", actions.openSetup, Modifier.fillMaxWidth())
         Spacer(Modifier.height(8.dp))
         PixelButton("SETTINGS", actions.openSettings, Modifier.fillMaxWidth())
+        Spacer(Modifier.height(8.dp))
+        PixelButton("LOG & EXPORT", actions.openLog, Modifier.fillMaxWidth())
+
+        Rule()
+        Modes(state, active)
 
         Rule()
         PixelText("DIRECTIVES", Type.Heading)
@@ -111,6 +137,38 @@ fun HomeScreen(actions: HomeActions, appLabel: (String) -> String) {
         Spacer(Modifier.height(8.dp))
         PixelButton("DEMO TAKEOVER", actions.demoTakeover, Modifier.fillMaxWidth())
         Spacer(Modifier.height(24.dp))
+    }
+}
+
+/** Quiet mode and "I'm not okay today". */
+@Composable
+private fun Modes(state: RuntimeState, active: ActiveSet) {
+    PixelText("MODES", Type.Heading)
+    Spacer(Modifier.height(4.dp))
+    val held = state.quietQueue.size
+    PixelButton(
+        if (state.quiet) "QUIET MODE: ON${if (held > 0) " · $held HELD" else ""}" else "QUIET MODE: OFF",
+        { Vigil.setQuiet(!state.quiet) },
+        Modifier.fillMaxWidth(),
+    )
+    PixelText(
+        if (state.quiet) "Directives arrive silently, wait until quiet ends, or are skipped, as the plan says."
+        else "Turn on in class, meetings or prayer. Directives follow their quiet rule.",
+        Type.Small,
+    )
+    Spacer(Modifier.height(12.dp))
+    val env = remember(state, active) { Graph.env() }
+    if (Engine.isBadDay(state, env)) {
+        PixelText("NOT OKAY TODAY", Type.Body)
+        PixelText(
+            "Until ${active.dayBoundary} only the essentials fire (${active.badDayKeep.size} kept). Not a failure. Rest.",
+            Type.Small,
+        )
+        Spacer(Modifier.height(6.dp))
+        PixelButton("I'M OKAY AGAIN", { Vigil.setBadDay(false) }, Modifier.fillMaxWidth())
+    } else {
+        HoldButton("I'M NOT OKAY TODAY", holdMillis = 3_000, onComplete = { Vigil.setBadDay(true) }, modifier = Modifier.fillMaxWidth())
+        PixelText("Hold 3 s. For the rest of the day only the plan's essentials fire. It is not logged as a failure.", Type.Small)
     }
 }
 

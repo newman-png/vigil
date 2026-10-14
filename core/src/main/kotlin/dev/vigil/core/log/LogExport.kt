@@ -1,11 +1,16 @@
 package dev.vigil.core.log
 
+import dev.vigil.core.engine.Engine
+import dev.vigil.core.engine.TimeSchedule
+import dev.vigil.core.plan.Plan
+import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
+import kotlin.math.roundToLong
 
 /** Facts about the export itself, written next to the events. */
 data class ExportMeta(
@@ -17,7 +22,7 @@ data class ExportMeta(
     val planGeneratedBy: String?,
     /** Where the exported events start (e.g. when the current plan was imported); null = whole log. */
     val since: String?,
-    /** App settings a planner may need to read the log correctly (quiet override allowed, etc.). */
+    /** App settings a planner may need to read the log correctly, e.g. [LogExport.SETTING_ALLOW_QUIET_OVERRIDE]. */
     val settings: Map<String, String>,
 )
 
@@ -25,22 +30,51 @@ data class ExportMeta(
 object LogExport {
     const val SCHEMA_VERSION = 1
 
+    /** Settings key the readme refers to: "true" when tier-3 "override" directives may ring in quiet mode. */
+    const val SETTING_ALLOW_QUIET_OVERRIDE = "allow_quiet_override"
+
     val README: String = """
-        This is log.json, exported by VIGIL, an Android app that executes a weekly plan (plan.json) and records what happened.
-        The app never plans or decides anything: it fires the plan's directives when their triggers happen (time of day,
-        the adhan app's prayer notification, or opening certain apps too often), shows a full-screen takeover with the
-        directive's checklist, and logs the outcome. Each step can only be ticked after its min_seconds; the takeover
-        stays until every step is ticked, or until the user holds the dismiss button for about 10 seconds (logged as
-        directive_dismissed, never dropped). A takeover closes itself after ${dev.vigil.core.engine.Engine.MAX_TAKEOVER_MINUTES} minutes (directive_timed_out).
-        Quiet mode (a manual switch) holds "queue" directives until it ends, shows "silent" ones without sound, skips
-        "ignore" ones, and lets tier-3 "override" ones ring if the app setting allows it.
-        "I'm not okay today" mode keeps only the plan's bad_day.keep directives until the day boundary. Events caused by it
-        (skipped_bad_day, bypassed_bad_day) are NOT failures and should be read with compassion, not as weakness.
-        When the plan's expires time passes, the app runs the plan's fallback_plan, or a built-in minimal plan
-        (prayer, water, sleep) if there is none.
-        Use this log together with vision.md and the last plan.json to write next week's plan.json (see HANDOFF.md in the
-        VIGIL repository). "events" is in time order; "summary" counts outcomes per directive id; "event_types" explains every type.
-    """.trimIndent().replace("\n", " ")
+        This is log.json, exported by VIGIL, an Android app that executes a weekly plan (plan.json) written by a
+        planner AI, and records what happened. The app never plans, judges or decides anything; all intelligence
+        lives in the plan.
+        HOW THE APP BEHAVES. Each directive has a trigger: a time of day in the phone's local time ("time"), the
+        user's adhan app posting its prayer notification ("adhan"; the app does not compute prayer times), or
+        listed apps being opened too often or used too long in one go ("app_usage"). When it triggers, the phone
+        shows a full-screen takeover with the directive's checklist. Steps appear one at a time, and each can only
+        be ticked once its min_seconds have passed. The takeover closes when every step is ticked
+        (directive_completed), when the user holds the dismiss button for about 10 seconds (directive_dismissed),
+        or by itself after ${Engine.MAX_TAKEOVER_MINUTES} minutes as the active takeover (directive_timed_out). One
+        takeover shows at a time; others wait their turn, and a directive that is already showing or waiting is not
+        opened twice (the repeat is logged as repeated).
+        A time trigger the phone could not act on within ${TimeSchedule.DEFAULT_GRACE_MINUTES} minutes of its moment
+        (phone off or asleep) is logged as missed instead of being shown late.
+        Quiet mode is a manual switch. While it is on, each directive follows its "quiet" field: queue = held
+        (queued_quiet) and fired once when quiet mode ends, with trigger "quiet_queue"; silent = shown without sound or
+        vibration ("silent": true); ignore = not shown (skipped_quiet); override = tier 3 only, rings anyway if
+        settings.$SETTING_ALLOW_QUIET_OVERRIDE is "true", otherwise shown silently. Switching quiet mode on also
+        applies to takeovers that already fired: the one on screen goes silent, and waiting ones follow their rule
+        (a held or skipped one closes as dropped, and a held one is logged queued_quiet too).
+        "I'm not okay today" mode is switched on by the user and lasts until the next day boundary (the plan's
+        day_boundary, ${Plan.DEFAULT_DAY_BOUNDARY} by default). Meanwhile only the directives in bad_day.keep fire: the others are logged
+        as skipped_bad_day, and a takeover showing or waiting when it was switched on closes as bypassed_bad_day.
+        These are NOT failures; the user was honest about a hard day. Read them with compassion, never as weakness.
+        When the plan's expires time passes, the app logs plan_expired and runs the plan's fallback_plan, or, if
+        there is none, a built-in minimal plan (prayers, water, sleep; its directive ids start with "default-").
+        On a bad day the fallback_plan keeps all its directives; the built-in plan keeps only its own essentials
+        (prayers and sleep).
+        HOW TO READ THIS FILE. "events" lists what happened in time order, starting at "since" (null = the whole
+        log). ts is the phone's local time with its UTC offset ("timezone" names the zone). Fields that do not
+        apply to an event are left out. takeover_id groups one takeover's events: directive_fired, its
+        step_completed events, then the event that closed it. step_index counts from 0. duration_s is in seconds:
+        for step_completed, since that step appeared; for the closing event, since the directive fired, including
+        any time it waited behind another takeover. scheduled_for is the planned moment of a time trigger; ts can
+        be later. tier is 1 (nudge), 2 (short checklist) or 3 (full sequence). Triggers "debug" and "adhan_test"
+        and directive "vigil-demo" are the user testing the app: they are left out of "summary"; ignore them.
+        "summary" counts outcomes per directive id and gives avg_completion_s; it counts, it does not judge. "event_types" explains every event type. "plan"
+        identifies the last imported plan. "settings" lists app settings that change behaviour.
+        Use this log together with vision.md and the last plan.json to write next week's plan.json (see HANDOFF.md
+        in the VIGIL repository). Treat every outcome as information for a better plan, not as grounds for blame.
+    """.trimIndent().replace('\n', ' ')
 
     fun build(events: List<LogEvent>, meta: ExportMeta): String {
         val root = buildJsonObject {
@@ -63,16 +97,23 @@ object LogExport {
         return PrettyJson.encode(root)
     }
 
-    /** Per-directive counts of each outcome, plus the average completion time. Counting only, no judgement. */
+    /**
+     * Per-directive counts of each outcome, plus the average completion time. Counting only, no judgement.
+     * Once every takeover has closed, directive_fired equals the sum of the outcomes that close one.
+     * Test fires (debug buttons, the adhan test) are left out, whole takeovers included.
+     */
     fun summary(events: List<LogEvent>): JsonObject {
-        val byId = events.filter { it.directiveId != null }.groupBy { it.directiveId!! }
+        val testTakeovers = events.filter { it.trigger in TEST_TRIGGERS }.mapNotNull { it.takeoverId }.toSet()
+        val byId = events
+            .filter { it.directiveId != null && it.trigger !in TEST_TRIGGERS && it.takeoverId !in testTakeovers }
+            .groupBy { it.directiveId!! }
         return JsonObject(
             byId.toSortedMap().mapValues { (_, list) ->
                 val counts = list.groupingBy { it.type }.eachCount()
                 val completed = list.filter { it.type == EventType.DIRECTIVE_COMPLETED }.mapNotNull { it.durationS }
                 buildJsonObject {
                     for (type in OUTCOME_TYPES) put(type, counts[type] ?: 0)
-                    if (completed.isNotEmpty()) put("avg_completion_s", completed.average().toLong())
+                    if (completed.isNotEmpty()) put("avg_completion_s", completed.average().roundToLong())
                 }
             },
         )
@@ -84,16 +125,21 @@ object LogExport {
         EventType.DIRECTIVE_DISMISSED,
         EventType.DIRECTIVE_TIMED_OUT,
         EventType.BYPASSED_BAD_DAY,
+        EventType.DROPPED,
         EventType.SKIPPED_BAD_DAY,
         EventType.QUEUED_QUIET,
         EventType.SKIPPED_QUIET,
         EventType.MISSED,
+        EventType.REPEATED,
     )
+
+    /** Triggers that mean the user was trying the app out, not living the plan. */
+    val TEST_TRIGGERS = setOf("debug", "adhan_test")
 }
 
 /** Pretty printing keeps the file readable for humans and AIs. */
 internal object PrettyJson {
-    private val json = kotlinx.serialization.json.Json { prettyPrint = true }
+    private val json = Json { prettyPrint = true }
 
     fun encode(element: JsonObject): String = json.encodeToString(JsonObject.serializer(), element) + "\n"
 }

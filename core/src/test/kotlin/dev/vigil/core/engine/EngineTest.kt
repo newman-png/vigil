@@ -240,13 +240,15 @@ class EngineTest {
         val w = World()
         w.trigger("a")
         val again = w.trigger("a")
-        assertTrue(again.events.isEmpty())
+        // A repeat is not stacked, but it is logged so the planner can see it happened.
+        assertEquals(listOf(EventType.REPEATED), again.events.map { it.type })
+        assertEquals("a", again.events.single().directiveId)
         assertTrue(w.state.pending.isEmpty())
 
         w.trigger("b")
         assertEquals(listOf("b"), w.state.pending.map { it.directiveId })
-        assertTrue(w.trigger("b").events.isEmpty())
-        assertTrue(w.trigger("a", "b").events.isEmpty())
+        assertEquals(listOf(EventType.REPEATED), w.trigger("b").events.map { it.type })
+        assertEquals(listOf("a", "b"), w.trigger("a", "b").events.map { it.directiveId })
         assertEquals(1, w.state.pending.size)
     }
 
@@ -459,6 +461,38 @@ class EngineTest {
         assertTrue(w.state.quiet)
         assertEquals(listOf(EventType.QUIET_OFF), w.quiet(false).types())
         assertFalse(w.state.quiet)
+    }
+
+    @Test
+    fun quietOnAppliesToTakeoversThatAlreadyFired() {
+        val w = World()
+        w.trigger("a") // showing: a queue directive, so it goes silent but stays on screen
+        w.trigger("b", "ignored", "silent-one", "loud") // waiting
+        val o = w.quiet(true)
+
+        assertEquals("a", w.state.active!!.directiveId)
+        assertTrue("the takeover on screen goes silent", w.state.active!!.silent)
+        // b (queue) moves to the quiet queue; ignored is skipped; silent-one waits silently; loud waits, silent (no override allowed).
+        assertEquals(listOf("silent-one", "loud"), w.state.pending.map { it.directiveId })
+        assertTrue(w.state.pending.all { it.silent })
+        assertEquals(listOf("b"), w.state.quietQueue.map { it.directiveId })
+        val dropped = o.events.filter { it.type == EventType.DROPPED }
+        assertEquals(listOf("b", "ignored"), dropped.map { it.directiveId })
+        assertEquals(listOf(Engine.DETAIL_HELD_FOR_QUIET, Engine.DETAIL_SKIPPED_FOR_QUIET), dropped.map { it.detail })
+        assertEquals(listOf("b"), o.events.filter { it.type == EventType.QUEUED_QUIET }.map { it.directiveId })
+
+        // Quiet off releases b again, as a new takeover.
+        val off = w.quiet(false)
+        assertEquals(listOf("silent-one", "loud", "b"), w.state.pending.map { it.directiveId })
+        assertEquals(Engine.TRIGGER_QUIET_QUEUE, off.events.single { it.type == EventType.DIRECTIVE_FIRED }.trigger)
+    }
+
+    @Test
+    fun quietOnKeepsSoundForAnAllowedOverride() {
+        val w = World(allowOverride = true)
+        w.trigger("loud")
+        w.quiet(true)
+        assertFalse(w.state.active!!.silent)
     }
 
     @Test

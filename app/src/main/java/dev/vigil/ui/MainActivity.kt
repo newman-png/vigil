@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
 import androidx.activity.compose.BackHandler
@@ -22,22 +23,27 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import dev.vigil.Graph
 import dev.vigil.core.engine.Engine
+import dev.vigil.data.LogExporter
 import dev.vigil.data.PlanRepository
 import dev.vigil.engine.Vigil
 import dev.vigil.service.VigilService
+import dev.vigil.takeover.TakeoverActivity
 import dev.vigil.trigger.TriggerSetup
 import dev.vigil.ui.settings.SettingsScreen
 import dev.vigil.ui.settings.TriggerSettings
 import dev.vigil.ui.home.DeveloperScreen
+import dev.vigil.ui.log.LogScreen
 import dev.vigil.ui.setup.SetupScreen
 import dev.vigil.ui.components.scanlines
 import dev.vigil.ui.home.HomeActions
@@ -54,6 +60,7 @@ class MainActivity : ComponentActivity() {
         data object Setup : Screen
         data object Developer : Screen
         data object Settings : Screen
+        data object Log : Screen
         data class ImportResult(val outcome: PlanRepository.ImportOutcome) : Screen
     }
 
@@ -71,7 +78,6 @@ class MainActivity : ComponentActivity() {
         super.onResume()
         resumeTick++
         VigilService.start(this)
-        Vigil.showIfActive()
     }
 
     @Composable
@@ -92,6 +98,16 @@ class MainActivity : ComponentActivity() {
             }
         }
 
+        var exportThisWeek by rememberSaveable { mutableStateOf(true) }
+        val exporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
+            if (uri != null) {
+                scope.launch {
+                    val ok = withContext(Dispatchers.IO) { LogExporter.write(this@MainActivity, uri, exportThisWeek) }
+                    Toast.makeText(this@MainActivity, if (ok) "log.json saved." else "Could not save the log.", Toast.LENGTH_SHORT).show()
+                }
+            }
+        }
+
         BackHandler(enabled = screen != Screen.Home) { screen = Screen.Home }
 
         Box(
@@ -100,36 +116,51 @@ class MainActivity : ComponentActivity() {
                 .background(Palette.Black)
                 .scanlines(),
         ) {
-            Box(
-                Modifier
-                    .safeDrawingPadding()
-                    .verticalScroll(rememberScrollState())
-                    .padding(16.dp),
-            ) {
-                when (val s = screen) {
-                    Screen.Home -> HomeScreen(
-                        HomeActions(
-                            importPlan = { picker.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) },
-                            fireDirective = { Vigil.fireNow(it) },
-                            demoTakeover = { Vigil.fireNow(Engine.DEMO_ID) },
-                            openSetup = { screen = Screen.Setup },
-                            openDeveloper = { screen = Screen.Developer },
-                            openSettings = { screen = Screen.Settings },
-                        ),
-                        appLabel = ::appLabel,
-                    )
-                    Screen.Setup -> SetupScreen(
-                        refreshKey = resumeTick,
-                        requestNotifications = { notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS) },
-                        extraItems = TriggerSetup.items(this@MainActivity),
-                        onDone = {
-                            Graph.settings.setupDone = true
-                            screen = Screen.Home
-                        },
-                    )
-                    Screen.Developer -> DeveloperScreen { screen = Screen.Home }
-                    Screen.Settings -> SettingsScreen(::appLabel, extraSections = { TriggerSettings(::appLabel) }) { screen = Screen.Home }
-                    is Screen.ImportResult -> ImportResultScreen(s.outcome) { screen = Screen.Home }
+            // Each screen keeps its own scroll position.
+            key(screen) {
+                Box(
+                    Modifier
+                        .safeDrawingPadding()
+                        .verticalScroll(rememberScrollState())
+                        .padding(16.dp),
+                ) {
+                    when (val s = screen) {
+                        Screen.Home -> HomeScreen(
+                            HomeActions(
+                                importPlan = { picker.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) },
+                                fireDirective = { Vigil.fireNow(it) },
+                                demoTakeover = { Vigil.fireNow(Engine.DEMO_ID) },
+                                openSetup = { screen = Screen.Setup },
+                                openDeveloper = { screen = Screen.Developer },
+                                openSettings = { screen = Screen.Settings },
+                                openLog = { screen = Screen.Log },
+                                openTakeover = { startActivity(TakeoverActivity.intent(this@MainActivity)) },
+                            ),
+                            appLabel = ::appLabel,
+                        )
+                        Screen.Setup -> SetupScreen(
+                            refreshKey = resumeTick,
+                            requestNotifications = { notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS) },
+                            extraItems = TriggerSetup.items(this@MainActivity),
+                            onDone = {
+                                Graph.settings.setupDone = true
+                                screen = Screen.Home
+                            },
+                        )
+                        Screen.Developer -> DeveloperScreen { screen = Screen.Home }
+                        Screen.Log -> LogScreen(
+                            exportWeek = {
+                                exportThisWeek = true
+                                exporter.launch(LogExporter.suggestedName())
+                            },
+                            exportAll = {
+                                exportThisWeek = false
+                                exporter.launch(LogExporter.suggestedName())
+                            },
+                        ) { screen = Screen.Home }
+                        Screen.Settings -> SettingsScreen(::appLabel, extraSections = { TriggerSettings(::appLabel) }) { screen = Screen.Home }
+                        is Screen.ImportResult -> ImportResultScreen(s.outcome) { screen = Screen.Home }
+                    }
                 }
             }
         }
