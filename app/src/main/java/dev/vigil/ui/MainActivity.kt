@@ -1,5 +1,6 @@
 package dev.vigil.ui
 
+import android.Manifest
 import android.content.pm.PackageManager
 import android.graphics.Color
 import android.net.Uri
@@ -21,15 +22,21 @@ import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
+import dev.vigil.Graph
 import dev.vigil.core.engine.Engine
 import dev.vigil.data.PlanRepository
 import dev.vigil.engine.Vigil
+import dev.vigil.service.VigilService
+import dev.vigil.trigger.TriggerSetup
+import dev.vigil.ui.home.DeveloperScreen
+import dev.vigil.ui.setup.SetupScreen
 import dev.vigil.ui.components.scanlines
 import dev.vigil.ui.home.HomeActions
 import dev.vigil.ui.home.HomeScreen
@@ -42,8 +49,13 @@ import kotlinx.coroutines.withContext
 class MainActivity : ComponentActivity() {
     private sealed interface Screen {
         data object Home : Screen
+        data object Setup : Screen
+        data object Developer : Screen
         data class ImportResult(val outcome: PlanRepository.ImportOutcome) : Screen
     }
+
+    /** Bumped on every resume so permission statuses are re-read after visiting system settings. */
+    private var resumeTick by mutableIntStateOf(0)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -54,13 +66,19 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
+        resumeTick++
+        VigilService.start(this)
         Vigil.showIfActive()
     }
 
     @Composable
     private fun App() {
-        var screen by remember { mutableStateOf<Screen>(Screen.Home) }
+        var screen by remember { mutableStateOf<Screen>(if (Graph.settings.setupDone) Screen.Home else Screen.Setup) }
         val scope = rememberCoroutineScope()
+        val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+            resumeTick++
+            VigilService.start(this)
+        }
 
         val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             if (uri != null) {
@@ -91,9 +109,21 @@ class MainActivity : ComponentActivity() {
                             importPlan = { picker.launch(arrayOf("application/json", "text/plain", "application/octet-stream")) },
                             fireDirective = { Vigil.fireNow(it) },
                             demoTakeover = { Vigil.fireNow(Engine.DEMO_ID) },
+                            openSetup = { screen = Screen.Setup },
+                            openDeveloper = { screen = Screen.Developer },
                         ),
                         appLabel = ::appLabel,
                     )
+                    Screen.Setup -> SetupScreen(
+                        refreshKey = resumeTick,
+                        requestNotifications = { notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS) },
+                        extraItems = TriggerSetup.items(this@MainActivity),
+                        onDone = {
+                            Graph.settings.setupDone = true
+                            screen = Screen.Home
+                        },
+                    )
+                    Screen.Developer -> DeveloperScreen { screen = Screen.Home }
                     is Screen.ImportResult -> ImportResultScreen(s.outcome) { screen = Screen.Home }
                 }
             }

@@ -1,5 +1,7 @@
 package dev.vigil.ui.home
 
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -11,6 +13,8 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.setValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -31,6 +35,9 @@ class HomeActions(
     val importPlan: () -> Unit,
     val fireDirective: (String) -> Unit,
     val demoTakeover: () -> Unit,
+    val openSetup: () -> Unit,
+    /** Hidden: seven taps on the title. */
+    val openDeveloper: () -> Unit,
 )
 
 @Composable
@@ -40,10 +47,30 @@ fun HomeScreen(actions: HomeActions, appLabel: (String) -> String) {
     val state by Graph.state.state.collectAsState()
     val active = remember(snapshot, state) { Graph.activeSet() }
 
+    var titleTaps by remember { mutableIntStateOf(0) }
+    val settingsVersion by Graph.settings.version.collectAsState()
+
     Column {
-        PixelText("VIGIL", Type.Huge)
+        PixelText(
+            "VIGIL",
+            Type.Huge,
+            Modifier.clickable(remember { MutableInteractionSource() }, indication = null) {
+                titleTaps++
+                if (titleTaps >= 7) {
+                    titleTaps = 0
+                    actions.openDeveloper()
+                }
+            },
+        )
         PixelText("THE APP NEVER THINKS. IT ONLY EXECUTES.", Type.Small)
         Spacer(Modifier.height(16.dp))
+
+        val suspendedUntil = remember(settingsVersion) { Graph.settings.suspendedUntilMs }
+        if (suspendedUntil > System.currentTimeMillis()) {
+            PixelText("SUSPENDED BY THE KILL SWITCH", Type.Heading, color = Palette.Red)
+            PixelText("No takeovers until ${java.time.Instant.ofEpochMilli(suspendedUntil).atZone(Graph.zone).toLocalTime().withNano(0)}.", Type.Small)
+            Spacer(Modifier.height(12.dp))
+        }
 
         val plan = snapshot.plan
         when (active.source) {
@@ -67,6 +94,8 @@ fun HomeScreen(actions: HomeActions, appLabel: (String) -> String) {
 
         Spacer(Modifier.height(12.dp))
         PixelButton("IMPORT PLAN", actions.importPlan, Modifier.fillMaxWidth())
+        Spacer(Modifier.height(8.dp))
+        PixelButton("SETUP & PERMISSIONS", actions.openSetup, Modifier.fillMaxWidth())
 
         Rule()
         PixelText("DIRECTIVES", Type.Heading)
