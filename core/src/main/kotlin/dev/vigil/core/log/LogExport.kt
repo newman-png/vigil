@@ -3,6 +3,7 @@ package dev.vigil.core.log
 import dev.vigil.core.engine.Engine
 import dev.vigil.core.engine.TimeSchedule
 import dev.vigil.core.plan.Plan
+import dev.vigil.core.plan.Rating
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
@@ -12,7 +13,7 @@ import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonObject
 import kotlin.math.roundToLong
 
-/** Facts about the export itself, written next to the events. */
+/** Facts about a v1 log.json export, written next to the events. The weekly bundle uses [BundleMeta]. */
 data class ExportMeta(
     val exportedAt: String,
     val appVersion: String,
@@ -26,7 +27,11 @@ data class ExportMeta(
     val settings: Map<String, String>,
 )
 
-/** Builds log.json: a self-describing file a planner AI can read with no other context. */
+/**
+ * What every export shares ([summary], [TEST_TRIGGERS], [SETTING_ALLOW_QUIET_OVERRIDE]), and the v1 export, log.json
+ * ([build]). The weekly bundle ([BundleExport]) is the app's only export now; [build], [ExportMeta] and [README] stay
+ * only until the app's old log screen is gone.
+ */
 object LogExport {
     const val SCHEMA_VERSION = 1
 
@@ -85,6 +90,7 @@ object LogExport {
         in the VIGIL repository). Treat every outcome as information for a better plan, not as grounds for blame.
     """.trimIndent().replace('\n', ' ')
 
+    /** log.json, the v1 export: a self-describing file a planner AI can read with no other context. */
     fun build(events: List<LogEvent>, meta: ExportMeta): String {
         val root = buildJsonObject {
             put("_readme", README)
@@ -107,30 +113,50 @@ object LogExport {
     }
 
     /**
-     * Per-directive counts of each outcome, plus the average completion time. Counting only, no judgement.
-     * Once every takeover has closed, directive_fired equals the sum of the outcomes that close one.
+     * Per directive id: the count of each outcome, then of each rating answer (rated_easy, rated_ok, rated_hard,
+     * rating_skipped) and of the minimum-day skips and bypasses, plus the average completion time. Counting only,
+     * no judgement. Once every takeover has closed, directive_fired equals the sum of the outcomes that close one
+     * (completed, dismissed, timed out, bypassed on a bad or a minimum day, dropped).
      * Test fires (debug buttons, the adhan test) are left out, whole takeovers included, and so are the app's own
      * directives (the demos and the check-in, ids starting with [Engine.BUILTIN_ID_PREFIX]). Event types it does not
-     * count (ratings, check-ins, ...) are ignored.
+     * count (check-ins, step-downs, ...) are ignored.
      */
     fun summary(events: List<LogEvent>): JsonObject {
-        val testTakeovers = events.filter { it.trigger in TEST_TRIGGERS }.mapNotNull { it.takeoverId }.toSet()
-        val byId = events
-            .filter { it.trigger !in TEST_TRIGGERS && it.takeoverId !in testTakeovers }
+        val byId = withoutTests(events)
             .filter { it.directiveId?.startsWith(Engine.BUILTIN_ID_PREFIX) == false }
             .groupBy { it.directiveId!! }
         return JsonObject(
             byId.toSortedMap().mapValues { (_, list) ->
                 val counts = list.groupingBy { it.type }.eachCount()
+                val rated = list.filter { it.type == EventType.RATED }.groupingBy { it.rating }.eachCount()
                 val completed = list.filter { it.type == EventType.DIRECTIVE_COMPLETED }.mapNotNull { it.durationS }
                 buildJsonObject {
                     for (type in OUTCOME_TYPES) put(type, counts[type] ?: 0)
+                    for (rating in Rating.entries) put("rated_${rating.json}", rated[rating.json] ?: 0)
+                    for (type in LATER_TYPES) put(type, counts[type] ?: 0)
                     if (completed.isNotEmpty()) put("avg_completion_s", completed.average().roundToLong())
                 }
             },
         )
     }
 
+    /**
+     * [events] without the user's try-outs: every event with a test trigger ([TEST_TRIGGERS]), and every other event of
+     * the same takeover (its steps, its rating), so a test fire never reads as real use.
+     */
+    internal fun withoutTests(events: List<LogEvent>): List<LogEvent> {
+        val testTakeovers = events.filter { it.trigger in TEST_TRIGGERS }.mapNotNull { it.takeoverId }.toSet()
+        return events.filter { it.trigger !in TEST_TRIGGERS && it.takeoverId !in testTakeovers }
+    }
+
+    /** Counted after the rated_* columns (they came with v1.1). */
+    private val LATER_TYPES = listOf(
+        EventType.RATING_SKIPPED,
+        EventType.SKIPPED_MINIMUM,
+        EventType.BYPASSED_MINIMUM,
+    )
+
+    /** The v1 columns, in their v1 order. */
     private val OUTCOME_TYPES = listOf(
         EventType.DIRECTIVE_FIRED,
         EventType.DIRECTIVE_COMPLETED,

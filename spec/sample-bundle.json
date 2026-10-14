@@ -1,0 +1,1915 @@
+{
+    "_readme": "This is the weekly bundle from VIGIL, an Android app that runs a weekly plan.json written by a planner AI and records what happened. It never plans or judges: it only executes the plan and picks between options the plan wrote in advance. THE PARTS. format, exported_at, app_version: this file. schema_version: the plan.json version to write next. timezone: the phone's zone (every ts is local time with offset). period: what is covered (since null = whole log). plan_status: complete (expired), running or none. plan: the plan.json that ran. stepped_down: directives switched to variants.easier by adapt.step_down_after_hard. settings: app settings. summary: outcome counts per directive, not a judgement. ratings: EASY, OK or HARD after a completion (skipped = not answered; variant easier = the easier version ran). check_ins: the morning check-in after a bad or minimum day (answer better, same, worse or none = not answered; mode = the day's mode after it). event_types: what each event means. events: everything in time order; takeover_id groups one takeover. Test fires (trigger adhan_test or debug) are try-outs: ignore them, as summary, ratings and check_ins do. summary also leaves out the app's own directives (ids starting with vigil-). WHAT MATTERS. Ratings and check-ins are the main signal for next week's plan. Bad days, minimum days and check-ins are never failures: the user was honest about a hard day. Read them with compassion; never add load to make up for them. Write next week's plan.json from this bundle and vision.md as HANDOFF.md (VIGIL repository) describes.",
+    "format": "vigil-bundle",
+    "schema_version": 2,
+    "exported_at": "2026-10-26T07:12:40Z",
+    "app_version": "1.1",
+    "timezone": "Europe/London",
+    "period": {
+        "since": "2026-10-18T21:14:09+01:00",
+        "until": "2026-10-26T07:12:40Z"
+    },
+    "plan_status": "complete",
+    "plan": {
+        "_readme": "This is a VIGIL plan: one week of directives for the VIGIL Android app, written by a planner (an AI chat) and imported by the user. The app only executes it. It never decides anything on its own: when a trigger happens (a time of day, the adhan app announcing a prayer, or too much scrolling) it takes over the phone with the steps below until they are done, and it only switches between options written here in advance. Planner: output ONE JSON object in this shape that validates against spec/schema.json: schema_version 2, week_of (the Monday, YYYY-MM-DD), expires (local time, no timezone), day_boundary, 8-14 directives across tiers 1-3, bad_day.keep (the essentials), minimum.keep (the bare essentials), after_bad_day (what the morning check-in picks after a hard day) and a small fallback_plan. Use rating to choose which directives ask EASY / OK / HARD, and give a directive that may be too much this week a variants.easier with adapt.step_down_after_hard. Read last week's bundle first (vigil-week-<week_of>.json: the ratings and check-ins matter most) and adjust; keep ids stable week to week. Keys starting with '_' are comments and are ignored. Output only the JSON.",
+        "$schema": "https://raw.githubusercontent.com/newman-png/vigil/main/spec/schema.json",
+        "schema_version": 2,
+        "week_of": "2026-10-19",
+        "expires": "2026-10-26T04:00",
+        "generated_by": "Claude, weekly planning chat (2026-10-18)",
+        "context": "Week two of cutting short-form video (TikTok, Instagram Reels, YouTube Shorts). Last week Fajr was missed mostly after late nights, so this week protects Fajr by protecting sleep: phone on charge across the room at 23:00. Weekday mornings start with one phone-free study block. The morning routine was abandoned twice last week, so it keeps its four steps but steps down to a two-step version after two HARD ratings in a row. Scrolling is not banned; it just has to be a choice, so it costs a short pause.",
+        "day_boundary": "04:00",
+        "directives": [
+            {
+                "id": "fajr",
+                "tier": 3,
+                "title": "FAJR",
+                "trigger": {
+                    "type": "adhan",
+                    "prayer": "fajr"
+                },
+                "steps": [
+                    {
+                        "text": "Sit up. Feet on the floor.",
+                        "min_seconds": 5
+                    },
+                    {
+                        "text": "Lights on. Drink a glass of water.",
+                        "min_seconds": 15
+                    },
+                    {
+                        "text": "Make wudu.",
+                        "min_seconds": 60
+                    },
+                    {
+                        "text": "Pray Fajr. The two sunnah first if you can.",
+                        "min_seconds": 240
+                    }
+                ],
+                "why": "The day starts here. Get up for it.",
+                "quiet": "override",
+                "rating": "always"
+            },
+            {
+                "id": "dhuhr",
+                "tier": 2,
+                "title": "DHUHR",
+                "trigger": {
+                    "type": "adhan",
+                    "prayer": "dhuhr"
+                },
+                "steps": [
+                    {
+                        "text": "Save what you're doing and stand up.",
+                        "min_seconds": 5
+                    },
+                    {
+                        "text": "Make wudu.",
+                        "min_seconds": 60
+                    },
+                    {
+                        "text": "Pray Dhuhr.",
+                        "min_seconds": 240
+                    }
+                ],
+                "why": "Pause the work. Come back to what matters most.",
+                "quiet": "queue",
+                "rating": "never"
+            },
+            {
+                "id": "asr",
+                "tier": 2,
+                "title": "ASR",
+                "trigger": {
+                    "type": "adhan",
+                    "prayer": "asr"
+                },
+                "steps": [
+                    {
+                        "text": "Stop here. It will still be there in ten minutes.",
+                        "min_seconds": 5
+                    },
+                    {
+                        "text": "Make wudu.",
+                        "min_seconds": 60
+                    },
+                    {
+                        "text": "Pray Asr.",
+                        "min_seconds": 240
+                    }
+                ],
+                "why": "Don't let the afternoon slip past it.",
+                "quiet": "queue",
+                "rating": "never"
+            },
+            {
+                "id": "maghrib",
+                "tier": 2,
+                "title": "MAGHRIB",
+                "trigger": {
+                    "type": "adhan",
+                    "prayer": "maghrib"
+                },
+                "steps": [
+                    {
+                        "text": "Put down what you're holding.",
+                        "min_seconds": 3
+                    },
+                    {
+                        "text": "Make wudu.",
+                        "min_seconds": 60
+                    },
+                    {
+                        "text": "Pray Maghrib.",
+                        "min_seconds": 180
+                    }
+                ],
+                "why": "Maghrib's window is short. Go now.",
+                "quiet": "silent",
+                "rating": "never"
+            },
+            {
+                "id": "isha",
+                "tier": 2,
+                "title": "ISHA",
+                "trigger": {
+                    "type": "adhan",
+                    "prayer": "isha"
+                },
+                "steps": [
+                    {
+                        "text": "Stop scrolling, watching or working.",
+                        "min_seconds": 3
+                    },
+                    {
+                        "text": "Make wudu.",
+                        "min_seconds": 60
+                    },
+                    {
+                        "text": "Pray Isha, then witr.",
+                        "min_seconds": 300
+                    }
+                ],
+                "why": "Close the day properly.",
+                "quiet": "queue",
+                "rating": "never"
+            },
+            {
+                "id": "morning",
+                "tier": 2,
+                "title": "MORNING",
+                "trigger": {
+                    "type": "time",
+                    "at": "07:30"
+                },
+                "steps": [
+                    {
+                        "text": "Open the curtains.",
+                        "min_seconds": 5
+                    },
+                    {
+                        "text": "Make your bed.",
+                        "min_seconds": 60
+                    },
+                    {
+                        "text": "Drink a full glass of water.",
+                        "min_seconds": 15
+                    },
+                    {
+                        "text": "Write down today's top three. Paper, not the phone.",
+                        "min_seconds": 90
+                    }
+                ],
+                "why": "A made bed and three clear tasks. That's a real start.",
+                "quiet": "queue",
+                "rating": "always",
+                "variants": {
+                    "easier": {
+                        "why": "A small start still counts.",
+                        "steps": [
+                            {
+                                "text": "Open the curtains.",
+                                "min_seconds": 5
+                            },
+                            {
+                                "text": "Drink a full glass of water.",
+                                "min_seconds": 15
+                            }
+                        ]
+                    }
+                },
+                "adapt": {
+                    "step_down_after_hard": 2
+                }
+            },
+            {
+                "id": "study-block",
+                "tier": 2,
+                "title": "STUDY BLOCK",
+                "trigger": {
+                    "type": "time",
+                    "at": "09:00",
+                    "days": [
+                        "mon",
+                        "tue",
+                        "wed",
+                        "thu",
+                        "fri"
+                    ]
+                },
+                "steps": [
+                    {
+                        "text": "Turn on Do Not Disturb and put the phone face down, out of reach.",
+                        "min_seconds": 10
+                    },
+                    {
+                        "text": "Close every tab you don't need for this.",
+                        "min_seconds": 20
+                    },
+                    {
+                        "text": "Write the one thing this block is for.",
+                        "min_seconds": 30
+                    },
+                    {
+                        "text": "Start. 50 minutes, then a 10-minute break away from screens.",
+                        "min_seconds": 5
+                    }
+                ],
+                "why": "Your best hours go to your work, not to the feed.",
+                "quiet": "ignore"
+            },
+            {
+                "id": "water-am",
+                "tier": 1,
+                "title": "WATER",
+                "trigger": {
+                    "type": "time",
+                    "at": "10:30"
+                },
+                "steps": [
+                    {
+                        "text": "Drink a full glass of water.",
+                        "min_seconds": 15
+                    }
+                ],
+                "why": "Small things, every day.",
+                "quiet": "silent"
+            },
+            {
+                "id": "water-pm",
+                "tier": 1,
+                "title": "WATER",
+                "trigger": {
+                    "type": "time",
+                    "at": "15:30"
+                },
+                "steps": [
+                    {
+                        "text": "Drink a full glass of water.",
+                        "min_seconds": 15
+                    }
+                ],
+                "why": "Small things, every day.",
+                "quiet": "silent"
+            },
+            {
+                "id": "scroll-check",
+                "tier": 2,
+                "title": "PAUSE",
+                "trigger": {
+                    "type": "app_usage",
+                    "apps": [
+                        "com.zhiliaoapp.musically",
+                        "com.instagram.android",
+                        "com.google.android.youtube"
+                    ],
+                    "opens": 6,
+                    "window_min": 30,
+                    "cooldown_min": 30
+                },
+                "steps": [
+                    {
+                        "text": "Six opens in half an hour. Put the phone down for a moment.",
+                        "min_seconds": 10
+                    },
+                    {
+                        "text": "Take three slow breaths.",
+                        "min_seconds": 20
+                    },
+                    {
+                        "text": "Say out loud what you actually came here to do.",
+                        "min_seconds": 10
+                    }
+                ],
+                "why": "You can open it again. Just make it a choice.",
+                "quiet": "silent",
+                "rating": "sample"
+            },
+            {
+                "id": "scroll-break",
+                "tier": 3,
+                "title": "ENOUGH FOR NOW",
+                "trigger": {
+                    "type": "app_usage",
+                    "apps": [
+                        "com.zhiliaoapp.musically",
+                        "com.instagram.android",
+                        "com.google.android.youtube"
+                    ],
+                    "continuous_min": 20,
+                    "cooldown_min": 60
+                },
+                "steps": [
+                    {
+                        "text": "Close the app.",
+                        "min_seconds": 5
+                    },
+                    {
+                        "text": "Stand up and go to another room.",
+                        "min_seconds": 30
+                    },
+                    {
+                        "text": "Drink some water.",
+                        "min_seconds": 15
+                    },
+                    {
+                        "text": "Look out of a window or step outside for two minutes.",
+                        "min_seconds": 120
+                    },
+                    {
+                        "text": "Pick one real thing to do next, and do it.",
+                        "min_seconds": 10
+                    }
+                ],
+                "why": "Twenty minutes is plenty. The rest of the day is still yours.",
+                "quiet": "silent"
+            },
+            {
+                "id": "sleep",
+                "tier": 3,
+                "title": "SLEEP",
+                "trigger": {
+                    "type": "time",
+                    "at": "23:00"
+                },
+                "steps": [
+                    {
+                        "text": "Put the phone on charge across the room.",
+                        "min_seconds": 10
+                    },
+                    {
+                        "text": "Brush your teeth.",
+                        "min_seconds": 120
+                    },
+                    {
+                        "text": "Make wudu.",
+                        "min_seconds": 60
+                    },
+                    {
+                        "text": "Set out tomorrow's clothes.",
+                        "min_seconds": 30
+                    },
+                    {
+                        "text": "Lights off. The phone stays there until Fajr.",
+                        "min_seconds": 5
+                    }
+                ],
+                "why": "Fajr is won the night before.",
+                "quiet": "override"
+            },
+            {
+                "id": "weekly-review",
+                "tier": 2,
+                "title": "PLAN NEXT WEEK",
+                "trigger": {
+                    "type": "time",
+                    "at": "20:30",
+                    "days": [
+                        "sun"
+                    ]
+                },
+                "steps": [
+                    {
+                        "text": "Export the weekly bundle (VIGIL › PLAN › EXPORT BUNDLE).",
+                        "min_seconds": 10
+                    },
+                    {
+                        "text": "Open the planning chat and share the bundle.",
+                        "min_seconds": 30
+                    },
+                    {
+                        "text": "Say honestly what worked and what didn't.",
+                        "min_seconds": 120
+                    },
+                    {
+                        "text": "Import next week's plan before you sleep.",
+                        "min_seconds": 10
+                    }
+                ],
+                "why": "Twenty minutes tonight sets up the whole week.",
+                "quiet": "queue"
+            }
+        ],
+        "bad_day": {
+            "_note": "On a rough day only the prayers, sleep and one glass of water. Everything else can wait.",
+            "keep": [
+                "fajr",
+                "dhuhr",
+                "asr",
+                "maghrib",
+                "isha",
+                "sleep",
+                "water-am"
+            ]
+        },
+        "minimum": {
+            "_note": "Only if the morning after a hard day is worse still: Fajr and sleep, nothing else.",
+            "keep": [
+                "fajr",
+                "sleep"
+            ]
+        },
+        "after_bad_day": {
+            "_note": "The morning check-in after a bad day. Better: back to the full plan. Same: another bad day. Worse: a minimum day.",
+            "better": "normal",
+            "same": "bad_day",
+            "worse": "minimum"
+        },
+        "fallback_plan": {
+            "_note": "Runs only if this plan expires before a new one is imported. Kept minimal on purpose.",
+            "directives": [
+                {
+                    "id": "fb-fajr",
+                    "tier": 3,
+                    "title": "FAJR",
+                    "trigger": {
+                        "type": "adhan",
+                        "prayer": "fajr"
+                    },
+                    "steps": [
+                        {
+                            "text": "Sit up. Feet on the floor.",
+                            "min_seconds": 5
+                        },
+                        {
+                            "text": "Make wudu.",
+                            "min_seconds": 60
+                        },
+                        {
+                            "text": "Pray Fajr.",
+                            "min_seconds": 180
+                        }
+                    ],
+                    "why": "The day starts here. Get up for it.",
+                    "quiet": "override"
+                },
+                {
+                    "id": "fb-water",
+                    "tier": 1,
+                    "title": "WATER",
+                    "trigger": {
+                        "type": "time",
+                        "at": "13:00"
+                    },
+                    "steps": [
+                        {
+                            "text": "Drink a full glass of water.",
+                            "min_seconds": 15
+                        }
+                    ],
+                    "why": "Small things, every day.",
+                    "quiet": "silent"
+                },
+                {
+                    "id": "fb-replan",
+                    "tier": 1,
+                    "title": "NEW PLAN",
+                    "trigger": {
+                        "type": "time",
+                        "at": "20:30"
+                    },
+                    "steps": [
+                        {
+                            "text": "Export the weekly bundle, open the planning chat and make this week's plan.",
+                            "min_seconds": 10
+                        }
+                    ],
+                    "why": "Last week's plan has run out. A new one takes twenty minutes.",
+                    "quiet": "queue"
+                },
+                {
+                    "id": "fb-sleep",
+                    "tier": 3,
+                    "title": "SLEEP",
+                    "trigger": {
+                        "type": "time",
+                        "at": "23:00"
+                    },
+                    "steps": [
+                        {
+                            "text": "Put the phone on charge across the room.",
+                            "min_seconds": 10
+                        },
+                        {
+                            "text": "Lights off.",
+                            "min_seconds": 5
+                        }
+                    ],
+                    "why": "Fajr is won the night before.",
+                    "quiet": "override"
+                }
+            ]
+        }
+    },
+    "stepped_down": [
+        "morning"
+    ],
+    "settings": {
+        "allow_quiet_override": "true",
+        "sound": "true",
+        "vibration": "true",
+        "glyph": "true",
+        "adhan_apps": "any app",
+        "adhan_phrase": "time for",
+        "app_usage_detection": "accessibility (instant)"
+    },
+    "summary": {
+        "dhuhr": {
+            "directive_fired": 1,
+            "directive_completed": 1,
+            "directive_dismissed": 0,
+            "directive_timed_out": 0,
+            "bypassed_bad_day": 0,
+            "dropped": 0,
+            "skipped_bad_day": 0,
+            "queued_quiet": 1,
+            "skipped_quiet": 0,
+            "missed": 0,
+            "repeated": 0,
+            "rated_easy": 0,
+            "rated_ok": 0,
+            "rated_hard": 0,
+            "rating_skipped": 0,
+            "skipped_minimum": 0,
+            "bypassed_minimum": 0,
+            "avg_completion_s": 384
+        },
+        "fajr": {
+            "directive_fired": 3,
+            "directive_completed": 3,
+            "directive_dismissed": 0,
+            "directive_timed_out": 0,
+            "bypassed_bad_day": 0,
+            "dropped": 0,
+            "skipped_bad_day": 0,
+            "queued_quiet": 0,
+            "skipped_quiet": 0,
+            "missed": 0,
+            "repeated": 0,
+            "rated_easy": 0,
+            "rated_ok": 2,
+            "rated_hard": 1,
+            "rating_skipped": 0,
+            "skipped_minimum": 0,
+            "bypassed_minimum": 0,
+            "avg_completion_s": 464
+        },
+        "fb-fajr": {
+            "directive_fired": 1,
+            "directive_completed": 1,
+            "directive_dismissed": 0,
+            "directive_timed_out": 0,
+            "bypassed_bad_day": 0,
+            "dropped": 0,
+            "skipped_bad_day": 0,
+            "queued_quiet": 0,
+            "skipped_quiet": 0,
+            "missed": 0,
+            "repeated": 0,
+            "rated_easy": 0,
+            "rated_ok": 1,
+            "rated_hard": 0,
+            "rating_skipped": 0,
+            "skipped_minimum": 0,
+            "bypassed_minimum": 0,
+            "avg_completion_s": 279
+        },
+        "morning": {
+            "directive_fired": 6,
+            "directive_completed": 5,
+            "directive_dismissed": 0,
+            "directive_timed_out": 0,
+            "bypassed_bad_day": 1,
+            "dropped": 0,
+            "skipped_bad_day": 0,
+            "queued_quiet": 0,
+            "skipped_quiet": 0,
+            "missed": 0,
+            "repeated": 0,
+            "rated_easy": 1,
+            "rated_ok": 2,
+            "rated_hard": 2,
+            "rating_skipped": 0,
+            "skipped_minimum": 1,
+            "bypassed_minimum": 0,
+            "avg_completion_s": 278
+        },
+        "scroll-check": {
+            "directive_fired": 2,
+            "directive_completed": 1,
+            "directive_dismissed": 1,
+            "directive_timed_out": 0,
+            "bypassed_bad_day": 0,
+            "dropped": 0,
+            "skipped_bad_day": 0,
+            "queued_quiet": 0,
+            "skipped_quiet": 0,
+            "missed": 0,
+            "repeated": 0,
+            "rated_easy": 1,
+            "rated_ok": 0,
+            "rated_hard": 0,
+            "rating_skipped": 0,
+            "skipped_minimum": 0,
+            "bypassed_minimum": 0,
+            "avg_completion_s": 49
+        },
+        "sleep": {
+            "directive_fired": 2,
+            "directive_completed": 2,
+            "directive_dismissed": 0,
+            "directive_timed_out": 0,
+            "bypassed_bad_day": 0,
+            "dropped": 0,
+            "skipped_bad_day": 0,
+            "queued_quiet": 0,
+            "skipped_quiet": 0,
+            "missed": 0,
+            "repeated": 0,
+            "rated_easy": 0,
+            "rated_ok": 0,
+            "rated_hard": 1,
+            "rating_skipped": 1,
+            "skipped_minimum": 0,
+            "bypassed_minimum": 0,
+            "avg_completion_s": 250
+        },
+        "study-block": {
+            "directive_fired": 0,
+            "directive_completed": 0,
+            "directive_dismissed": 0,
+            "directive_timed_out": 0,
+            "bypassed_bad_day": 0,
+            "dropped": 0,
+            "skipped_bad_day": 1,
+            "queued_quiet": 0,
+            "skipped_quiet": 0,
+            "missed": 0,
+            "repeated": 0,
+            "rated_easy": 0,
+            "rated_ok": 0,
+            "rated_hard": 0,
+            "rating_skipped": 0,
+            "skipped_minimum": 1,
+            "bypassed_minimum": 0
+        },
+        "water-am": {
+            "directive_fired": 1,
+            "directive_completed": 1,
+            "directive_dismissed": 0,
+            "directive_timed_out": 0,
+            "bypassed_bad_day": 0,
+            "dropped": 0,
+            "skipped_bad_day": 0,
+            "queued_quiet": 0,
+            "skipped_quiet": 0,
+            "missed": 1,
+            "repeated": 0,
+            "rated_easy": 0,
+            "rated_ok": 0,
+            "rated_hard": 0,
+            "rating_skipped": 1,
+            "skipped_minimum": 1,
+            "bypassed_minimum": 0,
+            "avg_completion_s": 19
+        }
+    },
+    "ratings": [
+        {
+            "ts": "2026-10-19T05:57:06+01:00",
+            "directive_id": "fajr",
+            "takeover_id": "92b01e76",
+            "rating": "ok"
+        },
+        {
+            "ts": "2026-10-19T07:34:15+01:00",
+            "directive_id": "morning",
+            "takeover_id": "e55a7ad9",
+            "rating": "ok"
+        },
+        {
+            "ts": "2026-10-20T07:37:33+01:00",
+            "directive_id": "morning",
+            "takeover_id": "1c241150",
+            "rating": "hard"
+        },
+        {
+            "ts": "2026-10-21T07:40:52+01:00",
+            "directive_id": "morning",
+            "takeover_id": "b14c206a",
+            "rating": "hard"
+        },
+        {
+            "ts": "2026-10-21T22:15:30+01:00",
+            "directive_id": "scroll-check",
+            "takeover_id": "1d863d52",
+            "rating": "easy"
+        },
+        {
+            "ts": "2026-10-22T10:30:25+01:00",
+            "directive_id": "water-am",
+            "takeover_id": "348f6f7d",
+            "rating": "skipped"
+        },
+        {
+            "ts": "2026-10-22T23:04:28+01:00",
+            "directive_id": "sleep",
+            "takeover_id": "bc3b30df",
+            "rating": "hard"
+        },
+        {
+            "ts": "2026-10-23T06:00:49+01:00",
+            "directive_id": "fajr",
+            "takeover_id": "f5bc1926",
+            "rating": "hard"
+        },
+        {
+            "ts": "2026-10-23T23:34:02+01:00",
+            "directive_id": "sleep",
+            "takeover_id": "5634eeba",
+            "rating": "skipped"
+        },
+        {
+            "ts": "2026-10-24T06:05:55+01:00",
+            "directive_id": "fajr",
+            "takeover_id": "3a3aeb11",
+            "rating": "ok"
+        },
+        {
+            "ts": "2026-10-24T07:30:33+01:00",
+            "directive_id": "morning",
+            "takeover_id": "cafae364",
+            "rating": "ok",
+            "variant": "easier"
+        },
+        {
+            "ts": "2026-10-25T07:30:30Z",
+            "directive_id": "morning",
+            "takeover_id": "b7dd1d59",
+            "rating": "easy",
+            "variant": "easier"
+        },
+        {
+            "ts": "2026-10-26T05:46:02Z",
+            "directive_id": "fb-fajr",
+            "takeover_id": "51d0427f",
+            "rating": "ok"
+        }
+    ],
+    "check_ins": [
+        {
+            "ts": "2026-10-23T06:01:31+01:00",
+            "answer": "worse",
+            "mode": "minimum",
+            "detail": "for 2026-10-23, after a bad day"
+        },
+        {
+            "ts": "2026-10-24T06:06:34+01:00",
+            "answer": "better",
+            "mode": "normal",
+            "detail": "for 2026-10-24, after a minimum day"
+        }
+    ],
+    "event_types": {
+        "plan_imported": "A plan was imported and became active (detail: week_of and generated_by).",
+        "plan_import_failed": "An import was rejected; the previous plan stayed active (detail: the first error).",
+        "plan_expired": "The plan's expires time passed; the app now runs its fallback_plan or, without one, the built-in minimal plan (detail says which).",
+        "directive_fired": "A trigger happened and a takeover opened (trigger, scheduled_for, silent, steps_total; variant \"easier\" after a step-down). If another takeover was on screen, this one waited for it to close.",
+        "step_completed": "A checklist step was ticked (step_index from 0, step_text, duration_s since the step appeared).",
+        "directive_completed": "Every step was ticked (duration_s since it fired).",
+        "directive_dismissed": "Closed early by holding the dismiss button for about 10 seconds (steps_done of steps_total, duration_s since it fired).",
+        "directive_timed_out": "Still open 90 minutes after it fired, so it closed itself (steps_done of steps_total).",
+        "bypassed_bad_day": "Closed while showing or waiting because the day became a bad day (the user switched on \"I'm not okay today\", or the morning check-in chose bad_day) and it is not in bad_day.keep. Not a failure.",
+        "skipped_bad_day": "Not shown because it was a bad day (\"I'm not okay today\", or bad_day chosen by the morning check-in or by its \"same\" answer while it was unanswered) and it is not in bad_day.keep. Not a failure.",
+        "queued_quiet": "Triggered during quiet mode (quiet: queue): held, and fired when quiet mode ends.",
+        "skipped_quiet": "Not shown because quiet mode was on (quiet: ignore).",
+        "missed": "A time trigger's moment passed more than 30 minutes before the app could act (phone off or asleep), so it was not shown late (scheduled_for is the planned moment).",
+        "dropped": "A takeover (showing or waiting) closed without a result, with the reason in detail: its directive is no longer in the running plan (after a new import or the switch to the fallback plan), quiet mode was switched on while it waited (quiet: queue or ignore), or the developer kill switch was used.",
+        "repeated": "The directive fired again while it was already showing or waiting, so it was not opened a second time.",
+        "quiet_on": "Quiet mode switched on.",
+        "quiet_off": "Quiet mode switched off; directives held by it fire now.",
+        "bad_day_on": "\"I'm not okay today\" switched on; it lasts until the day boundary (detail).",
+        "bad_day_off": "The user tapped \"I'm okay again\": a bad day or a minimum day ended early and everything fires again. A day that ends by itself at the day boundary is day_mode instead.",
+        "day_mode": "The day's mode changed by itself at the day boundary (mode). Detail: the day ended, so the next day is normal; or the morning check-in is due after a bad or minimum day, and until it is answered its \"same\" answer applies.",
+        "check_in": "The morning check-in after a bad or minimum day. Answered: answer better, same or worse, and mode is what the plan's after_bad_day chose for that answer. Not answered: answer \"none\" and mode is the day's mode then. Detail: not answered that day, dismissed or timed out (the \"same\" mode stayed); or replaced by \"I'm not okay today\" (then a bad day, see bad_day_on, unless it already was a bad or minimum day). Its takeover is logged as directive_fired for \"vigil-check-in\" with trigger \"check_in\". Never a failure.",
+        "skipped_minimum": "Not shown because it was a minimum day (chosen by the morning check-in, or by its \"same\" answer while it was unanswered) and it is not in minimum.keep. Not a failure.",
+        "bypassed_minimum": "Closed while showing or waiting because the morning check-in chose a minimum day and it is not in minimum.keep. Not a failure.",
+        "rated": "After completing it the user tapped EASY, OK or HARD (rating; variant is \"easier\" if the easier version ran). When it is asked follows the directive's rating field.",
+        "rating_skipped": "The difficulty question (EASY / OK / HARD) was asked after a completion but not answered (detail: skipped by the user, not answered within 30 minutes, or replaced by the next one).",
+        "stepped_down": "adapt.step_down_after_hard was reached (that many HARD ratings in a row), so variants.easier runs for the rest of this plan. The app never steps back up; only a new plan does.",
+        "bundle_exported": "The user exported the weekly bundle."
+    },
+    "events": [
+        {
+            "ts": "2026-10-18T21:14:09+01:00",
+            "type": "plan_imported",
+            "detail": "week_of 2026-10-19, expires 2026-10-26T04:00, generated_by Claude, weekly planning chat (2026-10-18), 13 directives, 0 warnings"
+        },
+        {
+            "ts": "2026-10-19T05:47:52+01:00",
+            "type": "directive_fired",
+            "directive_id": "fajr",
+            "tier": 3,
+            "trigger": "adhan",
+            "takeover_id": "92b01e76",
+            "steps_total": 4,
+            "silent": false
+        },
+        {
+            "ts": "2026-10-19T05:48:04+01:00",
+            "type": "step_completed",
+            "directive_id": "fajr",
+            "tier": 3,
+            "takeover_id": "92b01e76",
+            "step_index": 0,
+            "step_text": "Sit up. Feet on the floor.",
+            "duration_s": 11
+        },
+        {
+            "ts": "2026-10-19T05:48:35+01:00",
+            "type": "step_completed",
+            "directive_id": "fajr",
+            "tier": 3,
+            "takeover_id": "92b01e76",
+            "step_index": 1,
+            "step_text": "Lights on. Drink a glass of water.",
+            "duration_s": 31
+        },
+        {
+            "ts": "2026-10-19T05:50:10+01:00",
+            "type": "step_completed",
+            "directive_id": "fajr",
+            "tier": 3,
+            "takeover_id": "92b01e76",
+            "step_index": 2,
+            "step_text": "Make wudu.",
+            "duration_s": 95
+        },
+        {
+            "ts": "2026-10-19T05:57:02+01:00",
+            "type": "step_completed",
+            "directive_id": "fajr",
+            "tier": 3,
+            "takeover_id": "92b01e76",
+            "step_index": 3,
+            "step_text": "Pray Fajr. The two sunnah first if you can.",
+            "duration_s": 412
+        },
+        {
+            "ts": "2026-10-19T05:57:02+01:00",
+            "type": "directive_completed",
+            "directive_id": "fajr",
+            "tier": 3,
+            "trigger": "adhan",
+            "takeover_id": "92b01e76",
+            "duration_s": 550,
+            "steps_done": 4,
+            "steps_total": 4
+        },
+        {
+            "ts": "2026-10-19T05:57:06+01:00",
+            "type": "rated",
+            "directive_id": "fajr",
+            "tier": 3,
+            "trigger": "adhan",
+            "takeover_id": "92b01e76",
+            "rating": "ok"
+        },
+        {
+            "ts": "2026-10-19T07:30:02+01:00",
+            "type": "directive_fired",
+            "directive_id": "morning",
+            "tier": 2,
+            "trigger": "time",
+            "takeover_id": "e55a7ad9",
+            "scheduled_for": "2026-10-19T07:30:00+01:00",
+            "steps_total": 4,
+            "silent": false
+        },
+        {
+            "ts": "2026-10-19T07:30:12+01:00",
+            "type": "step_completed",
+            "directive_id": "morning",
+            "tier": 2,
+            "takeover_id": "e55a7ad9",
+            "step_index": 0,
+            "step_text": "Open the curtains.",
+            "duration_s": 9
+        },
+        {
+            "ts": "2026-10-19T07:31:36+01:00",
+            "type": "step_completed",
+            "directive_id": "morning",
+            "tier": 2,
+            "takeover_id": "e55a7ad9",
+            "step_index": 1,
+            "step_text": "Make your bed.",
+            "duration_s": 84
+        },
+        {
+            "ts": "2026-10-19T07:31:58+01:00",
+            "type": "step_completed",
+            "directive_id": "morning",
+            "tier": 2,
+            "takeover_id": "e55a7ad9",
+            "step_index": 2,
+            "step_text": "Drink a full glass of water.",
+            "duration_s": 22
+        },
+        {
+            "ts": "2026-10-19T07:34:09+01:00",
+            "type": "step_completed",
+            "directive_id": "morning",
+            "tier": 2,
+            "takeover_id": "e55a7ad9",
+            "step_index": 3,
+            "step_text": "Write down today's top three. Paper, not the phone.",
+            "duration_s": 131
+        },
+        {
+            "ts": "2026-10-19T07:34:09+01:00",
+            "type": "directive_completed",
+            "directive_id": "morning",
+            "tier": 2,
+            "trigger": "time",
+            "takeover_id": "e55a7ad9",
+            "duration_s": 247,
+            "steps_done": 4,
+            "steps_total": 4
+        },
+        {
+            "ts": "2026-10-19T07:34:15+01:00",
+            "type": "rated",
+            "directive_id": "morning",
+            "tier": 2,
+            "trigger": "time",
+            "takeover_id": "e55a7ad9",
+            "rating": "ok"
+        },
+        {
+            "ts": "2026-10-19T21:37:26+01:00",
+            "type": "directive_fired",
+            "directive_id": "scroll-check",
+            "tier": 2,
+            "trigger": "app_usage",
+            "takeover_id": "b4900f5e",
+            "steps_total": 3,
+            "silent": false
+        },
+        {
+            "ts": "2026-10-19T21:37:39+01:00",
+            "type": "step_completed",
+            "directive_id": "scroll-check",
+            "tier": 2,
+            "takeover_id": "b4900f5e",
+            "step_index": 0,
+            "step_text": "Six opens in half an hour. Put the phone down for a moment.",
+            "duration_s": 12
+        },
+        {
+            "ts": "2026-10-19T21:38:19+01:00",
+            "type": "directive_dismissed",
+            "directive_id": "scroll-check",
+            "tier": 2,
+            "trigger": "app_usage",
+            "takeover_id": "b4900f5e",
+            "duration_s": 53,
+            "steps_done": 1,
+            "steps_total": 3
+        },
+        {
+            "ts": "2026-10-20T07:30:01+01:00",
+            "type": "directive_fired",
+            "directive_id": "morning",
+            "tier": 2,
+            "trigger": "time",
+            "takeover_id": "1c241150",
+            "scheduled_for": "2026-10-20T07:30:00+01:00",
+            "steps_total": 4,
+            "silent": false
+        },
+        {
+            "ts": "2026-10-20T07:30:16+01:00",
+            "type": "step_completed",
+            "directive_id": "morning",
+            "tier": 2,
+            "takeover_id": "1c241150",
+            "step_index": 0,
+            "step_text": "Open the curtains.",
+            "duration_s": 14
+        },
+        {
+            "ts": "2026-10-20T07:32:58+01:00",
+            "type": "step_completed",
+            "directive_id": "morning",
+            "tier": 2,
+            "takeover_id": "1c241150",
+            "step_index": 1,
+            "step_text": "Make your bed.",
+            "duration_s": 162
+        },
+        {
+            "ts": "2026-10-20T07:33:29+01:00",
+            "type": "step_completed",
+            "directive_id": "morning",
+            "tier": 2,
+            "takeover_id": "1c241150",
+            "step_index": 2,
+            "step_text": "Drink a full glass of water.",
+            "duration_s": 31
+        },
+        {
+            "ts": "2026-10-20T07:37:29+01:00",
+            "type": "step_completed",
+            "directive_id": "morning",
+            "tier": 2,
+            "takeover_id": "1c241150",
+            "step_index": 3,
+            "step_text": "Write down today's top three. Paper, not the phone.",
+            "duration_s": 240
+        },
+        {
+            "ts": "2026-10-20T07:37:29+01:00",
+            "type": "directive_completed",
+            "directive_id": "morning",
+            "tier": 2,
+            "trigger": "time",
+            "takeover_id": "1c241150",
+            "duration_s": 448,
+            "steps_done": 4,
+            "steps_total": 4
+        },
+        {
+            "ts": "2026-10-20T07:37:33+01:00",
+            "type": "rated",
+            "directive_id": "morning",
+            "tier": 2,
+            "trigger": "time",
+            "takeover_id": "1c241150",
+            "rating": "hard"
+        },
+        {
+            "ts": "2026-10-20T12:40:30+01:00",
+            "type": "quiet_on"
+        },
+        {
+            "ts": "2026-10-20T12:52:02+01:00",
+            "type": "queued_quiet",
+            "directive_id": "dhuhr",
+            "tier": 2,
+            "trigger": "adhan"
+        },
+        {
+            "ts": "2026-10-20T13:55:44+01:00",
+            "type": "quiet_off"
+        },
+        {
+            "ts": "2026-10-20T13:55:44+01:00",
+            "type": "directive_fired",
+            "directive_id": "dhuhr",
+            "tier": 2,
+            "trigger": "quiet_queue",
+            "takeover_id": "9d34ba11",
+            "steps_total": 3,
+            "silent": false
+        },
+        {
+            "ts": "2026-10-20T13:55:52+01:00",
+            "type": "step_completed",
+            "directive_id": "dhuhr",
+            "tier": 2,
+            "takeover_id": "9d34ba11",
+            "step_index": 0,
+            "step_text": "Save what you're doing and stand up.",
+            "duration_s": 7
+        },
+        {
+            "ts": "2026-10-20T13:57:07+01:00",
+            "type": "step_completed",
+            "directive_id": "dhuhr",
+            "tier": 2,
+            "takeover_id": "9d34ba11",
+            "step_index": 1,
+            "step_text": "Make wudu.",
+            "duration_s": 75
+        },
+        {
+            "ts": "2026-10-20T14:02:08+01:00",
+            "type": "step_completed",
+            "directive_id": "dhuhr",
+            "tier": 2,
+            "takeover_id": "9d34ba11",
+            "step_index": 2,
+            "step_text": "Pray Dhuhr.",
+            "duration_s": 301
+        },
+        {
+            "ts": "2026-10-20T14:02:08+01:00",
+            "type": "directive_completed",
+            "directive_id": "dhuhr",
+            "tier": 2,
+            "trigger": "quiet_queue",
+            "takeover_id": "9d34ba11",
+            "duration_s": 384,
+            "steps_done": 3,
+            "steps_total": 3
+        },
+        {
+            "ts": "2026-10-21T07:30:04+01:00",
+            "type": "directive_fired",
+            "directive_id": "morning",
+            "tier": 2,
+            "trigger": "time",
+            "takeover_id": "b14c206a",
+            "scheduled_for": "2026-10-21T07:30:00+01:00",
+            "steps_total": 4,
+            "silent": false
+        },
+        {
+            "ts": "2026-10-21T07:30:26+01:00",
+            "type": "step_completed",
+            "directive_id": "morning",
+            "tier": 2,
+            "takeover_id": "b14c206a",
+            "step_index": 0,
+            "step_text": "Open the curtains.",
+            "duration_s": 21
+        },
+        {
+            "ts": "2026-10-21T07:33:49+01:00",
+            "type": "step_completed",
+            "directive_id": "morning",
+            "tier": 2,
+            "takeover_id": "b14c206a",
+            "step_index": 1,
+            "step_text": "Make your bed.",
+            "duration_s": 203
+        },
+        {
+            "ts": "2026-10-21T07:34:29+01:00",
+            "type": "step_completed",
+            "directive_id": "morning",
+            "tier": 2,
+            "takeover_id": "b14c206a",
+            "step_index": 2,
+            "step_text": "Drink a full glass of water.",
+            "duration_s": 40
+        },
+        {
+            "ts": "2026-10-21T07:40:46+01:00",
+            "type": "step_completed",
+            "directive_id": "morning",
+            "tier": 2,
+            "takeover_id": "b14c206a",
+            "step_index": 3,
+            "step_text": "Write down today's top three. Paper, not the phone.",
+            "duration_s": 377
+        },
+        {
+            "ts": "2026-10-21T07:40:46+01:00",
+            "type": "directive_completed",
+            "directive_id": "morning",
+            "tier": 2,
+            "trigger": "time",
+            "takeover_id": "b14c206a",
+            "duration_s": 642,
+            "steps_done": 4,
+            "steps_total": 4
+        },
+        {
+            "ts": "2026-10-21T07:40:52+01:00",
+            "type": "rated",
+            "directive_id": "morning",
+            "tier": 2,
+            "trigger": "time",
+            "takeover_id": "b14c206a",
+            "rating": "hard"
+        },
+        {
+            "ts": "2026-10-21T07:40:52+01:00",
+            "type": "stepped_down",
+            "directive_id": "morning",
+            "tier": 2,
+            "variant": "easier",
+            "detail": "the last 2 ratings were HARD: variants.easier runs for the rest of this plan"
+        },
+        {
+            "ts": "2026-10-21T11:24:51+01:00",
+            "type": "missed",
+            "directive_id": "water-am",
+            "tier": 1,
+            "trigger": "time",
+            "scheduled_for": "2026-10-21T10:30:00+01:00"
+        },
+        {
+            "ts": "2026-10-21T22:14:37+01:00",
+            "type": "directive_fired",
+            "directive_id": "scroll-check",
+            "tier": 2,
+            "trigger": "app_usage",
+            "takeover_id": "1d863d52",
+            "steps_total": 3,
+            "silent": false
+        },
+        {
+            "ts": "2026-10-21T22:14:51+01:00",
+            "type": "step_completed",
+            "directive_id": "scroll-check",
+            "tier": 2,
+            "takeover_id": "1d863d52",
+            "step_index": 0,
+            "step_text": "Six opens in half an hour. Put the phone down for a moment.",
+            "duration_s": 13
+        },
+        {
+            "ts": "2026-10-21T22:15:15+01:00",
+            "type": "step_completed",
+            "directive_id": "scroll-check",
+            "tier": 2,
+            "takeover_id": "1d863d52",
+            "step_index": 1,
+            "step_text": "Take three slow breaths.",
+            "duration_s": 24
+        },
+        {
+            "ts": "2026-10-21T22:15:26+01:00",
+            "type": "step_completed",
+            "directive_id": "scroll-check",
+            "tier": 2,
+            "takeover_id": "1d863d52",
+            "step_index": 2,
+            "step_text": "Say out loud what you actually came here to do.",
+            "duration_s": 11
+        },
+        {
+            "ts": "2026-10-21T22:15:26+01:00",
+            "type": "directive_completed",
+            "directive_id": "scroll-check",
+            "tier": 2,
+            "trigger": "app_usage",
+            "takeover_id": "1d863d52",
+            "duration_s": 49,
+            "steps_done": 3,
+            "steps_total": 3
+        },
+        {
+            "ts": "2026-10-21T22:15:30+01:00",
+            "type": "rated",
+            "directive_id": "scroll-check",
+            "tier": 2,
+            "trigger": "app_usage",
+            "takeover_id": "1d863d52",
+            "rating": "easy"
+        },
+        {
+            "ts": "2026-10-22T07:30:03+01:00",
+            "type": "directive_fired",
+            "directive_id": "morning",
+            "tier": 2,
+            "trigger": "time",
+            "takeover_id": "68ba1ac7",
+            "scheduled_for": "2026-10-22T07:30:00+01:00",
+            "steps_total": 2,
+            "silent": false,
+            "variant": "easier"
+        },
+        {
+            "ts": "2026-10-22T07:33:41+01:00",
+            "type": "bad_day_on",
+            "detail": "until 2026-10-23T04:00"
+        },
+        {
+            "ts": "2026-10-22T07:33:41+01:00",
+            "type": "bypassed_bad_day",
+            "directive_id": "morning",
+            "tier": 2,
+            "takeover_id": "68ba1ac7",
+            "duration_s": 218,
+            "steps_done": 0,
+            "steps_total": 2,
+            "variant": "easier"
+        },
+        {
+            "ts": "2026-10-22T09:00:01+01:00",
+            "type": "skipped_bad_day",
+            "directive_id": "study-block",
+            "tier": 2,
+            "trigger": "time",
+            "scheduled_for": "2026-10-22T09:00:00+01:00"
+        },
+        {
+            "ts": "2026-10-22T10:30:02+01:00",
+            "type": "directive_fired",
+            "directive_id": "water-am",
+            "tier": 1,
+            "trigger": "time",
+            "takeover_id": "348f6f7d",
+            "scheduled_for": "2026-10-22T10:30:00+01:00",
+            "steps_total": 1,
+            "silent": false
+        },
+        {
+            "ts": "2026-10-22T10:30:21+01:00",
+            "type": "step_completed",
+            "directive_id": "water-am",
+            "tier": 1,
+            "takeover_id": "348f6f7d",
+            "step_index": 0,
+            "step_text": "Drink a full glass of water.",
+            "duration_s": 18
+        },
+        {
+            "ts": "2026-10-22T10:30:21+01:00",
+            "type": "directive_completed",
+            "directive_id": "water-am",
+            "tier": 1,
+            "trigger": "time",
+            "takeover_id": "348f6f7d",
+            "duration_s": 19,
+            "steps_done": 1,
+            "steps_total": 1
+        },
+        {
+            "ts": "2026-10-22T10:30:25+01:00",
+            "type": "rating_skipped",
+            "directive_id": "water-am",
+            "tier": 1,
+            "trigger": "time",
+            "takeover_id": "348f6f7d",
+            "detail": "skipped"
+        },
+        {
+            "ts": "2026-10-22T23:00:02+01:00",
+            "type": "directive_fired",
+            "directive_id": "sleep",
+            "tier": 3,
+            "trigger": "time",
+            "takeover_id": "bc3b30df",
+            "scheduled_for": "2026-10-22T23:00:00+01:00",
+            "steps_total": 5,
+            "silent": false
+        },
+        {
+            "ts": "2026-10-22T23:00:17+01:00",
+            "type": "step_completed",
+            "directive_id": "sleep",
+            "tier": 3,
+            "takeover_id": "bc3b30df",
+            "step_index": 0,
+            "step_text": "Put the phone on charge across the room.",
+            "duration_s": 14
+        },
+        {
+            "ts": "2026-10-22T23:02:28+01:00",
+            "type": "step_completed",
+            "directive_id": "sleep",
+            "tier": 3,
+            "takeover_id": "bc3b30df",
+            "step_index": 1,
+            "step_text": "Brush your teeth.",
+            "duration_s": 131
+        },
+        {
+            "ts": "2026-10-22T23:03:34+01:00",
+            "type": "step_completed",
+            "directive_id": "sleep",
+            "tier": 3,
+            "takeover_id": "bc3b30df",
+            "step_index": 2,
+            "step_text": "Make wudu.",
+            "duration_s": 66
+        },
+        {
+            "ts": "2026-10-22T23:04:15+01:00",
+            "type": "step_completed",
+            "directive_id": "sleep",
+            "tier": 3,
+            "takeover_id": "bc3b30df",
+            "step_index": 3,
+            "step_text": "Set out tomorrow's clothes.",
+            "duration_s": 41
+        },
+        {
+            "ts": "2026-10-22T23:04:24+01:00",
+            "type": "step_completed",
+            "directive_id": "sleep",
+            "tier": 3,
+            "takeover_id": "bc3b30df",
+            "step_index": 4,
+            "step_text": "Lights off. The phone stays there until Fajr.",
+            "duration_s": 9
+        },
+        {
+            "ts": "2026-10-22T23:04:24+01:00",
+            "type": "directive_completed",
+            "directive_id": "sleep",
+            "tier": 3,
+            "trigger": "time",
+            "takeover_id": "bc3b30df",
+            "duration_s": 262,
+            "steps_done": 5,
+            "steps_total": 5
+        },
+        {
+            "ts": "2026-10-22T23:04:28+01:00",
+            "type": "rated",
+            "directive_id": "sleep",
+            "tier": 3,
+            "trigger": "time",
+            "takeover_id": "bc3b30df",
+            "rating": "hard"
+        },
+        {
+            "ts": "2026-10-23T04:00:03+01:00",
+            "type": "day_mode",
+            "mode": "bad_day",
+            "detail": "check-in due after a bad day; until it is answered the \"same\" answer applies"
+        },
+        {
+            "ts": "2026-10-23T05:53:10+01:00",
+            "type": "directive_fired",
+            "directive_id": "fajr",
+            "tier": 3,
+            "trigger": "adhan",
+            "takeover_id": "f5bc1926",
+            "steps_total": 4,
+            "silent": false
+        },
+        {
+            "ts": "2026-10-23T05:53:19+01:00",
+            "type": "step_completed",
+            "directive_id": "fajr",
+            "tier": 3,
+            "takeover_id": "f5bc1926",
+            "step_index": 0,
+            "step_text": "Sit up. Feet on the floor.",
+            "duration_s": 8
+        },
+        {
+            "ts": "2026-10-23T05:53:41+01:00",
+            "type": "step_completed",
+            "directive_id": "fajr",
+            "tier": 3,
+            "takeover_id": "f5bc1926",
+            "step_index": 1,
+            "step_text": "Lights on. Drink a glass of water.",
+            "duration_s": 22
+        },
+        {
+            "ts": "2026-10-23T05:54:51+01:00",
+            "type": "step_completed",
+            "directive_id": "fajr",
+            "tier": 3,
+            "takeover_id": "f5bc1926",
+            "step_index": 2,
+            "step_text": "Make wudu.",
+            "duration_s": 70
+        },
+        {
+            "ts": "2026-10-23T06:00:43+01:00",
+            "type": "step_completed",
+            "directive_id": "fajr",
+            "tier": 3,
+            "takeover_id": "f5bc1926",
+            "step_index": 3,
+            "step_text": "Pray Fajr. The two sunnah first if you can.",
+            "duration_s": 352
+        },
+        {
+            "ts": "2026-10-23T06:00:43+01:00",
+            "type": "directive_completed",
+            "directive_id": "fajr",
+            "tier": 3,
+            "trigger": "adhan",
+            "takeover_id": "f5bc1926",
+            "duration_s": 453,
+            "steps_done": 4,
+            "steps_total": 4
+        },
+        {
+            "ts": "2026-10-23T06:00:49+01:00",
+            "type": "rated",
+            "directive_id": "fajr",
+            "tier": 3,
+            "trigger": "adhan",
+            "takeover_id": "f5bc1926",
+            "rating": "hard"
+        },
+        {
+            "ts": "2026-10-23T06:01:15+01:00",
+            "type": "directive_fired",
+            "directive_id": "vigil-check-in",
+            "tier": 1,
+            "trigger": "check_in",
+            "takeover_id": "5ca3708b",
+            "steps_total": 1,
+            "silent": false
+        },
+        {
+            "ts": "2026-10-23T06:01:31+01:00",
+            "type": "check_in",
+            "trigger": "check_in",
+            "takeover_id": "5ca3708b",
+            "answer": "worse",
+            "mode": "minimum",
+            "detail": "for 2026-10-23, after a bad day"
+        },
+        {
+            "ts": "2026-10-23T07:30:02+01:00",
+            "type": "skipped_minimum",
+            "directive_id": "morning",
+            "tier": 2,
+            "trigger": "time",
+            "scheduled_for": "2026-10-23T07:30:00+01:00"
+        },
+        {
+            "ts": "2026-10-23T09:00:01+01:00",
+            "type": "skipped_minimum",
+            "directive_id": "study-block",
+            "tier": 2,
+            "trigger": "time",
+            "scheduled_for": "2026-10-23T09:00:00+01:00"
+        },
+        {
+            "ts": "2026-10-23T10:30:02+01:00",
+            "type": "skipped_minimum",
+            "directive_id": "water-am",
+            "tier": 1,
+            "trigger": "time",
+            "scheduled_for": "2026-10-23T10:30:00+01:00"
+        },
+        {
+            "ts": "2026-10-23T23:00:01+01:00",
+            "type": "directive_fired",
+            "directive_id": "sleep",
+            "tier": 3,
+            "trigger": "time",
+            "takeover_id": "5634eeba",
+            "scheduled_for": "2026-10-23T23:00:00+01:00",
+            "steps_total": 5,
+            "silent": false
+        },
+        {
+            "ts": "2026-10-23T23:00:14+01:00",
+            "type": "step_completed",
+            "directive_id": "sleep",
+            "tier": 3,
+            "takeover_id": "5634eeba",
+            "step_index": 0,
+            "step_text": "Put the phone on charge across the room.",
+            "duration_s": 12
+        },
+        {
+            "ts": "2026-10-23T23:02:19+01:00",
+            "type": "step_completed",
+            "directive_id": "sleep",
+            "tier": 3,
+            "takeover_id": "5634eeba",
+            "step_index": 1,
+            "step_text": "Brush your teeth.",
+            "duration_s": 125
+        },
+        {
+            "ts": "2026-10-23T23:03:20+01:00",
+            "type": "step_completed",
+            "directive_id": "sleep",
+            "tier": 3,
+            "takeover_id": "5634eeba",
+            "step_index": 2,
+            "step_text": "Make wudu.",
+            "duration_s": 61
+        },
+        {
+            "ts": "2026-10-23T23:03:53+01:00",
+            "type": "step_completed",
+            "directive_id": "sleep",
+            "tier": 3,
+            "takeover_id": "5634eeba",
+            "step_index": 3,
+            "step_text": "Set out tomorrow's clothes.",
+            "duration_s": 33
+        },
+        {
+            "ts": "2026-10-23T23:03:59+01:00",
+            "type": "step_completed",
+            "directive_id": "sleep",
+            "tier": 3,
+            "takeover_id": "5634eeba",
+            "step_index": 4,
+            "step_text": "Lights off. The phone stays there until Fajr.",
+            "duration_s": 6
+        },
+        {
+            "ts": "2026-10-23T23:03:59+01:00",
+            "type": "directive_completed",
+            "directive_id": "sleep",
+            "tier": 3,
+            "trigger": "time",
+            "takeover_id": "5634eeba",
+            "duration_s": 238,
+            "steps_done": 5,
+            "steps_total": 5
+        },
+        {
+            "ts": "2026-10-23T23:34:02+01:00",
+            "type": "rating_skipped",
+            "directive_id": "sleep",
+            "tier": 3,
+            "trigger": "time",
+            "takeover_id": "5634eeba",
+            "detail": "not answered"
+        },
+        {
+            "ts": "2026-10-24T04:00:04+01:00",
+            "type": "day_mode",
+            "mode": "bad_day",
+            "detail": "check-in due after a minimum day; until it is answered the \"same\" answer applies"
+        },
+        {
+            "ts": "2026-10-24T05:58:30+01:00",
+            "type": "directive_fired",
+            "directive_id": "fajr",
+            "tier": 3,
+            "trigger": "adhan",
+            "takeover_id": "3a3aeb11",
+            "steps_total": 4,
+            "silent": false
+        },
+        {
+            "ts": "2026-10-24T05:58:37+01:00",
+            "type": "step_completed",
+            "directive_id": "fajr",
+            "tier": 3,
+            "takeover_id": "3a3aeb11",
+            "step_index": 0,
+            "step_text": "Sit up. Feet on the floor.",
+            "duration_s": 6
+        },
+        {
+            "ts": "2026-10-24T05:58:55+01:00",
+            "type": "step_completed",
+            "directive_id": "fajr",
+            "tier": 3,
+            "takeover_id": "3a3aeb11",
+            "step_index": 1,
+            "step_text": "Lights on. Drink a glass of water.",
+            "duration_s": 18
+        },
+        {
+            "ts": "2026-10-24T05:59:59+01:00",
+            "type": "step_completed",
+            "directive_id": "fajr",
+            "tier": 3,
+            "takeover_id": "3a3aeb11",
+            "step_index": 2,
+            "step_text": "Make wudu.",
+            "duration_s": 64
+        },
+        {
+            "ts": "2026-10-24T06:05:00+01:00",
+            "type": "step_completed",
+            "directive_id": "fajr",
+            "tier": 3,
+            "takeover_id": "3a3aeb11",
+            "step_index": 3,
+            "step_text": "Pray Fajr. The two sunnah first if you can.",
+            "duration_s": 301
+        },
+        {
+            "ts": "2026-10-24T06:05:00+01:00",
+            "type": "directive_completed",
+            "directive_id": "fajr",
+            "tier": 3,
+            "trigger": "adhan",
+            "takeover_id": "3a3aeb11",
+            "duration_s": 390,
+            "steps_done": 4,
+            "steps_total": 4
+        },
+        {
+            "ts": "2026-10-24T06:05:55+01:00",
+            "type": "rated",
+            "directive_id": "fajr",
+            "tier": 3,
+            "trigger": "adhan",
+            "takeover_id": "3a3aeb11",
+            "rating": "ok"
+        },
+        {
+            "ts": "2026-10-24T06:06:20+01:00",
+            "type": "directive_fired",
+            "directive_id": "vigil-check-in",
+            "tier": 1,
+            "trigger": "check_in",
+            "takeover_id": "b7c5687c",
+            "steps_total": 1,
+            "silent": false
+        },
+        {
+            "ts": "2026-10-24T06:06:34+01:00",
+            "type": "check_in",
+            "trigger": "check_in",
+            "takeover_id": "b7c5687c",
+            "answer": "better",
+            "mode": "normal",
+            "detail": "for 2026-10-24, after a minimum day"
+        },
+        {
+            "ts": "2026-10-24T07:30:02+01:00",
+            "type": "directive_fired",
+            "directive_id": "morning",
+            "tier": 2,
+            "trigger": "time",
+            "takeover_id": "cafae364",
+            "scheduled_for": "2026-10-24T07:30:00+01:00",
+            "steps_total": 2,
+            "silent": false,
+            "variant": "easier"
+        },
+        {
+            "ts": "2026-10-24T07:30:10+01:00",
+            "type": "step_completed",
+            "directive_id": "morning",
+            "tier": 2,
+            "takeover_id": "cafae364",
+            "step_index": 0,
+            "step_text": "Open the curtains.",
+            "duration_s": 7,
+            "variant": "easier"
+        },
+        {
+            "ts": "2026-10-24T07:30:29+01:00",
+            "type": "step_completed",
+            "directive_id": "morning",
+            "tier": 2,
+            "takeover_id": "cafae364",
+            "step_index": 1,
+            "step_text": "Drink a full glass of water.",
+            "duration_s": 19,
+            "variant": "easier"
+        },
+        {
+            "ts": "2026-10-24T07:30:29+01:00",
+            "type": "directive_completed",
+            "directive_id": "morning",
+            "tier": 2,
+            "trigger": "time",
+            "takeover_id": "cafae364",
+            "duration_s": 27,
+            "steps_done": 2,
+            "steps_total": 2,
+            "variant": "easier"
+        },
+        {
+            "ts": "2026-10-24T07:30:33+01:00",
+            "type": "rated",
+            "directive_id": "morning",
+            "tier": 2,
+            "trigger": "time",
+            "takeover_id": "cafae364",
+            "variant": "easier",
+            "rating": "ok"
+        },
+        {
+            "ts": "2026-10-25T07:30:01Z",
+            "type": "directive_fired",
+            "directive_id": "morning",
+            "tier": 2,
+            "trigger": "time",
+            "takeover_id": "b7dd1d59",
+            "scheduled_for": "2026-10-25T07:30:00Z",
+            "steps_total": 2,
+            "silent": false,
+            "variant": "easier"
+        },
+        {
+            "ts": "2026-10-25T07:30:08Z",
+            "type": "step_completed",
+            "directive_id": "morning",
+            "tier": 2,
+            "takeover_id": "b7dd1d59",
+            "step_index": 0,
+            "step_text": "Open the curtains.",
+            "duration_s": 6,
+            "variant": "easier"
+        },
+        {
+            "ts": "2026-10-25T07:30:25Z",
+            "type": "step_completed",
+            "directive_id": "morning",
+            "tier": 2,
+            "takeover_id": "b7dd1d59",
+            "step_index": 1,
+            "step_text": "Drink a full glass of water.",
+            "duration_s": 17,
+            "variant": "easier"
+        },
+        {
+            "ts": "2026-10-25T07:30:25Z",
+            "type": "directive_completed",
+            "directive_id": "morning",
+            "tier": 2,
+            "trigger": "time",
+            "takeover_id": "b7dd1d59",
+            "duration_s": 24,
+            "steps_done": 2,
+            "steps_total": 2,
+            "variant": "easier"
+        },
+        {
+            "ts": "2026-10-25T07:30:30Z",
+            "type": "rated",
+            "directive_id": "morning",
+            "tier": 2,
+            "trigger": "time",
+            "takeover_id": "b7dd1d59",
+            "variant": "easier",
+            "rating": "easy"
+        },
+        {
+            "ts": "2026-10-26T04:00:02Z",
+            "type": "plan_expired",
+            "detail": "now running fallback_plan"
+        },
+        {
+            "ts": "2026-10-26T05:41:12Z",
+            "type": "directive_fired",
+            "directive_id": "fb-fajr",
+            "tier": 3,
+            "trigger": "adhan",
+            "takeover_id": "51d0427f",
+            "steps_total": 3,
+            "silent": false
+        },
+        {
+            "ts": "2026-10-26T05:41:20Z",
+            "type": "step_completed",
+            "directive_id": "fb-fajr",
+            "tier": 3,
+            "takeover_id": "51d0427f",
+            "step_index": 0,
+            "step_text": "Sit up. Feet on the floor.",
+            "duration_s": 7
+        },
+        {
+            "ts": "2026-10-26T05:42:26Z",
+            "type": "step_completed",
+            "directive_id": "fb-fajr",
+            "tier": 3,
+            "takeover_id": "51d0427f",
+            "step_index": 1,
+            "step_text": "Make wudu.",
+            "duration_s": 66
+        },
+        {
+            "ts": "2026-10-26T05:45:51Z",
+            "type": "step_completed",
+            "directive_id": "fb-fajr",
+            "tier": 3,
+            "takeover_id": "51d0427f",
+            "step_index": 2,
+            "step_text": "Pray Fajr.",
+            "duration_s": 205
+        },
+        {
+            "ts": "2026-10-26T05:45:51Z",
+            "type": "directive_completed",
+            "directive_id": "fb-fajr",
+            "tier": 3,
+            "trigger": "adhan",
+            "takeover_id": "51d0427f",
+            "duration_s": 279,
+            "steps_done": 3,
+            "steps_total": 3
+        },
+        {
+            "ts": "2026-10-26T05:46:02Z",
+            "type": "rated",
+            "directive_id": "fb-fajr",
+            "tier": 3,
+            "trigger": "adhan",
+            "takeover_id": "51d0427f",
+            "rating": "ok"
+        }
+    ]
+}

@@ -1,23 +1,9 @@
 package dev.vigil.core.log
 
-import dev.vigil.core.engine.ActivePlanResolver
-import dev.vigil.core.engine.BuiltinPlan
 import dev.vigil.core.engine.Engine
-import dev.vigil.core.engine.Env
-import dev.vigil.core.engine.Outcome
-import dev.vigil.core.engine.RuntimeState
 import dev.vigil.core.engine.TimeSchedule
-import dev.vigil.core.plan.BadDay
-import dev.vigil.core.plan.Directive
-import dev.vigil.core.plan.ParseResult
-import dev.vigil.core.plan.Plan
-import dev.vigil.core.plan.PlanParser
-import dev.vigil.core.plan.Prayer
 import dev.vigil.core.plan.QuietPolicy
 import dev.vigil.core.plan.Rating
-import dev.vigil.core.plan.Step
-import dev.vigil.core.plan.Trigger
-import dev.vigil.core.plan.UsageLimit
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.int
@@ -30,14 +16,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
-import java.io.File
 import java.lang.reflect.Modifier
-import java.time.DayOfWeek
-import java.time.LocalDate
-import java.time.LocalDateTime
-import java.time.LocalTime
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
 
 class LogExportTest {
     private val full = LogEvent(
@@ -260,7 +239,9 @@ class LogExportTest {
         assertEquals(
             listOf(
                 "directive_fired", "directive_completed", "directive_dismissed", "directive_timed_out", "bypassed_bad_day",
-                "dropped", "skipped_bad_day", "queued_quiet", "skipped_quiet", "missed", "repeated", "avg_completion_s",
+                "dropped", "skipped_bad_day", "queued_quiet", "skipped_quiet", "missed", "repeated",
+                "rated_easy", "rated_ok", "rated_hard", "rating_skipped", "skipped_minimum", "bypassed_minimum",
+                "avg_completion_s",
             ),
             water.keys.toList(),
         )
@@ -319,6 +300,49 @@ class LogExportTest {
         assertEquals(1, summary["sleep"]!!.jsonObject.int("directive_fired"))
         assertEquals(1, summary["sleep"]!!.jsonObject.int("directive_completed"))
         assertEquals(0, summary["water-am"]!!.jsonObject.int("directive_fired"))
+        assertEquals(1, summary["study-block"]!!.jsonObject.int("skipped_minimum"))
+        assertEquals(1, summary["water-am"]!!.jsonObject.int("rating_skipped"))
+    }
+
+    @Test
+    fun summaryCountsRatingsAndMinimumDays() {
+        fun e(type: String, id: String, takeover: String? = null, rating: String? = null, variant: String? = null) = LogEvent(
+            "2026-10-22T07:00:01+01:00", type, directiveId = id, trigger = "time", takeoverId = takeover, rating = rating, variant = variant,
+        )
+        val events = listOf(
+            e(EventType.RATED, "morning", "t1", Rating.HARD.json),
+            e(EventType.RATED, "morning", "t2", Rating.HARD.json),
+            e(EventType.STEPPED_DOWN, "morning", variant = "easier"),
+            e(EventType.RATED, "morning", "t3", Rating.OK.json, "easier"),
+            e(EventType.RATED, "morning", "t4", Rating.EASY.json, "easier"),
+            e(EventType.RATING_SKIPPED, "morning", "t5"),
+            e(EventType.RATING_SKIPPED, "morning", "t6", variant = "easier"),
+            e(EventType.SKIPPED_MINIMUM, "morning"),
+            e(EventType.BYPASSED_MINIMUM, "morning", "t7"),
+            e(EventType.BYPASSED_MINIMUM, "morning", "t8"),
+            // A rating without a known answer is not counted under any of the three.
+            e(EventType.RATED, "morning", "t9", "terrible"),
+        )
+        val morning = LogExport.summary(events)["morning"]!!.jsonObject
+        assertEquals(1, morning.int("rated_easy"))
+        assertEquals(1, morning.int("rated_ok"))
+        assertEquals("both versions count: variant is in ratings, not here", 2, morning.int("rated_hard"))
+        assertEquals(2, morning.int("rating_skipped"))
+        assertEquals(1, morning.int("skipped_minimum"))
+        assertEquals(2, morning.int("bypassed_minimum"))
+        assertEquals(0, morning.int("directive_fired"))
+    }
+
+    @Test
+    fun summaryColumnsAreTheSameForEveryDirective() {
+        val events = listOf(
+            LogEvent("2026-10-19T05:47:52+01:00", EventType.DIRECTIVE_FIRED, directiveId = "fajr", trigger = "adhan", takeoverId = "a"),
+            LogEvent("2026-10-21T11:24:51+01:00", EventType.MISSED, directiveId = "water-am", trigger = "time"),
+        )
+        val summary = LogExport.summary(events)
+        val columns = summary.values.map { it.jsonObject.keys.toList() }
+        assertEquals(columns.first(), columns.last())
+        assertTrue("every column is a whole number", summary.values.all { o -> o.jsonObject.values.all { it.jsonPrimitive.content.toLongOrNull() != null } })
     }
 
     @Test
@@ -343,57 +367,6 @@ class LogExportTest {
         for (p in QuietPolicy.entries) assertTrue(p.json, readme.contains("${p.json} ="))
     }
 
-    // ---------------------------------------------------------------- spec/sample-log.json
-
-    @Test
-    fun sampleLogCoversTheInterestingCases() {
-        val root = Json.parseToJsonElement(SampleWeek.export()).jsonObject
-        val events = root["events"]!!.jsonArray.map { LogJson.json.decodeFromJsonElement(LogEvent.serializer(), it) }
-        fun has(type: String, predicate: (LogEvent) -> Boolean = { true }) =
-            assertTrue("sample should contain $type", events.any { it.type == type && predicate(it) })
-
-        has(EventType.PLAN_IMPORTED)
-        has(EventType.DIRECTIVE_COMPLETED) { it.directiveId == "fajr" && it.trigger == "adhan" }
-        has(EventType.STEP_COMPLETED) { it.directiveId == "fajr" && it.durationS != null && it.stepText != null }
-        has(EventType.DIRECTIVE_FIRED) { it.trigger == "app_usage" }
-        has(EventType.DIRECTIVE_DISMISSED) { it.tier == 2 && it.stepsDone!! < it.stepsTotal!! }
-        has(EventType.QUEUED_QUIET)
-        has(EventType.DIRECTIVE_FIRED) { it.trigger == Engine.TRIGGER_QUIET_QUEUE }
-        has(EventType.BAD_DAY_ON)
-        has(EventType.BYPASSED_BAD_DAY)
-        has(EventType.SKIPPED_BAD_DAY)
-        has(EventType.DAY_MODE) // the bad day ended at the day boundary
-        has(EventType.RATED) { it.rating != null }
-        has(EventType.RATING_SKIPPED)
-        has(EventType.MISSED) { it.scheduledFor != null }
-        has(EventType.DIRECTIVE_FIRED) { it.directiveId == "sleep" && it.ts.startsWith("2026-10-22") } // kept on the bad day
-
-        assertEquals("events are in time order", events.sortedBy { java.time.OffsetDateTime.parse(it.ts) }, events)
-        assertTrue(events.all { it.directiveId == null || it.directiveId in SampleWeek.plan.directives.map { d -> d.id } })
-        assertTrue("every takeover closed", events.groupBy { it.takeoverId }.filterKeys { it != null }.values.all { it.size >= 2 })
-        for ((id, counts) in root["summary"]!!.jsonObject) {
-            val c = counts.jsonObject
-            val closed = listOf("directive_completed", "directive_dismissed", "directive_timed_out", "bypassed_bad_day", "dropped").sumOf { c.int(it) }
-            assertEquals("$id: every fired takeover closed one way", c.int("directive_fired"), closed)
-        }
-    }
-
-    /**
-     * spec/sample-log.json must be exactly what [LogExport.build] produces. To regenerate it after a deliberate change:
-     * VIGIL_UPDATE_SAMPLES=1 ./gradlew -p core cleanTest test --tests dev.vigil.core.log.LogExportTest
-     */
-    @Test
-    fun sampleLogMatchesTheExport() {
-        val file = File(System.getProperty("vigil.repoRoot"), "spec/sample-log.json")
-        val expected = SampleWeek.export()
-        if (System.getenv("VIGIL_UPDATE_SAMPLES") == "1") {
-            file.parentFile.mkdirs()
-            file.writeText(expected)
-        }
-        assertTrue("${file.path} is missing; see the KDoc of this test to generate it", file.isFile)
-        assertEquals("${file.path} is out of date; see the KDoc of this test to regenerate it", expected, file.readText())
-    }
-
     private fun meta() = ExportMeta(
         exportedAt = "2026-10-23T21:06:15+01:00",
         appVersion = "1.0",
@@ -407,140 +380,4 @@ class LogExportTest {
 
     private fun JsonObject.string(key: String) = this[key]!!.jsonPrimitive.content
     private fun JsonObject.int(key: String) = this[key]!!.jsonPrimitive.int
-}
-
-/** The week of 2026-10-19, played through the real engine so the sample shows exactly what the app writes. */
-private object SampleWeek {
-    val zone: ZoneId = ZoneId.of("Europe/London")
-    private val weekdays = setOf(DayOfWeek.MONDAY, DayOfWeek.TUESDAY, DayOfWeek.WEDNESDAY, DayOfWeek.THURSDAY, DayOfWeek.FRIDAY)
-    private val everyDay = DayOfWeek.entries.toSet()
-
-    /** The same week as spec/sample-plan.json, so the two samples tell one story. */
-    val plan: Plan = run {
-        val text = java.io.File(System.getProperty("vigil.repoRoot"), "spec/sample-plan.json").readText()
-        (PlanParser.parse(text) as ParseResult.Success).plan
-    }
-
-    fun export(): String {
-        val phone = Phone()
-        phone.write(
-            "2026-10-18T21:14:09", EventType.PLAN_IMPORTED,
-            detail = "week_of ${plan.weekOf}, expires ${plan.expires}, generated_by ${plan.generatedBy}, ${plan.directives.size} directives, 0 warnings",
-        )
-
-        // Monday: Fajr, all four steps, rated OK.
-        phone.trigger("2026-10-19T05:47:52", "fajr", "adhan")
-        phone.steps("2026-10-19T05:47:53", 11, 31, 95, 412)
-        phone.rate("2026-10-19T05:57:06", Rating.OK)
-        // Monday night: TikTok/Instagram opened six times in half an hour; one step ticked, then abandoned.
-        phone.trigger("2026-10-19T21:37:26", "scroll-check", "app_usage")
-        phone.steps("2026-10-19T21:37:27", 12)
-        phone.run("2026-10-19T21:38:19") { s, e -> Engine.dismiss(s, e, phone.takeoverId) }
-
-        // Tuesday: quiet mode in a lecture holds Dhuhr until it ends.
-        phone.run("2026-10-20T12:40:30") { s, e -> Engine.setQuiet(s, e, true) }
-        phone.trigger("2026-10-20T12:52:02", "dhuhr", "adhan")
-        phone.run("2026-10-20T13:55:44") { s, e -> Engine.setQuiet(s, e, false) }
-        phone.steps("2026-10-20T13:55:45", 7, 75, 301)
-        phone.rate("2026-10-20T14:02:11", Rating.EASY)
-
-        // Wednesday: the battery died at 10:05; back on at 11:24, too late for water-am.
-        phone.catchUp(from = "2026-10-21T10:05:00", now = "2026-10-21T11:24:51")
-
-        // Thursday: a hard day. Only the prayers, sleep and water-am are kept.
-        phone.trigger("2026-10-22T07:30:03", "morning", "time", scheduledFor = "2026-10-22T07:30")
-        phone.shown("2026-10-22T07:30:04")
-        phone.run("2026-10-22T07:33:41") { s, e -> Engine.setBadDay(s, e, true) }
-        phone.trigger("2026-10-22T09:00:01", "study-block", "time", scheduledFor = "2026-10-22T09:00")
-        phone.trigger("2026-10-22T10:30:02", "water-am", "time", scheduledFor = "2026-10-22T10:30")
-        phone.steps("2026-10-22T10:30:03", 18)
-        phone.rate("2026-10-22T10:30:25", null) // SKIP
-        phone.trigger("2026-10-22T23:00:02", "sleep", "time", scheduledFor = "2026-10-22T23:00")
-        phone.steps("2026-10-22T23:00:03", 14, 131, 66, 41, 9)
-        phone.rate("2026-10-22T23:04:28", Rating.HARD)
-
-        // Friday: the day boundary passed overnight, so bad-day mode ends with the first event of the day.
-        phone.trigger("2026-10-23T05:53:10", "fajr", "adhan")
-        phone.steps("2026-10-23T05:53:11", 8, 22, 70, 352)
-
-        // The phone stores events as JSON Lines; the export reads them back.
-        val stored = phone.log.joinToString("\n") { LogJson.encodeLine(it) } + "\n"
-        val meta = ExportMeta(
-            exportedAt = phone.timestamp("2026-10-23T21:06:15"),
-            appVersion = "1.0",
-            timezone = zone.id,
-            planWeekOf = plan.weekOf.toString(),
-            planExpires = plan.expires.toString(),
-            planGeneratedBy = plan.generatedBy,
-            since = phone.log.first().ts,
-            settings = mapOf(LogExport.SETTING_ALLOW_QUIET_OVERRIDE to "true"),
-        )
-        return LogExport.build(LogJson.decodeLines(stored), meta)
-    }
-
-    private class Phone {
-        var state = RuntimeState()
-        val log = mutableListOf<LogEvent>()
-        private val ids = java.util.Random(20261019)
-
-        val takeoverId: String get() = state.active!!.takeoverId
-
-        fun timestamp(local: String): String =
-            LocalDateTime.parse(local).atZone(zone).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
-
-        fun run(local: String, action: (RuntimeState, Env) -> Outcome) {
-            val now = LocalDateTime.parse(local).atZone(zone).toInstant()
-            val active = ActivePlanResolver.resolve(plan, BuiltinPlan.plan, LocalDateTime.ofInstant(now, zone))
-            val outcome = action(state, Env(now, zone, active, allowQuietOverride = true) { "%08x".format(ids.nextInt()) })
-            state = outcome.state
-            log += outcome.events
-        }
-
-        fun trigger(local: String, id: String, trigger: String, scheduledFor: String? = null) =
-            run(local) { s, e -> Engine.onTrigger(s, e, listOf(id), trigger, scheduledFor?.let(::timestamp)) }
-
-        fun shown(local: String) = run(local) { s, e -> Engine.stepShown(s, e, takeoverId) }
-
-        /** EASY / OK / HARD (null = SKIP) after the last completion, if the engine asked for it. */
-        fun rate(local: String, rating: Rating?) {
-            val open = state.pendingRating ?: return
-            run(local) { s, e -> Engine.rate(s, e, open.takeoverId, rating) }
-        }
-
-        /** From the moment the next step appears, ticks it after each number of seconds (the next step appears at once). */
-        fun steps(firstShown: String, vararg seconds: Long) {
-            var at = LocalDateTime.parse(firstShown)
-            for (s in seconds) {
-                shown(at.toString())
-                at = at.plusSeconds(s)
-                val before = log.size
-                run(at.toString()) { st, e -> Engine.stepDone(st, e, takeoverId, st.active!!.stepsDone) }
-                check(log.size > before) { "step at $at was not accepted" }
-            }
-        }
-
-        /** What the Android layer does after the phone was off: time triggers too far in the past are logged as missed. */
-        fun catchUp(from: String, now: String) {
-            val pass = TimeSchedule.pass(
-                plan.directives,
-                LocalDateTime.parse(from).atZone(zone).toInstant(),
-                LocalDateTime.parse(now).atZone(zone).toInstant(),
-                zone,
-            )
-            check(pass.due.isEmpty())
-            for (fire in pass.missed) {
-                for (id in fire.directiveIds) {
-                    val d = plan.directive(id)!!
-                    log += LogEvent(
-                        timestamp(now), EventType.MISSED, directiveId = id, tier = d.tier, trigger = d.trigger.type,
-                        scheduledFor = fire.at.atZone(zone).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME),
-                    )
-                }
-            }
-        }
-
-        fun write(local: String, type: String, detail: String) {
-            log += LogEvent(timestamp(local), type, detail = detail)
-        }
-    }
 }
