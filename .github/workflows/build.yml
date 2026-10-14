@@ -51,10 +51,11 @@ jobs:
             app/build/reports/lint-results-debug.html
           if-no-files-found: ignore
 
-      # A rolling pre-release so the APK can be downloaded straight from a phone browser.
-      # Only the newest commit of the branch publishes, so an older run finishing late never replaces it.
+      # A rolling pre-release so the APK can be downloaded straight from a phone browser. It is built from main
+      # only (other branches just build, test and attach the APK to their run), and only the newest commit of main
+      # publishes, so an older run finishing late never replaces it.
       - name: Publish "latest" pre-release
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -64,4 +65,4 @@ jobs:
           gh release delete latest --yes --cleanup-tag || true
           gh release create latest vigil.apk --prerelease --target "$GITHUB_SHA" \
             --title "VIGIL latest build" \
-            --notes "Built from ${GITHUB_REF_NAME} at ${GITHUB_SHA}. Download vigil.apk on your phone and open it to install (allow installs from your browser when asked)."
+            --notes "Built from main at ${GITHUB_SHA}. Download vigil.apk on your phone and open it to install (allow installs from your browser when asked)."
