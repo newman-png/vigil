@@ -1,5 +1,6 @@
 package dev.vigil.engine
 
+import android.app.KeyguardManager
 import android.content.Context
 import dev.vigil.Graph
 import dev.vigil.core.engine.Engine
@@ -11,6 +12,9 @@ import dev.vigil.core.engine.Scheduling
 import dev.vigil.core.engine.TimeSchedule
 import dev.vigil.core.log.EventType
 import dev.vigil.core.log.LogEvent
+import dev.vigil.core.plan.CheckInAnswer
+import dev.vigil.core.plan.DayMode
+import dev.vigil.core.plan.Rating
 import dev.vigil.data.PlanRepository
 import dev.vigil.service.VigilService
 import dev.vigil.takeover.BadDayResult
@@ -107,10 +111,27 @@ object Vigil {
         exec { state, env -> Engine.dismiss(state, env, takeoverId) }
     }
 
+    /** True when the engine wants EASY / OK / HARD for this just-completed takeover. */
+    fun pendingRatingFor(takeoverId: String): Boolean = Graph.state.current.pendingRating?.takeoverId == takeoverId
+
+    /** The difficulty report after a completion; null = skipped. */
+    fun rate(takeoverId: String, rating: Rating?) {
+        exec { state, env -> Engine.rate(state, env, takeoverId, rating) }
+    }
+
+    /** The morning check-in after a bad day was answered. */
+    fun answerCheckIn(takeoverId: String, answer: CheckInAnswer) {
+        exec { state, env -> Engine.answerCheckIn(state, env, takeoverId, answer) }
+    }
+
     /** "I'm not okay today" held on the takeover. Tells it whether it was closed by that. */
     fun notOkay(takeoverId: String): BadDayResult {
         val outcome = setBadDay(true)
-        return if (outcome.events.any { it.type == EventType.BYPASSED_BAD_DAY && it.takeoverId == takeoverId }) {
+        // A check-in on screen is replaced by the bad day (one check_in event) rather than bypassed.
+        val closed = outcome.events.any {
+            it.takeoverId == takeoverId && (it.type == EventType.BYPASSED_BAD_DAY || it.type == EventType.CHECK_IN)
+        }
+        return if (closed) {
             BadDayResult.BYPASSED
         } else {
             BadDayResult.KEPT
@@ -122,6 +143,23 @@ object Vigil {
     fun setBadDay(on: Boolean): Outcome = exec { state, env -> Engine.setBadDay(state, env, on) }
 
     fun setQuiet(on: Boolean): Outcome = exec { state, env -> Engine.setQuiet(state, env, on) }
+
+    /** Today's mode: normal, bad_day ("I'm not okay today") or minimum (chosen by the check-in). */
+    fun dayMode(): DayMode = Engine.dayMode(Graph.state.current, Graph.env())
+
+    /**
+     * The imported plan has expired (the fallback or built-in plan runs) and its weekly bundle has not been
+     * exported since. The app then shows PLAN COMPLETE with its one EXPORT button.
+     */
+    fun planComplete(): Boolean {
+        val snapshot = Graph.plans.snapshot.value
+        val plan = snapshot.plan ?: return false
+        if (Graph.activeSet().source == PlanSource.PLAN) return false
+        val s = Graph.settings
+        val expiredAt = plan.expires.atZone(Graph.zone).toInstant().toEpochMilli()
+        val exported = s.lastBundleExportImportedAtMs == (snapshot.importedAtMs ?: -1L) && s.lastBundleExportAtMs >= expiredAt
+        return !exported
+    }
 
     /** Developer kill switch: no takeovers for [minutes]; whatever is showing or waiting is dropped. */
     fun suspend(minutes: Long) {
@@ -146,7 +184,16 @@ object Vigil {
     }
 
     fun onScreenOn(context: Context) {
+        // The morning check-in waits for the user to be there: an awake, unlocked phone. It never wakes the screen.
+        val locked = context.getSystemService(KeyguardManager::class.java)?.isKeyguardLocked == true
+        if (!locked && Device.isInteractive(context)) onUserPresent()
         if (Graph.state.current.active != null) TakeoverLauncher.onScreenOn(context)
+    }
+
+    /** The user is at the phone (unlocked it, or opened VIGIL): show a due morning check-in. */
+    fun onUserPresent() {
+        // Always ask the engine: a check-in only becomes due in its housekeeping at the day boundary.
+        exec { state, env -> Engine.onUserPresent(state, env) }
     }
 
     fun onScreenOff(context: Context) = UsageWatcher.onScreenOff(System.currentTimeMillis())
@@ -167,7 +214,11 @@ object Vigil {
             PlanSource.DEFAULT -> "Minimal default plan"
         }
         if (state.quiet) parts += "quiet"
-        if (Engine.isBadDay(state, env)) parts += "not okay today"
+        when (Engine.dayMode(state, env)) {
+            DayMode.BAD_DAY -> parts += "not okay today"
+            DayMode.MINIMUM -> parts += "minimum day"
+            DayMode.NORMAL -> Unit
+        }
         nextTimeDirective(env)?.let { parts += "next: $it" }
         return parts.joinToString(" · ")
     }
@@ -199,12 +250,15 @@ object Vigil {
                 o
             }
         }
-        if (outcome.state != before || outcome.events.isNotEmpty()) afterChange(before, outcome.state, env)
+        if (outcome.state != before || outcome.events.isNotEmpty()) afterChange(before, outcome, env)
         return outcome
     }
 
-    private fun afterChange(before: RuntimeState, after: RuntimeState, env: Env) {
+    private fun afterChange(before: RuntimeState, outcome: Outcome, env: Env) {
         val app = Graph.app
+        val after = outcome.state
+        // The week is over: say so once, so the bundle gets exported for the next plan.
+        if (outcome.events.any { it.type == EventType.PLAN_EXPIRED }) Notifications.planComplete(app)
         val active = after.active
         when {
             active == null -> TakeoverLauncher.onClosed(app)

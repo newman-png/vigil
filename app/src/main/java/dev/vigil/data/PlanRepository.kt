@@ -37,6 +37,14 @@ class PlanRepository(context: Context) {
 
     val plan: Plan? get() = _snapshot.value.plan
 
+    /** The running plan's JSON exactly as it was imported (for the weekly bundle), or null if there is none. */
+    fun planText(): String? = synchronized(lock) {
+        // After a failed reload the previous plan runs (see load()), so that is the one to report.
+        val snap = _snapshot.value
+        val file = if (snap.plan != null && snap.loadError != null && snap.importedAtMs == null) previousFile else currentFile
+        if (snap.plan == null || !file.exists()) null else runCatching { file.readText() }.getOrNull()
+    }
+
     /** Validates [text]; only a valid plan is saved and activated. */
     fun import(text: String, fileName: String?, nowMs: Long): ImportOutcome = synchronized(lock) {
         when (val result = PlanParser.parse(text)) {

@@ -9,6 +9,7 @@ import android.provider.Settings
 import android.util.Log
 import dev.vigil.Graph
 import dev.vigil.core.engine.Engine
+import dev.vigil.core.log.EventType
 import dev.vigil.engine.Device
 import dev.vigil.engine.Notifications
 import dev.vigil.engine.Vigil
@@ -90,7 +91,8 @@ object TakeoverLauncher {
         val now = System.currentTimeMillis()
         // Housekeeping first, so a takeover past its hard maximum is closed rather than shown again.
         val env = Graph.env()
-        Graph.state.update { Engine.refresh(it, env) }
+        val refreshed = Graph.state.update { Engine.refresh(it, env) }
+        if (refreshed.events.any { it.type == EventType.PLAN_EXPIRED }) Notifications.planComplete(context)
         val ticket = Graph.state.current.active
         if (ticket == null || Graph.settings.isSuspended(now)) {
             onClosed(context)

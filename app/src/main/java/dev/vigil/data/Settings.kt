@@ -83,6 +83,16 @@ class Settings(context: Context) {
         get() = prefs.getLong("step_aside_until_ms", 0)
         set(value) = edit { putLong("step_aside_until_ms", value) }
 
+    /** Import time (epoch ms) of the plan whose weekly bundle was exported last; 0 = never. */
+    var lastBundleExportImportedAtMs: Long
+        get() = prefs.getLong("last_bundle_export_imported_at_ms", 0)
+        set(value) = edit { putLong("last_bundle_export_imported_at_ms", value) }
+
+    /** When the last weekly bundle was exported (epoch ms); 0 = never. */
+    var lastBundleExportAtMs: Long
+        get() = prefs.getLong("last_bundle_export_at_ms", 0)
+        set(value) = edit { putLong("last_bundle_export_at_ms", value) }
+
     private fun splitWords(s: String): List<String> = s.split(',').map { it.trim() }.filter { it.isNotEmpty() }
 
     private inline fun edit(block: android.content.SharedPreferences.Editor.() -> Unit) {

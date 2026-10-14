@@ -14,8 +14,14 @@ import dev.vigil.ui.MainActivity
 object Notifications {
     const val CHANNEL_SERVICE = "service"
     const val CHANNEL_TAKEOVER = "takeover"
+    const val CHANNEL_PLAN = "plan"
     const val ID_SERVICE = 1
     const val ID_TAKEOVER = 2
+    const val ID_PLAN_COMPLETE = 3
+
+    /** Intent extra MainActivity reads to open a screen directly; [OPEN_PLAN_COMPLETE] opens PLAN COMPLETE. */
+    const val EXTRA_OPEN = "open"
+    const val OPEN_PLAN_COMPLETE = "plan_complete"
 
     fun createChannels(context: Context) {
         val nm = context.getSystemService(NotificationManager::class.java) ?: return
@@ -33,6 +39,33 @@ object Notifications {
                 lockscreenVisibility = Notification.VISIBILITY_PUBLIC
             },
         )
+        nm.createNotificationChannel(
+            NotificationChannel(CHANNEL_PLAN, "Plan complete", NotificationManager.IMPORTANCE_DEFAULT).apply {
+                description = "Says when the week's plan has ended and its bundle is ready to export."
+                setSound(null, null)
+                enableVibration(false)
+            },
+        )
+    }
+
+    /** The plan's week is over: export the bundle. Silent, like everything VIGIL posts outside a takeover. */
+    fun planComplete(context: Context) {
+        val nm = context.getSystemService(NotificationManager::class.java) ?: return
+        val open = PendingIntent.getActivity(
+            context, 3,
+            Intent(context, MainActivity::class.java)
+                .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+                .putExtra(EXTRA_OPEN, OPEN_PLAN_COMPLETE),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        val notification = Notification.Builder(context, CHANNEL_PLAN)
+            .setSmallIcon(R.drawable.ic_stat_eye)
+            .setContentTitle("VIGIL · PLAN COMPLETE")
+            .setContentText("Export the week's bundle for your next plan. The fallback plan runs until then.")
+            .setContentIntent(open)
+            .setAutoCancel(true)
+            .build()
+        runCatching { nm.notify(ID_PLAN_COMPLETE, notification) }
     }
 
     fun service(context: Context, text: String, quiet: Boolean): Notification {

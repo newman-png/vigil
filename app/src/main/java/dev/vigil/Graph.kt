@@ -39,6 +39,8 @@ object Graph {
         zone = zone,
         active = activeSet(now),
         allowQuietOverride = settings.allowQuietOverride,
+        // The import time identifies the plan: a new import resets ratings, sampling and step-downs.
+        planKey = plans.snapshot.value.importedAtMs?.toString(),
         newId = { UUID.randomUUID().toString().substring(0, 8) },
     )
 }
