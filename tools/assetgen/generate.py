@@ -5,14 +5,14 @@ Standard library only and deterministic: the same script always writes
 byte-identical files. Run from anywhere:
 
     python3 tools/assetgen/generate.py            # everything
-    python3 tools/assetgen/generate.py eye blip   # only these targets
+    python3 tools/assetgen/generate.py eye tone   # only these targets
 
 Targets and the files they write (relative to the repo root):
     eye      app/src/main/res/drawable-nodpi/eye_sheet.png
              app/src/main/res/values/eye_sheet.xml
              tools/assetgen/preview/*.png (x10 previews, not shipped)
-    drone, thump, sting, blip, dismiss
-             app/src/main/res/raw/<target>.wav
+    drone, heartbeat, swell, tone, thud
+             app/src/main/res/raw/<target>.wav (CC0 1.0, see README.md)
 
 The VT323 font and its licence are committed as downloaded, not generated; the
 script only checks that they are in place. See README.md next to this file.
@@ -218,7 +218,13 @@ def gen_eye():
         write_png(os.path.join(PREVIEW, f"eye_frame{i:02d}_x10.png"), upscale(on_black(frames[i]), 10))
 
 # ---------------------------------------------------------------------------
-# Sounds: 16-bit mono PCM, peak-normalised to -3 dBFS.
+# Sounds: 16-bit mono PCM, peak-normalised to -3 dBFS. Dedicated to the public
+# domain (CC0 1.0); only CC0 audio may replace them (see README.md).
+#
+# The takeover is serious, not a game: no chimes, bleeps, arpeggios or clicks.
+# Phone speakers play almost nothing below ~100 Hz, so every low sound pairs a
+# sub-bass root (felt on headphones and bigger speakers) with harmonics at
+# 80-250 Hz that a phone speaker does play; the ear fills in the missing root.
 
 RATE = 22050
 PEAK = 10 ** (-3 / 20)
@@ -244,115 +250,131 @@ def write_wav(name, samples, fade_in=0.002, fade_out=0.006):
     write_bytes(os.path.join(RES, "raw", f"{name}.wav"), buf.getvalue())
 
 
-def square(phase, harmonics, rolloff=1.0):
-    """Band-limited square wave: the first `harmonics` odd harmonics, each at
-    1/k**rolloff. rolloff 1 is a true square; higher is duller."""
-    return sum(math.sin(k * phase) / k ** rolloff for k in range(1, 2 * harmonics, 2))
+def noise(seed):
+    """Deterministic white noise in [-1, 1] (xorshift32; `seed` must not be 0)."""
+    x = seed
+    while True:
+        x ^= (x << 13) & 0xFFFFFFFF
+        x ^= x >> 17
+        x ^= (x << 5) & 0xFFFFFFFF
+        yield x / 0x7FFFFFFF - 1
 
 
-def pulse(phase, freq, duty):
-    """Band-limited pulse wave (no DC), harmonics up to 9 kHz."""
-    top = int(9000 / freq)
-    return sum(
-        2 / (k * math.pi) * math.sin(k * math.pi * duty) * math.cos(k * phase)
-        for k in range(1, top + 1)
-    )
+def lowpass(cutoff):
+    """Coefficient `a` of a one-pole low-pass filter at `cutoff` Hz: y += a * (x - y)."""
+    return 1 - math.exp(-TAU * cutoff / RATE)
+
+
+def loop(seconds, partials):
+    """One loop of summed sines, `partials` = [(frequency, amplitude)]. Every
+    partial must make a whole number of cycles in `seconds`, so the end runs
+    straight into the start. All start at phase 0, so the first sample is 0."""
+    for freq, _ in partials:
+        assert (freq * seconds).is_integer(), f"{freq} Hz does not loop in {seconds} s"
+    return [
+        sum(a * math.sin(TAU * f * i / RATE) for f, a in partials)
+        for i in range(int(seconds * RATE))
+    ]
+
+
+def thump(n, start, f_hi, f_lo, sweep, decay, rand, attack=1.2):
+    """One low sine thump starting at `start` s in a buffer of `n` samples:
+    the pitch drops from `f_hi` to `f_lo` Hz (time constant `sweep` s) and the
+    level decays with time constant `decay` s. A few ms of low-passed noise
+    soften the attack into a thud (it is not a click)."""
+    out = [0.0] * n
+    phase = 0.0
+    dust = 0.0
+    a = lowpass(350)
+    for i in range(int(start * RATE), n):
+        t = i / RATE - start
+        phase += TAU * (f_lo + (f_hi - f_lo) * math.exp(-t / sweep)) / RATE
+        dust += a * (next(rand) - dust)
+        body = math.sin(phase) + attack * dust * math.exp(-t / 0.007)
+        out[i] = (1 - math.exp(-t / 0.0015)) * math.exp(-t / decay) * body
+    return out
 
 
 def gen_drone():
-    """Low drone around 55 Hz. Every partial (and the swell) makes a whole
-    number of cycles in the 4 s, so the file loops without a seam. All
-    partials start at phase 0, so the first sample is silent: no edge fades."""
-    seconds = 4
-    partials = [
-        (55.0, 1.0), (55.25, 0.8),    # root, slowly beating against itself
-        (77.75, 0.12),                # a quiet tritone for unease
-        (110.0, 0.45), (110.5, 0.3),  # octave, beating twice as fast
-        (165.0, 0.22), (220.25, 0.14), (330.0, 0.05),
-    ]
-    for freq, _ in partials:
-        assert (freq * seconds).is_integer()
+    """Slow sub-bass drone on a 45 Hz root, 8 s loop. Its harmonics at
+    90-270 Hz carry it on a phone speaker. Detuned pairs beat slowly (once
+    every 2, 4 or 8 s) and the harmonics breathe once per loop, quietest at
+    the loop point. Every partial and the breath make whole cycles in the 8 s
+    and the file starts at 0, so it loops without a seam: no edge fades."""
+    seconds = 8
+    root = loop(seconds, [(45.0, 0.55), (45.125, 0.4)])  # beats once every 8 s
+    # The 180 Hz pair is inverted: the same sound with a 2 dB lower peak, so
+    # it comes out louder after normalising.
+    harmonics = loop(seconds, [
+        (90.0, 0.5), (90.25, 0.3),       # once every 4 s
+        (135.0, 0.5), (135.125, 0.3),    # once every 8 s
+        (180.0, -0.5), (180.5, -0.3),    # once every 2 s
+        (225.0, 0.35), (225.25, 0.2),    # once every 4 s
+        (270.0, 0.2),
+    ])
     samples = []
-    for i in range(seconds * RATE):
-        t = i / RATE
-        swell = 0.8 + 0.2 * math.sin(TAU * t / seconds)
-        samples.append(swell * sum(a * math.sin(TAU * f * t) for f, a in partials))
+    for i, (low, high) in enumerate(zip(root, harmonics)):
+        breath = 0.75 - 0.25 * math.cos(TAU * i / (seconds * RATE))
+        samples.append(low + breath * high)
     write_wav("drone", samples, fade_in=0, fade_out=0)
 
 
-def gen_thump():
-    """Heartbeat "lub-dub": two low sine thumps with a falling pitch and a
-    little filtered noise for the attack."""
-    n = int(0.7 * RATE)
-    out = [0.0] * n
-    rng = 0x12345678
-
-    def beat(start, f_hi, f_lo, amp, decay):
-        nonlocal rng
-        phase = 0.0
-        noise = 0.0
-        for i in range(int(start * RATE), n):
-            t = i / RATE - start
-            freq = f_lo + (f_hi - f_lo) * math.exp(-t / 0.03)
-            phase += TAU * freq / RATE
-            rng ^= (rng << 13) & 0xFFFFFFFF
-            rng ^= rng >> 17
-            rng ^= (rng << 5) & 0xFFFFFFFF
-            noise += 0.08 * (rng / 0x7FFFFFFF - 1 - noise)  # one-pole low-pass
-            body = math.sin(phase) * math.exp(-t / decay)
-            click = 2.0 * noise * math.exp(-t / 0.01)
-            out[i] += amp * (1 - math.exp(-t / 0.002)) * (body + click)
-
-    beat(0.02, 120, 50, 1.0, 0.05)
-    beat(0.27, 140, 58, 0.75, 0.04)
-    write_wav("thump", [math.tanh(1.6 * s) for s in out], fade_out=0.02)
-
-
-def gen_sting():
-    """Completion sting: a quick 25% pulse arpeggio up C5 E5 G5, landing on a
-    held C6 that rings out."""
-    step = 0.07
-    notes = [523.25, 659.26, 783.99, 1046.50]
-    samples = []
-    phase = 0.0
-    for i in range(int(0.8 * RATE)):
-        t = i / RATE
-        index = min(int(t / step), len(notes) - 1)
-        local = t - index * step
-        freq = notes[index]
-        phase += TAU * freq / RATE
-        if index == len(notes) - 1:
-            env = math.exp(-local / 0.18)
-        else:
-            # Short notes, each faded out just before the next one starts.
-            env = (1 - 0.3 * local / step) * min(1.0, (step - local) / 0.003)
-        env *= min(1.0, local / 0.002)
-        samples.append(env * pulse(phase, freq, 0.25))
-    write_wav("sting", samples, fade_out=0.01)
-
-
-def gen_blip():
-    """Very soft typing blip: 40 ms of a dull 1.1 kHz tone with a fast decay."""
-    samples = []
-    for i in range(int(0.04 * RATE)):
-        t = i / RATE
-        samples.append(math.exp(-t / 0.008) * square(TAU * 1100 * t, 3, rolloff=2))
-    write_wav("blip", samples, fade_in=0.0015, fade_out=0.005)
-
-
-def gen_dismiss():
-    """Directive abandoned: a low, dull square tone gliding down an octave
-    (220 -> 110 Hz) and fading out. Few harmonics so it is not harsh."""
+def gen_heartbeat():
+    """A dry, low "lub-dub", 0.6 s: two short thumps, the "dub" 240 ms after
+    the "lub" and softer (110 -> 46 Hz, then 125 -> 52 Hz), saturated so a
+    phone speaker hears their overtones. Short decays and no reverb tail."""
     n = int(0.6 * RATE)
-    samples = []
-    phase = 0.0
+    rand = noise(0x13579BDF)
+    lub = thump(n, 0.01, 110, 46, 0.035, 0.06, rand)
+    dub = thump(n, 0.25, 125, 52, 0.03, 0.05, rand)
+    write_wav("heartbeat", [math.tanh(2.8 * (a + 0.7 * b)) for a, b in zip(lub, dub)], fade_out=0.02)
+
+
+def gen_swell():
+    """A reversed swell, 1.9 s: a low, slightly inharmonic struck sound with a
+    noise wash, decaying, then reversed. It rises out of nothing, brightens as
+    the fast-decaying high partials arrive late, and ends abruptly where the
+    hit was. The app cuts it at the eye's first frame, while it still rises."""
+    seconds = 1.9
+    n = int(seconds * RATE)
+    # (frequency, amplitude, decay in s): inharmonic like a struck metal plate,
+    # the low partials ringing longest.
+    partials = [
+        (55.0, 1.0, 0.60), (111.5, 0.7, 0.50), (163.0, 0.5, 0.42),
+        (229.0, 0.4, 0.34), (301.0, 0.3, 0.27), (389.0, 0.22, 0.21),
+        (517.0, 0.14, 0.15), (701.0, 0.1, 0.11),
+    ]
+    rand = noise(0x0BADF00D)
+    dark_a, bright_a = lowpass(600), lowpass(1800)
+    dark = bright_low = 0.0
+    hit = []
     for i in range(n):
         t = i / RATE
-        freq = 110 * 2 ** (1 - min(1.0, t / 0.45))
-        phase += TAU * freq / RATE
-        env = min(1.0, t / 0.005) * (1 - t / 0.6) ** 1.5
-        samples.append(env * square(phase, 6, rolloff=1.3))
-    write_wav("dismiss", samples, fade_out=0.01)
+        tones = sum(a * math.exp(-t / d) * math.sin(TAU * f * t) for f, a, d in partials)
+        x = next(rand)
+        dark += dark_a * (x - dark)
+        bright_low += bright_a * (x - bright_low)
+        wash = 1.6 * dark * math.exp(-t / 0.5) + 0.5 * (x - bright_low) * math.exp(-t / 0.18)
+        hit.append((1 - math.exp(-t / 0.003)) * (tones + wash))
+    top = max(abs(s) for s in hit)
+    swell = [math.tanh(1.4 * s / top) for s in reversed(hit)]
+    write_wav("swell", swell, fade_in=0.3, fade_out=0.004)
+
+
+def gen_tone():
+    """A thin, high 4 kHz sine with a faint partner 0.5 Hz above it, so it
+    wavers slowly. 2 s loop: both make whole cycles and it starts at 0, so it
+    loops without a seam (no edge fades). The app plays it quietly."""
+    write_wav("tone", loop(2, [(4000.0, 1.0), (4000.5, 0.3)]), fade_in=0, fade_out=0)
+
+
+def gen_thud():
+    """A dry, low thud for a confirmed step, 0.18 s: one short thump falling
+    from 140 to 50 Hz, saturated so a phone speaker hears it, and decayed to
+    silence before the end: no tail."""
+    n = int(0.18 * RATE)
+    body = thump(n, 0.0, 140, 50, 0.025, 0.035, noise(0x2468ACE1), attack=1.5)
+    write_wav("thud", [math.tanh(3.0 * s) for s in body], fade_out=0.01)
 
 # ---------------------------------------------------------------------------
 
@@ -372,10 +394,10 @@ def check_font():
 TARGETS = {
     "eye": gen_eye,
     "drone": gen_drone,
-    "thump": gen_thump,
-    "sting": gen_sting,
-    "blip": gen_blip,
-    "dismiss": gen_dismiss,
+    "heartbeat": gen_heartbeat,
+    "swell": gen_swell,
+    "tone": gen_tone,
+    "thud": gen_thud,
 }
 
 
