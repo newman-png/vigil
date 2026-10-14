@@ -17,3 +17,6 @@ app/libs/glyph-*.aar
 *.iml
 .vscode/
 .DS_Store
+
+# Claude Code worktrees
+.claude/worktrees/

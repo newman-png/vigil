@@ -1033,4 +1033,19 @@ class PlanParserTest {
             assertTrue("\"$fragment\" not in: $message", message.contains(fragment, ignoreCase = true))
         }
     }
+
+    @Test
+    fun stepLocksMustFitInsideTheTakeoverMaximum() {
+        fun planWithLocks(vararg seconds: Int): String {
+            val steps = seconds.joinToString(",") { """{"text": "Work.", "min_seconds": $it}""" }
+            return """{"schema_version": 1, "week_of": "2026-10-19", "expires": "2026-10-26T04:00",
+                "directives": [{"id": "study", "tier": 3, "trigger": {"type": "time", "at": "09:00"},
+                "steps": [$steps], "why": "Focus.", "quiet": "queue"}], "bad_day": {"keep": ["study"]}}"""
+        }
+        assertTrue(PlanParser.parse(planWithLocks(3600, 1200)) is ParseResult.Success)
+        val failure = PlanParser.parse(planWithLocks(3600, 1201)) as ParseResult.Failure
+        val issue = failure.errors.single()
+        assertEquals("directives[0].steps", issue.path)
+        assertTrue(issue.message, issue.message.contains("90 minutes"))
+    }
 }

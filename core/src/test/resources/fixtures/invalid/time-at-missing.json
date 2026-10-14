@@ -1,0 +1,54 @@
+{
+  "_problem": "time trigger without at",
+  "_expect_error_at": "directives[1].trigger.at",
+  "schema_version": 1,
+  "week_of": "2026-10-19",
+  "expires": "2026-10-26T04:00",
+  "day_boundary": "04:00",
+  "directives": [
+    {
+      "id": "fajr",
+      "tier": 3,
+      "title": "FAJR",
+      "trigger": {"type": "adhan", "prayer": "fajr"},
+      "steps": [{"text": "Make wudu.", "min_seconds": 60}, {"text": "Pray Fajr.", "min_seconds": 180}],
+      "why": "The day starts here.",
+      "quiet": "override"
+    },
+    {
+      "id": "water",
+      "tier": 1,
+      "title": "WATER",
+      "trigger": {"type": "time", "days": ["mon", "wed", "fri"]},
+      "steps": [{"text": "Drink a full glass of water.", "min_seconds": 10}],
+      "why": "Small things, every day.",
+      "quiet": "silent"
+    },
+    {
+      "id": "scroll",
+      "tier": 2,
+      "title": "PAUSE",
+      "trigger": {"type": "app_usage", "apps": ["com.zhiliaoapp.musically"], "opens": 6, "window_min": 30},
+      "steps": [
+        {"text": "Put the phone down.", "min_seconds": 10},
+        {"text": "Take three slow breaths.", "min_seconds": 20}
+      ],
+      "why": "Make it a choice.",
+      "quiet": "queue"
+    }
+  ],
+  "bad_day": {"keep": ["fajr"]},
+  "fallback_plan": {
+    "directives": [
+      {
+        "id": "fb-sleep",
+        "tier": 3,
+        "title": "SLEEP",
+        "trigger": {"type": "time", "at": "23:00"},
+        "steps": [{"text": "Phone on charge across the room.", "min_seconds": 10}],
+        "why": "Fajr is won the night before.",
+        "quiet": "override"
+      }
+    ]
+  }
+}

@@ -41,6 +41,9 @@ object PlanParser {
     const val MAX_STEP_SECONDS = 3600
     const val MAX_WINDOW_MIN = 1440
 
+    /** All of a directive's step locks together: 80 minutes, so they fit inside a takeover's 90-minute hard maximum. */
+    const val MAX_TOTAL_LOCK_SECONDS = 80 * 60
+
     /** A real plan nests about 6 levels deep. The limit keeps absurd input from overflowing the stack. */
     const val MAX_NESTING = 64
 
@@ -345,6 +348,14 @@ object PlanParser {
         }
         if (steps != null && tier == 2 && steps.size > 8) {
             ctx.warn("$path.steps", "This tier 2 checklist has ${steps.size} steps; tier 2 is meant to be short.")
+        }
+        val totalLock = steps?.sumOf { it.minSeconds } ?: 0
+        if (totalLock > MAX_TOTAL_LOCK_SECONDS) {
+            ctx.error(
+                "$path.steps",
+                "The step locks add up to ${(totalLock + 59) / 60} minutes, but a takeover closes itself after 90 minutes. " +
+                    "Keep the total min_seconds of one directive under ${MAX_TOTAL_LOCK_SECONDS / 60} minutes, or split it into several directives.",
+            )
         }
 
         val trigger = readTrigger(obj, path, ctx)

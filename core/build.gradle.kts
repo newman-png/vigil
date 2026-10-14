@@ -28,6 +28,8 @@ dependencies {
 tasks.test {
     // Spec files (schema.json, sample plans) live outside the module; tests read them from the repo.
     systemProperty("vigil.repoRoot", rootDir.parentFile.absolutePath)
+    // Tests read spec/ (schema, samples, HANDOFF.md), so edits there must rerun them.
+    inputs.dir(rootDir.resolve("../spec")).withPropertyName("spec").withPathSensitivity(PathSensitivity.RELATIVE)
     testLogging {
         events("failed")
         exceptionFormat = org.gradle.api.tasks.testing.logging.TestExceptionFormat.FULL

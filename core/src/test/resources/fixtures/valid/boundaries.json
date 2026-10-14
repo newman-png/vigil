@@ -1,0 +1,72 @@
+{
+  "_shows": "every number and time at the edge of its allowed range",
+  "schema_version": 1,
+  "week_of": "2026-10-19",
+  "expires": "2026-10-26T04:00",
+  "day_boundary": "23:59",
+  "directives": [
+    {
+      "id": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "tier": 3,
+      "title": "FAJR",
+      "trigger": {"type": "adhan", "prayer": "fajr"},
+      "steps": [{"text": "Make wudu.", "min_seconds": 0}, {"text": "Pray Fajr.", "min_seconds": 3600}],
+      "why": "The day starts here.",
+      "quiet": "override"
+    },
+    {
+      "id": "water",
+      "tier": 1,
+      "title": "WATER",
+      "trigger": {"type": "time", "at": "00:00", "days": ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]},
+      "steps": [{"text": "Drink a full glass of water.", "min_seconds": 10}],
+      "why": "Small things, every day.",
+      "quiet": "silent"
+    },
+    {
+      "id": "scroll",
+      "tier": 2,
+      "title": "PAUSE",
+      "trigger": {
+        "type": "app_usage",
+        "apps": ["com.zhiliaoapp.musically"],
+        "opens": 1000,
+        "window_min": 1440,
+        "cooldown_min": 0
+      },
+      "steps": [
+        {"text": "Put the phone down.", "min_seconds": 10},
+        {"text": "Take three slow breaths.", "min_seconds": 20}
+      ],
+      "why": "Make it a choice.",
+      "quiet": "queue"
+    }
+  ],
+  "bad_day": {"keep": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]},
+  "fallback_plan": {
+    "directives": [
+      {
+        "id": "fb-sleep",
+        "tier": 3,
+        "title": "SLEEP",
+        "trigger": {"type": "time", "at": "23:59"},
+        "steps": [{"text": "Phone on charge across the room.", "min_seconds": 10}],
+        "why": "Fajr is won the night before.",
+        "quiet": "override"
+      },
+      {
+        "id": "0_fb-scroll",
+        "tier": 1,
+        "trigger": {
+          "type": "app_usage",
+          "apps": ["com.instagram.android"],
+          "continuous_min": 1440,
+          "cooldown_min": 1440
+        },
+        "steps": [{"text": "Close it.", "min_seconds": 1}],
+        "why": "Enough.",
+        "quiet": "ignore"
+      }
+    ]
+  }
+}
