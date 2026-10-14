@@ -6,6 +6,7 @@ import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.Intent
 import android.provider.Settings
+import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import dev.vigil.Graph
 import dev.vigil.core.engine.AppUsageTracker
@@ -22,6 +23,7 @@ import dev.vigil.engine.Vigil
  * All calls happen on the main thread.
  */
 object UsageWatcher {
+    private const val TAG = "VigilUsage"
     private val tracker = AppUsageTracker()
 
     /** True while the accessibility service is connected; polling is skipped then. */
@@ -54,13 +56,18 @@ object UsageWatcher {
             if (usm != null) {
                 // Events are recorded a moment after their timestamp, so each query overlaps the last by a few seconds.
                 val from = if (queriedUntilMs == 0L || nowMs - queriedUntilMs > 10 * 60_000L) nowMs - 15_000L else queriedUntilMs - OVERLAP_MS
-                val events = usm.queryEvents(from, nowMs)
-                val e = UsageEvents.Event()
-                while (events.hasNextEvent()) {
-                    events.getNextEvent(e)
-                    if (e.eventType != UsageEvents.Event.ACTIVITY_RESUMED || e.timeStamp <= lastEventMs) continue
-                    lastEventMs = e.timeStamp
-                    feed(e.packageName, e.timeStamp, triggers)
+                try {
+                    val events = usm.queryEvents(from, nowMs)
+                    val e = UsageEvents.Event()
+                    while (events.hasNextEvent()) {
+                        events.getNextEvent(e)
+                        if (e.eventType != UsageEvents.Event.ACTIVITY_RESUMED || e.timeStamp <= lastEventMs) continue
+                        lastEventMs = e.timeStamp
+                        feed(e.packageName, e.timeStamp, triggers)
+                    }
+                } catch (ex: RuntimeException) {
+                    // Usage access revoked mid-query, or the stats service is busy: try again on the next tick.
+                    Log.w(TAG, "Usage polling failed: ${ex.message}")
                 }
                 queriedUntilMs = nowMs
             }
@@ -104,7 +111,12 @@ class UsageAccessibilityService : AccessibilityService() {
         val pkg = event.packageName?.toString() ?: return
         // The notification shade and the keyboard are not "opening an app".
         if (pkg == "com.android.systemui" || pkg == keyboardPackage()) return
-        UsageWatcher.onAccessibilityForeground(pkg, System.currentTimeMillis())
+        // A failure while firing must not crash the process (and with it this service and the takeover).
+        try {
+            UsageWatcher.onAccessibilityForeground(pkg, System.currentTimeMillis())
+        } catch (e: Exception) {
+            Log.e(TAG, "Handling an app switch failed", e)
+        }
     }
 
     override fun onInterrupt() = Unit
@@ -121,4 +133,8 @@ class UsageAccessibilityService : AccessibilityService() {
 
     private fun keyboardPackage(): String? =
         Settings.Secure.getString(contentResolver, Settings.Secure.DEFAULT_INPUT_METHOD)?.substringBefore('/')
+
+    private companion object {
+        const val TAG = "VigilUsage"
+    }
 }

@@ -75,14 +75,21 @@
                 android:value="Personal commitment device: watches the user's own weekly plan triggers and shows its directives." />
         </service>
 
+        <!-- The plan's alarm and the TEST screen's alarm. Reached only through VIGIL's own PendingIntents. -->
         <receiver
             android:name=".trigger.AlarmReceiver"
+            android:exported="false" />
+
+        <receiver
+            android:name=".trigger.TestAlarmReceiver"
             android:exported="false" />
 
         <receiver
             android:name=".engine.QuietToggleReceiver"
             android:exported="false" />
 
+        <!-- Exported so the system can reach it; every action here is a protected broadcast only the system sends,
+             and the receiver ignores anything else. -->
         <receiver
             android:name=".trigger.SystemEventReceiver"
             android:exported="true">
@@ -91,6 +98,7 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
                 <action android:name="android.intent.action.TIME_SET" />
                 <action android:name="android.intent.action.TIMEZONE_CHANGED" />
+                <action android:name="android.app.action.SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED" />
             </intent-filter>
         </receiver>
 
