@@ -4,6 +4,7 @@ import dev.vigil.core.plan.ParseResult
 import dev.vigil.core.plan.Plan
 import dev.vigil.core.plan.PlanParser
 import dev.vigil.core.plan.Prayer
+import dev.vigil.core.plan.RatingPolicy
 import dev.vigil.core.plan.Trigger
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
@@ -56,6 +57,35 @@ class BuiltinPlanTest {
             assertTrue("${d.id} has an unsupported trigger", d.trigger !is Trigger.Unsupported)
             assertTrue("${d.id} must not collide with the debug demo", d.id != Engine.DEMO_ID)
         }
+    }
+
+    /** The prayers are never rated, water now and then, sleep every night. */
+    @Test
+    fun ratingsAreSetPerDirective() {
+        assertEquals(Plan.SUPPORTED_SCHEMA_VERSION, plan.schemaVersion)
+        for (d in plan.directives) {
+            val expected = when {
+                d.trigger is Trigger.Adhan -> RatingPolicy.NEVER
+                d.title == "WATER" -> RatingPolicy.SAMPLE
+                d.title == "SLEEP" -> RatingPolicy.ALWAYS
+                else -> fail("${d.id} needs an expected rating here") as Nothing
+            }
+            assertEquals(d.id, expected, d.rating)
+        }
+        // Explicit in the file, so a change to the tier defaults cannot change the built-in plan.
+        assertEquals(plan.directives.size, Regex("\"rating\":").findAll(BuiltinPlan.text).count())
+    }
+
+    /** It is the bare minimum already: nothing to step down to, no minimum day and no check-in. */
+    @Test
+    fun hasNoVariantsMinimumOrCheckIn() {
+        for (d in plan.directives) {
+            assertNull(d.id, d.easier)
+            assertNull(d.id, d.stepDownAfterHard)
+            assertTrue("${d.id} uses an id reserved for the app", !d.id.startsWith(PlanParser.RESERVED_ID_PREFIX))
+        }
+        assertNull(plan.minimum)
+        assertNull(plan.afterBadDay)
     }
 
     @Test

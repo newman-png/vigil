@@ -1,7 +1,7 @@
 {
   "_shows": "'_' comment keys in every kind of object",
   "_readme": "Comments are allowed in every object.",
-  "schema_version": 1,
+  "schema_version": 2,
   "week_of": "2026-10-19",
   "expires": "2026-10-26T04:00",
   "day_boundary": "04:00",
@@ -46,6 +46,11 @@
       ],
       "why": "Make it a choice.",
       "quiet": "queue",
+      "variants": {
+        "easier": {"steps": [{"text": "Put the phone down.", "min_seconds": 5, "_why": 42}], "_note": ["a", "comment"]},
+        "_note": ["a", "comment"]
+      },
+      "adapt": {"step_down_after_hard": 2, "_note": ["a", "comment"]},
       "_note": "a comment"
     }
   ],
@@ -64,5 +69,7 @@
       }
     ],
     "_note": "a comment"
-  }
+  },
+  "minimum": {"keep": ["fajr"], "_note": "a comment"},
+  "after_bad_day": {"better": "normal", "same": "bad_day", "worse": "minimum", "_note": "a comment"}
 }

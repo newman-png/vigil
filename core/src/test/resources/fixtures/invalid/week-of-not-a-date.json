@@ -1,7 +1,7 @@
 {
   "_problem": "week_of is not a real date",
   "_expect_error_at": "week_of",
-  "schema_version": 1,
+  "schema_version": 2,
   "week_of": "2026-02-30",
   "expires": "2026-10-26T04:00",
   "day_boundary": "04:00",

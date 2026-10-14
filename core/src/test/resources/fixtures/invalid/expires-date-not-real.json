@@ -1,7 +1,7 @@
 {
   "_problem": "date-only expires is not a real date",
   "_expect_error_at": "expires",
-  "schema_version": 1,
+  "schema_version": 2,
   "week_of": "2026-10-19",
   "expires": "2026-02-30",
   "day_boundary": "04:00",

@@ -1,6 +1,6 @@
 {
   "_shows": "null for optional fields (same as leaving them out)",
-  "schema_version": 1,
+  "schema_version": 2,
   "week_of": "2026-10-19",
   "expires": "2026-10-26T04:00",
   "day_boundary": "04:00",
@@ -12,7 +12,8 @@
       "trigger": {"type": "adhan", "prayer": "fajr"},
       "steps": [{"text": "Make wudu.", "min_seconds": 60}, {"text": "Pray Fajr.", "min_seconds": 180}],
       "why": "The day starts here.",
-      "quiet": "override"
+      "quiet": "override",
+      "variants": {"easier": null}
     },
     {
       "id": "water",
@@ -21,7 +22,10 @@
       "trigger": {"type": "time", "at": "10:30", "days": null},
       "steps": [{"text": "Drink a full glass of water.", "min_seconds": 10}],
       "why": "Small things, every day.",
-      "quiet": "silent"
+      "quiet": "silent",
+      "rating": null,
+      "variants": null,
+      "adapt": null
     },
     {
       "id": "scroll",
@@ -33,11 +37,15 @@
         {"text": "Take three slow breaths.", "min_seconds": 20}
       ],
       "why": "Make it a choice.",
-      "quiet": "queue"
+      "quiet": "queue",
+      "variants": {"easier": {"steps": [{"text": "Put the phone down.", "min_seconds": 5}], "title": null, "why": null}},
+      "adapt": {"step_down_after_hard": 2}
     }
   ],
   "bad_day": {"keep": ["fajr"]},
   "fallback_plan": null,
   "generated_by": null,
-  "context": null
+  "context": null,
+  "minimum": null,
+  "after_bad_day": null
 }

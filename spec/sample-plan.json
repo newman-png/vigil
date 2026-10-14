@@ -1,11 +1,11 @@
 {
-  "_readme": "This is a VIGIL plan: one week of directives for the VIGIL Android app, written by a planner (an AI chat) and imported by the user. The app only executes it. It never decides anything on its own: when a trigger happens (a time of day, the adhan app announcing a prayer, or too much scrolling) it takes over the phone with the steps below until they are done. Planner: output ONE JSON object in this shape that validates against spec/schema.json: schema_version 1, week_of (the Monday, YYYY-MM-DD), expires (local time, no timezone), day_boundary, 8-14 directives across tiers 1-3, bad_day.keep (the essentials) and a small fallback_plan. Read last week's log.json first and adjust; keep ids stable week to week. Keys starting with '_' are comments and are ignored. Output only the JSON.",
+  "_readme": "This is a VIGIL plan: one week of directives for the VIGIL Android app, written by a planner (an AI chat) and imported by the user. The app only executes it. It never decides anything on its own: when a trigger happens (a time of day, the adhan app announcing a prayer, or too much scrolling) it takes over the phone with the steps below until they are done, and it only switches between options written here in advance. Planner: output ONE JSON object in this shape that validates against spec/schema.json: schema_version 2, week_of (the Monday, YYYY-MM-DD), expires (local time, no timezone), day_boundary, 8-14 directives across tiers 1-3, bad_day.keep (the essentials), minimum.keep (the bare essentials), after_bad_day (what the morning check-in picks after a hard day) and a small fallback_plan. Use rating to choose which directives ask EASY / OK / HARD, and give a directive that may be too much this week a variants.easier with adapt.step_down_after_hard. Read last week's bundle first (vigil-week-<week_of>.json: the ratings and check-ins matter most) and adjust; keep ids stable week to week. Keys starting with '_' are comments and are ignored. Output only the JSON.",
   "$schema": "https://raw.githubusercontent.com/newman-png/vigil/main/spec/schema.json",
-  "schema_version": 1,
+  "schema_version": 2,
   "week_of": "2026-10-19",
   "expires": "2026-10-26T04:00",
   "generated_by": "Claude, weekly planning chat (2026-10-18)",
-  "context": "Week two of cutting short-form video (TikTok, Instagram Reels, YouTube Shorts). Last week Fajr was missed mostly after late nights, so this week protects Fajr by protecting sleep: phone on charge across the room at 23:00. Weekday mornings start with one phone-free study block. Scrolling is not banned; it just has to be a choice, so it costs a short pause.",
+  "context": "Week two of cutting short-form video (TikTok, Instagram Reels, YouTube Shorts). Last week Fajr was missed mostly after late nights, so this week protects Fajr by protecting sleep: phone on charge across the room at 23:00. Weekday mornings start with one phone-free study block. The morning routine was abandoned twice last week, so it keeps its four steps but steps down to a two-step version after two HARD ratings in a row. Scrolling is not banned; it just has to be a choice, so it costs a short pause.",
   "day_boundary": "04:00",
   "directives": [
     {
@@ -20,7 +20,8 @@
         { "text": "Pray Fajr. The two sunnah first if you can.", "min_seconds": 240 }
       ],
       "why": "The day starts here. Get up for it.",
-      "quiet": "override"
+      "quiet": "override",
+      "rating": "always"
     },
     {
       "id": "dhuhr",
@@ -33,7 +34,8 @@
         { "text": "Pray Dhuhr.", "min_seconds": 240 }
       ],
       "why": "Pause the work. Come back to what matters most.",
-      "quiet": "queue"
+      "quiet": "queue",
+      "rating": "never"
     },
     {
       "id": "asr",
@@ -46,7 +48,8 @@
         { "text": "Pray Asr.", "min_seconds": 240 }
       ],
       "why": "Don't let the afternoon slip past it.",
-      "quiet": "queue"
+      "quiet": "queue",
+      "rating": "never"
     },
     {
       "id": "maghrib",
@@ -59,7 +62,8 @@
         { "text": "Pray Maghrib.", "min_seconds": 180 }
       ],
       "why": "Maghrib's window is short. Go now.",
-      "quiet": "silent"
+      "quiet": "silent",
+      "rating": "never"
     },
     {
       "id": "isha",
@@ -72,7 +76,8 @@
         { "text": "Pray Isha, then witr.", "min_seconds": 300 }
       ],
       "why": "Close the day properly.",
-      "quiet": "queue"
+      "quiet": "queue",
+      "rating": "never"
     },
     {
       "id": "morning",
@@ -86,7 +91,18 @@
         { "text": "Write down today's top three. Paper, not the phone.", "min_seconds": 90 }
       ],
       "why": "A made bed and three clear tasks. That's a real start.",
-      "quiet": "queue"
+      "quiet": "queue",
+      "rating": "always",
+      "variants": {
+        "easier": {
+          "why": "A small start still counts.",
+          "steps": [
+            { "text": "Open the curtains.", "min_seconds": 5 },
+            { "text": "Drink a full glass of water.", "min_seconds": 15 }
+          ]
+        }
+      },
+      "adapt": { "step_down_after_hard": 2 }
     },
     {
       "id": "study-block",
@@ -137,7 +153,8 @@
         { "text": "Say out loud what you actually came here to do.", "min_seconds": 10 }
       ],
       "why": "You can open it again. Just make it a choice.",
-      "quiet": "silent"
+      "quiet": "silent",
+      "rating": "sample"
     },
     {
       "id": "scroll-break",
@@ -180,8 +197,8 @@
       "title": "PLAN NEXT WEEK",
       "trigger": { "type": "time", "at": "20:30", "days": ["sun"] },
       "steps": [
-        { "text": "Export log.json (VIGIL › LOG & EXPORT).", "min_seconds": 10 },
-        { "text": "Open the planning chat and share the log.", "min_seconds": 30 },
+        { "text": "Export the weekly bundle (VIGIL › PLAN › EXPORT BUNDLE).", "min_seconds": 10 },
+        { "text": "Open the planning chat and share the bundle.", "min_seconds": 30 },
         { "text": "Say honestly what worked and what didn't.", "min_seconds": 120 },
         { "text": "Import next week's plan before you sleep.", "min_seconds": 10 }
       ],
@@ -192,6 +209,16 @@
   "bad_day": {
     "_note": "On a rough day only the prayers, sleep and one glass of water. Everything else can wait.",
     "keep": ["fajr", "dhuhr", "asr", "maghrib", "isha", "sleep", "water-am"]
+  },
+  "minimum": {
+    "_note": "Only if the morning after a hard day is worse still: Fajr and sleep, nothing else.",
+    "keep": ["fajr", "sleep"]
+  },
+  "after_bad_day": {
+    "_note": "The morning check-in after a bad day. Better: back to the full plan. Same: another bad day. Worse: a minimum day.",
+    "better": "normal",
+    "same": "bad_day",
+    "worse": "minimum"
   },
   "fallback_plan": {
     "_note": "Runs only if this plan expires before a new one is imported. Kept minimal on purpose.",
@@ -223,7 +250,7 @@
         "tier": 1,
         "title": "NEW PLAN",
         "trigger": { "type": "time", "at": "20:30" },
-        "steps": [{ "text": "Export log.json, open the planning chat and make this week's plan.", "min_seconds": 10 }],
+        "steps": [{ "text": "Export the weekly bundle, open the planning chat and make this week's plan.", "min_seconds": 10 }],
         "why": "Last week's plan has run out. A new one takes twenty minutes.",
         "quiet": "queue"
       },

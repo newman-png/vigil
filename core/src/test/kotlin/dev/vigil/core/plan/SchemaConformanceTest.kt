@@ -125,6 +125,19 @@ class SchemaConformanceTest {
         assertTrue("fallback_plan has 3-4 directives", fallback.size in 3..4)
         val mainIds = plan.directives.map { it.id }.toSet()
         assertTrue("fallback ids must differ from main ids", fallback.none { it.id in mainIds })
+
+        // Version 2: ratings, one directive that can step down, a minimum day and the check-in mapping.
+        assertEquals(Plan.SUPPORTED_SCHEMA_VERSION, plan.schemaVersion)
+        val rated = mapper.readTree(text)["directives"].filter { it.has("rating") }.map { it["rating"].asText() }.toSet()
+        assertEquals("a few directives set rating, with every value", RatingPolicy.entries.map { it.json }.toSet(), rated)
+        assertEquals("never", plan.directives.single { (it.trigger as? Trigger.Adhan)?.prayer == Prayer.DHUHR }.rating.json)
+        val adaptive = plan.directives.single { it.easier != null }
+        assertEquals(2, adaptive.stepDownAfterHard)
+        assertTrue("variants.easier is lighter", adaptive.easier!!.steps.size < adaptive.steps.size)
+        assertTrue("the adaptive directive is rated", adaptive.rating != RatingPolicy.NEVER)
+        assertEquals(listOf(fajr.id, "sleep"), plan.minimum?.keep)
+        assertTrue("minimum keeps less than bad_day", plan.badDay.keep.containsAll(plan.minimum!!.keep))
+        assertEquals(AfterBadDay(DayMode.NORMAL, DayMode.BAD_DAY, DayMode.MINIMUM), plan.afterBadDay)
     }
 
     @Test

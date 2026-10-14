@@ -1,6 +1,6 @@
 {
   "_shows": "a $schema link and generated_by/context",
-  "schema_version": 1,
+  "schema_version": 2,
   "week_of": "2026-10-19",
   "expires": "2026-10-26T04:00",
   "day_boundary": "04:00",

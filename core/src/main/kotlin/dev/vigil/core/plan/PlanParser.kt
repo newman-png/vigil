@@ -35,14 +35,25 @@ sealed interface ParseResult {
  *
  * It never throws: every problem becomes an [Issue] so the import screen can list them all at once.
  * Unknown trigger types and unknown fields are warnings, not errors, so newer plans still load.
+ * Plans of every version from [OLDEST_SCHEMA_VERSION] to [Plan.SUPPORTED_SCHEMA_VERSION] load; the fields added in
+ * version 2 (rating, variants, adapt, minimum, after_bad_day) are optional and read in either version.
  */
 object PlanParser {
     const val MAX_FILE_CHARS = 1_000_000
     const val MAX_STEP_SECONDS = 3600
     const val MAX_WINDOW_MIN = 1440
 
+    /** The first plan.json version. Version 2 only added optional fields, so version 1 plans still load. */
+    const val OLDEST_SCHEMA_VERSION = 1
+
     /** All of a directive's step locks together: 80 minutes, so they fit inside a takeover's 90-minute hard maximum. */
     const val MAX_TOTAL_LOCK_SECONDS = 80 * 60
+
+    /** Ids starting with this belong to the app's own built-in directives (the TEST screen's previews, the check-in). */
+    const val RESERVED_ID_PREFIX = "vigil-"
+
+    /** `adapt.step_down_after_hard` counts 1 to this many HARD ratings (the app remembers the last 10 per directive). */
+    const val MAX_STEP_DOWN_AFTER_HARD = 10
 
     /** A real plan nests about 6 levels deep. The limit keeps absurd input from overflowing the stack. */
     const val MAX_NESTING = 64
@@ -77,9 +88,12 @@ object PlanParser {
 
     private val TOP_LEVEL_KEYS = setOf(
         "\$schema", "schema_version", "week_of", "expires", "generated_by", "context",
-        "day_boundary", "directives", "bad_day", "fallback_plan",
+        "day_boundary", "directives", "bad_day", "fallback_plan", "minimum", "after_bad_day",
     )
-    private val DIRECTIVE_KEYS = setOf("id", "tier", "title", "trigger", "steps", "why", "quiet")
+    private val DIRECTIVE_KEYS = setOf("id", "tier", "title", "trigger", "steps", "why", "quiet", "rating", "variants", "adapt")
+    private val VARIANT_KEYS = setOf("title", "steps", "why")
+    private val ADAPT_KEYS = setOf("step_down_after_hard")
+    private val AFTER_BAD_DAY_KEYS = CheckInAnswer.entries.map { it.json }.toSet()
     private val STEP_KEYS = setOf("text", "min_seconds")
     private val TIME_KEYS = setOf("type", "at", "days")
     private val ADHAN_KEYS = setOf("type", "prayer")
@@ -137,12 +151,15 @@ object PlanParser {
             if (schemaVersion > Plan.SUPPORTED_SCHEMA_VERSION) {
                 ctx.error(
                     "schema_version",
-                    "This plan uses schema_version $schemaVersion, but this app only understands version " +
+                    "This plan uses schema_version $schemaVersion, but this app only understands versions up to " +
                         "${Plan.SUPPORTED_SCHEMA_VERSION}. Update the app, or ask the planner for a version " +
                         "${Plan.SUPPORTED_SCHEMA_VERSION} plan.",
                 )
-            } else if (schemaVersion < 1) {
-                ctx.error("schema_version", "schema_version must be ${Plan.SUPPORTED_SCHEMA_VERSION}.")
+            } else if (schemaVersion < OLDEST_SCHEMA_VERSION) {
+                ctx.error(
+                    "schema_version",
+                    "schema_version must be ${Plan.SUPPORTED_SCHEMA_VERSION} (version $OLDEST_SCHEMA_VERSION plans still load).",
+                )
             }
         }
 
@@ -165,6 +182,8 @@ object PlanParser {
         val directives = readDirectiveList(obj, "", "directives", ctx, ids, required = true)
 
         val badDay = readBadDay(obj, ctx)
+        val minimum = readMinimum(obj, ctx)
+        val afterBadDay = readAfterBadDay(obj, ctx)
 
         val fallback = when (val raw = obj["fallback_plan"]) {
             null, JsonNull -> null
@@ -192,6 +211,8 @@ object PlanParser {
             directives = directives,
             badDay = badDay,
             fallbackPlan = fallback,
+            minimum = minimum,
+            afterBadDay = afterBadDay,
         )
     }
 
@@ -233,30 +254,110 @@ object PlanParser {
             ctx.error("bad_day", "bad_day must be an object like {\"keep\": [\"fajr\", \"sleep\"]}.")
             return BadDay.NONE
         }
-        ctx.warnUnknownKeys(raw, "bad_day", setOf("keep"))
+        val keep = readKeep(obj, raw, "bad_day", "in \"I'm not okay today\" mode nothing will fire.", ctx)
+        return keep?.let { BadDay(it) } ?: BadDay.NONE
+    }
+
+    /** `minimum`: optional. Only `after_bad_day` can choose a minimum day, so leaving it out is fine without one. */
+    private fun readMinimum(obj: JsonObject, ctx: Ctx): Minimum? {
+        val raw = obj["minimum"]
+        if (raw == null || raw == JsonNull) return null
+        if (raw !is JsonObject) {
+            ctx.error("minimum", "minimum must be an object like {\"keep\": [\"fajr\", \"sleep\"]}.")
+            return null
+        }
+        // A broken after_bad_day is reported by itself; only a complete one that never says "minimum" is warned about.
+        val afterBadDay = obj["after_bad_day"]
+        val neverChosen = when (afterBadDay) {
+            null, JsonNull -> true
+            is JsonObject -> AFTER_BAD_DAY_KEYS.all { key ->
+                val mode = stringOrNull(afterBadDay[key])?.let { DayMode.fromJson(it) }
+                mode != null && mode != DayMode.MINIMUM
+            }
+            else -> false
+        }
+        if (neverChosen) {
+            val fix = if (afterBadDay is JsonObject) {
+                "None of the after_bad_day answers is \"minimum\": set one of them (usually \"worse\") to \"minimum\""
+            } else {
+                "Add \"after_bad_day\" with \"minimum\" for one of its answers, e.g. " +
+                    "{\"better\": \"normal\", \"same\": \"bad_day\", \"worse\": \"minimum\"}"
+            }
+            ctx.warn("minimum", "minimum is never used: only the morning check-in can choose a minimum day. $fix, or remove minimum.")
+        }
+        return readKeep(obj, raw, "minimum", "nothing will fire on a minimum day.", ctx)?.let { Minimum(it) }
+    }
+
+    /**
+     * The `keep` list of [key] (bad_day or minimum): ids of directives in "directives", never fallback_plan.
+     * Null when the list itself is broken (an error is reported). [whenEmpty] finishes the empty-list warning.
+     */
+    private fun readKeep(obj: JsonObject, raw: JsonObject, key: String, whenEmpty: String, ctx: Ctx): List<String>? {
+        ctx.warnUnknownKeys(raw, key, setOf("keep"))
         val keepRaw = raw["keep"]
         if (keepRaw !is JsonArray) {
-            ctx.error("bad_day.keep", "bad_day.keep must be a list of directive ids.")
-            return BadDay.NONE
+            ctx.error("$key.keep", "$key.keep must be a list of directive ids.")
+            return null
         }
         if (keepRaw.isEmpty()) {
-            ctx.warn("bad_day.keep", "bad_day.keep is empty: in \"I'm not okay today\" mode nothing will fire.")
+            ctx.warn("$key.keep", "$key.keep is empty: $whenEmpty")
         }
         // Read straight from the JSON so these ids are checked even when some directive has other problems.
         val known = (obj["directives"] as? JsonArray)?.mapNotNull { stringOrNull((it as? JsonObject)?.get("id")) }?.toSet()
         val keep = linkedSetOf<String>()
         keepRaw.forEachIndexed { i, el ->
-            val path = "bad_day.keep[$i]"
+            val path = "$key.keep[$i]"
             val id = stringOrNull(el)
             when {
-                id == null -> ctx.error(path, "Each entry in bad_day.keep must be a directive id (text).")
+                id == null -> ctx.error(path, "Each entry in $key.keep must be a directive id (text).")
                 known != null && id !in known ->
-                    ctx.error(path, "bad_day.keep lists \"${clip(id)}\", but no directive in \"directives\" has that id.")
-                id in keep -> ctx.warn(path, "\"${clip(id)}\" is listed twice in bad_day.keep.")
+                    ctx.error(path, "$key.keep lists \"${clip(id)}\", but no directive in \"directives\" has that id.")
+                id in keep -> ctx.warn(path, "\"${clip(id)}\" is listed twice in $key.keep.")
                 else -> keep += id
             }
         }
-        return BadDay(keep.toList())
+        return keep.toList()
+    }
+
+    /**
+     * `after_bad_day`: the mode the morning check-in picks for each answer. All three answers are required, and a
+     * plan that can choose "minimum" must say what a minimum day keeps.
+     */
+    private fun readAfterBadDay(obj: JsonObject, ctx: Ctx): AfterBadDay? {
+        val raw = obj["after_bad_day"]
+        if (raw == null || raw == JsonNull) return null
+        if (raw !is JsonObject) {
+            ctx.error(
+                "after_bad_day",
+                "after_bad_day must be an object like {\"better\": \"normal\", \"same\": \"bad_day\", \"worse\": \"minimum\"}.",
+            )
+            return null
+        }
+        ctx.warnUnknownKeys(raw, "after_bad_day", AFTER_BAD_DAY_KEYS)
+        val modes = CheckInAnswer.entries.associateWith { answer ->
+            val key = answer.json
+            val path = "after_bad_day.$key"
+            if (!raw.has(key)) {
+                ctx.error(path, "\"$key\" is missing. after_bad_day needs a mode for each answer: better, same and worse.")
+                return@associateWith null
+            }
+            val text = ctx.requireString(raw, "after_bad_day", key) ?: return@associateWith null
+            val mode = DayMode.fromJson(text)
+            if (mode == null) {
+                ctx.error(path, "\"$key\" must be \"normal\", \"bad_day\" or \"minimum\" (got \"${clip(text)}\").")
+            } else if (mode == DayMode.MINIMUM && !obj.has("minimum")) {
+                ctx.error(
+                    path,
+                    "\"$key\" chooses \"minimum\", but this plan has no minimum list. Add \"minimum\": {\"keep\": [...]} " +
+                        "with the directives that still fire on a minimum day, or choose \"bad_day\" instead.",
+                )
+            }
+            mode
+        }
+        val better = modes[CheckInAnswer.BETTER] ?: return null
+        val same = modes[CheckInAnswer.SAME] ?: return null
+        val worse = modes[CheckInAnswer.WORSE] ?: return null
+        return AfterBadDay(better, same, worse)
     }
 
     // ---------------------------------------------------------------- directives
@@ -309,6 +410,16 @@ object PlanParser {
                     "\"${clip(id)}\" is not a valid id. Use 1-48 lowercase letters, digits, '-' or '_', starting with a letter or digit.",
                 )
             } else {
+                if (id.startsWith(RESERVED_ID_PREFIX)) {
+                    val rest = id.removePrefix(RESERVED_ID_PREFIX)
+                    val suggestable = ID_PATTERN.matches(rest) && !rest.startsWith(RESERVED_ID_PREFIX)
+                    val instead = if (suggestable) " Choose another id, like \"$rest\"." else " Choose another id."
+                    ctx.error(
+                        "$path.id",
+                        "Ids starting with \"$RESERVED_ID_PREFIX\" are reserved for the app's own built-in directives " +
+                            "(its test previews and the morning check-in).$instead",
+                    )
+                }
                 val first = ids[id]
                 if (first != null) {
                     ctx.error("$path.id", "The id \"$id\" is used twice (also at $first). Every directive needs its own id.")
@@ -322,14 +433,11 @@ object PlanParser {
             if (tier !in 1..3) ctx.error("$path.tier", "tier must be 1, 2 or 3 (got $tier).")
         }
 
-        val title = ctx.optionalString(obj, path, "title")?.also { title ->
-            if (title.isBlank()) ctx.error("$path.title", "title must not be empty (or leave it out).")
-            if (title.length > 40) ctx.warn("$path.title", "title is ${title.length} characters; keep it under 40 so it fits on screen.")
-        }
+        val title = readTitle(obj, path, ctx)
 
         val why = ctx.requireString(obj, path, "why")?.also { why ->
             if (why.isBlank()) ctx.error("$path.why", "why must not be empty.")
-            if (why.length > 90) ctx.warn("$path.why", "why is ${why.length} characters; keep it under 90 so it fits on one line.")
+            checkWhyLength(why, path, ctx)
         }
 
         val quiet = ctx.requireString(obj, path, "quiet")?.let { raw ->
@@ -342,23 +450,23 @@ object PlanParser {
             ctx.error("$path.quiet", "quiet \"override\" is only allowed on tier 3 directives (this one is tier $tier).")
         }
 
-        val steps = readSteps(obj, path, ctx)
-        if (steps != null && tier == 1 && steps.size != 1) {
-            ctx.error("$path.steps", "A tier 1 directive is a single nudge and must have exactly one step (it has ${steps.size}).")
-        }
-        if (steps != null && tier == 2 && steps.size > 8) {
-            ctx.warn("$path.steps", "This tier 2 checklist has ${steps.size} steps; tier 2 is meant to be short.")
-        }
-        val totalLock = steps?.sumOf { it.minSeconds } ?: 0
-        if (totalLock > MAX_TOTAL_LOCK_SECONDS) {
-            ctx.error(
-                "$path.steps",
-                "The step locks add up to ${(totalLock + 59) / 60} minutes, but a takeover closes itself after 90 minutes. " +
-                    "Keep the total min_seconds of one directive under ${MAX_TOTAL_LOCK_SECONDS / 60} minutes, or split it into several directives.",
-            )
-        }
+        val steps = readSteps(obj, path, ctx, "Every directive needs at least one step.")
+        if (steps != null) checkStepRules(steps, tier, "$path.steps", variant = false, ctx)
 
         val trigger = readTrigger(obj, path, ctx)
+
+        val rating = if (obj.has("rating")) {
+            ctx.requireString(obj, path, "rating")?.let { raw ->
+                RatingPolicy.fromJson(raw) ?: run {
+                    ctx.error("$path.rating", "rating must be \"always\", \"sample\" or \"never\" (got \"${clip(raw)}\").")
+                    null
+                }
+            }
+        } else {
+            null
+        }
+        val easier = readVariants(obj, path, tier, ctx)
+        val stepDownAfterHard = readAdapt(obj, path, rating, ctx)
 
         if (ctx.errors.size > errorsBefore) return null
         if (id == null || tier == null || why == null || quiet == null || steps == null || trigger == null) return null
@@ -370,14 +478,153 @@ object PlanParser {
             steps = steps,
             why = why,
             quiet = quiet,
+            rating = rating ?: RatingPolicy.defaultFor(tier),
+            easier = easier,
+            stepDownAfterHard = stepDownAfterHard,
         )
     }
 
-    private fun readSteps(obj: JsonObject, path: String, ctx: Ctx): List<Step>? {
+    /** `title` of a directive or a variant: optional, never blank, short enough to fit on screen. */
+    private fun readTitle(obj: JsonObject, path: String, ctx: Ctx): String? =
+        ctx.optionalString(obj, path, "title")?.also { title ->
+            if (title.isBlank()) ctx.error("$path.title", "title must not be empty (or leave it out).")
+            if (title.length > 40) ctx.warn("$path.title", "title is ${title.length} characters; keep it under 40 so it fits on screen.")
+        }
+
+    private fun checkWhyLength(why: String, path: String, ctx: Ctx) {
+        if (why.length > 90) ctx.warn("$path.why", "why is ${why.length} characters; keep it under 90 so it fits on one line.")
+    }
+
+    /**
+     * The rules every list of steps follows, the directive's own and those of `variants.easier` ([variant]): tier 1 has
+     * exactly one step, tier 2 stays short, and all locks together fit inside a takeover.
+     */
+    private fun checkStepRules(steps: List<Step>, tier: Int?, sPath: String, variant: Boolean, ctx: Ctx) {
+        if (tier == 1 && steps.size != 1) {
+            val what = if (variant) "variants.easier of a tier 1 directive is a single nudge too and" else "A tier 1 directive is a single nudge and"
+            ctx.error(sPath, "$what must have exactly one step (it has ${steps.size}).")
+        }
+        if (tier == 2 && steps.size > 8) {
+            ctx.warn(sPath, "This tier 2 checklist has ${steps.size} steps; tier 2 is meant to be short.")
+        }
+        val totalLock = steps.sumOf { it.minSeconds }
+        if (totalLock > MAX_TOTAL_LOCK_SECONDS) {
+            val fix = if (variant) {
+                "Keep the total min_seconds of variants.easier under ${MAX_TOTAL_LOCK_SECONDS / 60} minutes; it is meant to be the lighter version."
+            } else {
+                "Keep the total min_seconds of one directive under ${MAX_TOTAL_LOCK_SECONDS / 60} minutes, or split it into several directives."
+            }
+            ctx.error(
+                sPath,
+                "The step locks add up to ${(totalLock + 59) / 60} minutes, but a takeover closes itself after 90 minutes. $fix",
+            )
+        }
+    }
+
+    /**
+     * `variants`: versions of the directive the planner wrote in advance. Only `easier` exists; other names are ignored
+     * with a warning. Returns `variants.easier`, or null when there is none.
+     */
+    private fun readVariants(obj: JsonObject, path: String, tier: Int?, ctx: Ctx): Variant? {
+        val vPath = "$path.variants"
+        val raw = obj["variants"]
+        if (raw == null || raw == JsonNull) return null
+        if (raw !is JsonObject) {
+            ctx.error(vPath, "variants must be an object like {\"easier\": {\"steps\": [...]}}.")
+            return null
+        }
+        for (name in raw.keys) {
+            if (name.startsWith("_") || name == Variant.EASIER) continue
+            ctx.warn(
+                "$vPath.$name",
+                "Unknown variant \"${clip(name)}\" is ignored. This version of the app only knows \"${Variant.EASIER}\".",
+            )
+        }
+        val ePath = "$vPath.${Variant.EASIER}"
+        val easier = raw[Variant.EASIER]
+        if (easier == null || easier == JsonNull) return null
+        if (easier !is JsonObject) {
+            ctx.error(
+                ePath,
+                "variants.easier must be an object with its own \"steps\" list (\"title\" and \"why\" are optional), " +
+                    "like {\"steps\": [{\"text\": \"Drink half a glass of water.\", \"min_seconds\": 5}]}.",
+            )
+            return null
+        }
+        ctx.warnUnknownKeys(easier, ePath, VARIANT_KEYS)
+        val errorsBefore = ctx.errors.size
+
+        val title = readTitle(easier, ePath, ctx)
+        val why = ctx.optionalString(easier, ePath, "why")?.also { why ->
+            if (why.isBlank()) ctx.error("$ePath.why", "why must not be empty (or leave it out to keep the directive's own).")
+            checkWhyLength(why, ePath, ctx)
+        }
+        val steps = readSteps(
+            easier, ePath, ctx,
+            "variants.easier needs at least one step of its own: they replace the directive's steps when the easier version runs.",
+        )
+        if (steps != null) checkStepRules(steps, tier, "$ePath.steps", variant = true, ctx)
+        if (!obj.has("adapt")) {
+            ctx.warn(
+                ePath,
+                "variants.easier is never used: add \"adapt\": {\"step_down_after_hard\": 2} (any number from 1 to " +
+                    "$MAX_STEP_DOWN_AFTER_HARD) so the app switches to it after that many HARD ratings in a row.",
+            )
+        }
+
+        if (ctx.errors.size > errorsBefore || steps == null) return null
+        return Variant(title = title, steps = steps, why = why)
+    }
+
+    /**
+     * `adapt.step_down_after_hard`: how many HARD ratings in a row switch the directive to `variants.easier` for the rest
+     * of the plan. It needs an easier version to switch to, and ratings to count.
+     */
+    private fun readAdapt(obj: JsonObject, path: String, rating: RatingPolicy?, ctx: Ctx): Int? {
+        val aPath = "$path.adapt"
+        val raw = obj["adapt"]
+        if (raw == null || raw == JsonNull) return null
+        if (raw !is JsonObject) {
+            ctx.error(aPath, "adapt must be an object like {\"step_down_after_hard\": 2}.")
+            return null
+        }
+        ctx.warnUnknownKeys(raw, aPath, ADAPT_KEYS)
+        val n = ctx.requireInt(raw, aPath, "step_down_after_hard")?.also { n ->
+            if (n !in 1..MAX_STEP_DOWN_AFTER_HARD) {
+                ctx.error(
+                    "$aPath.step_down_after_hard",
+                    "step_down_after_hard must be between 1 and $MAX_STEP_DOWN_AFTER_HARD (got $n).",
+                )
+            }
+        }
+        // Read from the JSON so a broken variants or variants.easier is reported once, by itself, and not here as well.
+        val hasEasier = when (val variants = obj["variants"]) {
+            null, JsonNull -> false
+            is JsonObject -> variants.has(Variant.EASIER)
+            else -> true
+        }
+        if (!hasEasier) {
+            ctx.error(
+                aPath,
+                "adapt needs variants.easier: the app can only step down to an easier version you wrote. Add " +
+                    "\"variants\": {\"easier\": {\"steps\": [...]}} to this directive, or remove adapt.",
+            )
+        }
+        if (rating == RatingPolicy.NEVER) {
+            ctx.warn(
+                aPath,
+                "adapt counts HARD ratings, but rating is \"never\", so the easier version will never run. " +
+                    "Use rating \"always\" or \"sample\", or remove adapt.",
+            )
+        }
+        return n
+    }
+
+    private fun readSteps(obj: JsonObject, path: String, ctx: Ctx, needsSteps: String): List<Step>? {
         val sPath = "$path.steps"
         val raw = obj["steps"]
         if (raw == null || raw == JsonNull) {
-            ctx.error(sPath, "\"steps\" is missing. Every directive needs at least one step.")
+            ctx.error(sPath, "\"steps\" is missing. $needsSteps")
             return null
         }
         if (raw !is JsonArray) {
@@ -385,7 +632,7 @@ object PlanParser {
             return null
         }
         if (raw.isEmpty()) {
-            ctx.error(sPath, "\"steps\" is empty. Every directive needs at least one step.")
+            ctx.error(sPath, "\"steps\" is empty. $needsSteps")
             return null
         }
         val out = mutableListOf<Step>()

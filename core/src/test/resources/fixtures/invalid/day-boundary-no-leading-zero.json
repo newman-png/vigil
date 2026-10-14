@@ -1,7 +1,7 @@
 {
   "_problem": "day_boundary is 4:00, not 04:00",
   "_expect_error_at": "day_boundary",
-  "schema_version": 1,
+  "schema_version": 2,
   "week_of": "2026-10-19",
   "expires": "2026-10-26T04:00",
   "day_boundary": "4:00",

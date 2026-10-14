@@ -1,6 +1,6 @@
 {
   "_readme": "VIGIL's built-in minimal plan. The app runs it when no plan has been imported, or when the imported plan has expired and has no fallback_plan. It only keeps the essentials: the five prayers, water and sleep. It never expires.",
-  "schema_version": 1,
+  "schema_version": 2,
   "week_of": "2026-01-05",
   "expires": "2099-12-31T04:00",
   "generated_by": "VIGIL built-in default",
@@ -18,7 +18,8 @@
         { "text": "Pray Fajr.", "min_seconds": 180 }
       ],
       "why": "The day starts with this.",
-      "quiet": "override"
+      "quiet": "override",
+      "rating": "never"
     },
     {
       "id": "default-dhuhr",
@@ -30,7 +31,8 @@
         { "text": "Make wudu and pray Dhuhr.", "min_seconds": 240 }
       ],
       "why": "Pause. Return.",
-      "quiet": "queue"
+      "quiet": "queue",
+      "rating": "never"
     },
     {
       "id": "default-asr",
@@ -42,7 +44,8 @@
         { "text": "Make wudu and pray Asr.", "min_seconds": 240 }
       ],
       "why": "Pause. Return.",
-      "quiet": "queue"
+      "quiet": "queue",
+      "rating": "never"
     },
     {
       "id": "default-maghrib",
@@ -54,7 +57,8 @@
         { "text": "Make wudu and pray Maghrib.", "min_seconds": 180 }
       ],
       "why": "Pause. Return.",
-      "quiet": "queue"
+      "quiet": "queue",
+      "rating": "never"
     },
     {
       "id": "default-isha",
@@ -66,7 +70,8 @@
         { "text": "Make wudu and pray Isha.", "min_seconds": 240 }
       ],
       "why": "Close the day properly.",
-      "quiet": "queue"
+      "quiet": "queue",
+      "rating": "never"
     },
     {
       "id": "default-water-am",
@@ -75,7 +80,8 @@
       "trigger": { "type": "time", "at": "11:00" },
       "steps": [{ "text": "Drink a full glass of water.", "min_seconds": 10 }],
       "why": "Small things, every day.",
-      "quiet": "silent"
+      "quiet": "silent",
+      "rating": "sample"
     },
     {
       "id": "default-water-pm",
@@ -84,7 +90,8 @@
       "trigger": { "type": "time", "at": "16:00" },
       "steps": [{ "text": "Drink a full glass of water.", "min_seconds": 10 }],
       "why": "Small things, every day.",
-      "quiet": "silent"
+      "quiet": "silent",
+      "rating": "sample"
     },
     {
       "id": "default-sleep",
@@ -96,7 +103,8 @@
         { "text": "Lights off.", "min_seconds": 5 }
       ],
       "why": "Tomorrow is decided tonight.",
-      "quiet": "override"
+      "quiet": "override",
+      "rating": "always"
     }
   ],
   "bad_day": {

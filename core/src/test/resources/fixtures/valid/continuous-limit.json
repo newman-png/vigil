@@ -1,6 +1,6 @@
 {
   "_shows": "an app_usage trigger with continuous_min and a cooldown",
-  "schema_version": 1,
+  "schema_version": 2,
   "week_of": "2026-10-19",
   "expires": "2026-10-26T04:00",
   "day_boundary": "04:00",

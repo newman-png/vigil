@@ -1,7 +1,7 @@
 {
   "$schema": "../../spec/schema.json",
   "_readme": "PlanParserTest fixture: valid, uses every field and every trigger type, and must load with no warnings. Tests address directives by index, so keep the order.",
-  "schema_version": 1,
+  "schema_version": 2,
   "week_of": "2026-10-19",
   "expires": "2026-10-26",
   "generated_by": "test planner",
@@ -51,7 +51,16 @@
         { "text": "Lights off.", "min_seconds": 3600 }
       ],
       "why": "Tomorrow is decided tonight.",
-      "quiet": "override"
+      "quiet": "override",
+      "rating": "always",
+      "variants": {
+        "easier": {
+          "title": "PHONE AWAY",
+          "steps": [{ "text": "Put the phone on charge, away from the bed.", "min_seconds": 10 }],
+          "why": "Just the phone tonight."
+        }
+      },
+      "adapt": { "step_down_after_hard": 3 }
     },
     {
       "id": "tiktok-opens",
@@ -68,7 +77,8 @@
         { "text": "Name what you were avoiding.", "min_seconds": 20 }
       ],
       "why": "You decided this on Sunday.",
-      "quiet": "ignore"
+      "quiet": "ignore",
+      "rating": "never"
     },
     {
       "id": "scroll_long",
@@ -81,10 +91,14 @@
       },
       "steps": [{ "text": "Stand up and stretch.", "min_seconds": 15 }],
       "why": "Twenty minutes is enough.",
-      "quiet": "queue"
+      "quiet": "queue",
+      "variants": { "easier": { "steps": [{ "text": "Look away from the screen.", "min_seconds": 5 }] } },
+      "adapt": { "step_down_after_hard": 1 }
     }
   ],
   "bad_day": { "keep": ["fajr", "isha", "sleep"] },
+  "minimum": { "keep": ["fajr", "sleep"] },
+  "after_bad_day": { "better": "normal", "same": "bad_day", "worse": "minimum" },
   "fallback_plan": {
     "directives": [
       {
@@ -97,7 +111,10 @@
           { "text": "Pray Fajr.", "min_seconds": 180 }
         ],
         "why": "Even without a plan.",
-        "quiet": "queue"
+        "quiet": "queue",
+        "rating": "sample",
+        "variants": { "easier": { "steps": [{ "text": "Pray Fajr.", "min_seconds": 180 }] } },
+        "adapt": { "step_down_after_hard": 2 }
       },
       {
         "id": "fallback-sleep",

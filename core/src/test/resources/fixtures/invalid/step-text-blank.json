@@ -1,7 +1,7 @@
 {
   "_problem": "step text is only spaces",
   "_expect_error_at": "directives[0].steps[0].text",
-  "schema_version": 1,
+  "schema_version": 2,
   "week_of": "2026-10-19",
   "expires": "2026-10-26T04:00",
   "day_boundary": "04:00",

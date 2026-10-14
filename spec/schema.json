@@ -1,8 +1,8 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://raw.githubusercontent.com/newman-png/vigil/main/spec/schema.json",
-  "title": "VIGIL plan (plan.json), schema_version 1",
-  "description": "One week of directives for VIGIL, an Android commitment device. A planner (usually an AI chat) writes this file, the user imports it, and the app executes it exactly as written: the app never decides anything on its own, so everything it should do must be in here. A directive says WHEN the phone is taken over (its trigger) and WHAT the user must do (its steps). When a directive fires, the phone shows a full-screen pixel eye, the title, and the steps one at a time; each step's checkbox unlocks only after its min_seconds. The user can dismiss early only by holding a button for about 10 seconds, which is logged as directive_dismissed. At the end of the week the app exports log.json (what fired, was completed, dismissed, skipped or missed), which the planner reads to write next week's plan.\n\nWrite ONE JSON object, UTF-8, under 1 MB. Start it with a '_readme' string. Keys starting with '_' are comments and are allowed and ignored everywhere. Unknown fields are ignored by the app (the import screen shows a warning for each), so newer plans still load on older apps; do not rely on them.\n\nSome rules cannot be expressed in this schema and are checked only by the app when importing: (1) every directive id is unique across directives AND fallback_plan.directives; (2) every id in bad_day.keep names a directive in directives (not in fallback_plan); (3) expires is after week_of; (4) dates are real calendar dates (no 2026-02-30); (5) the min_seconds of one directive add up to at most 4800 (80 minutes), because a takeover closes itself after 90 minutes. The app also warns, without refusing the plan, when a title is over 40 characters, a why line over 90, a step text over 120, a tier 2 directive has more than 8 steps, a list repeats a day, app or id, or bad_day is missing. A plan the app accepts without warnings is the goal.",
+  "title": "VIGIL plan (plan.json), schema_version 2",
+  "description": "One week of directives for VIGIL, an Android commitment device. A planner (usually an AI chat) writes this file, the user imports it, and the app executes it exactly as written: the app never decides anything on its own, so everything it should do must be in here, including the easier versions it may switch to (variants, adapt) and what the day after a bad day looks like (after_bad_day). A directive says WHEN the phone is taken over (its trigger) and WHAT the user must do (its steps). When a directive fires, the phone shows a full-screen pixel eye, the title and why line, then the steps one at a time; each step can be confirmed (press and hold) only after its min_seconds. The user can dismiss early only by holding a button for about 10 seconds, which is logged as directive_dismissed. After a completion the user may be asked how hard it was: EASY, OK or HARD (see rating). At the end of the week the app exports the weekly bundle (vigil-week-<week_of>.json: this plan, what fired, was completed, dismissed, skipped or missed, the difficulty ratings and the morning check-ins), which the planner reads to write next week's plan.\n\nWrite ONE JSON object, UTF-8, under 1 MB, with schema_version 2. Start it with a '_readme' string. Keys starting with '_' are comments and are allowed and ignored everywhere. Unknown fields are ignored by the app (the import screen shows a warning for each), so newer plans still load on older apps; do not rely on them.\n\nSome rules cannot be expressed in this schema and are checked only by the app when importing: (1) every directive id is unique across directives AND fallback_plan.directives; (2) every id in bad_day.keep and minimum.keep names a directive in directives (not in fallback_plan); (3) expires is after week_of; (4) dates are real calendar dates (no 2026-02-30); (5) the min_seconds of one directive add up to at most 4800 (80 minutes), and so do those of its variants.easier, because a takeover closes itself after 90 minutes. Two more rules are written below as if/then conditions, and the app checks them on import as well: (6) a directive with adapt must have variants.easier; (7) if after_bad_day maps any answer to \"minimum\", the plan must have minimum. The app also warns, without refusing the plan, when a title is over 40 characters, a why line over 90, a step text over 120, a tier 2 directive (or its variants.easier) has more than 8 steps, a list repeats a day, app or id, bad_day is missing, bad_day.keep or minimum.keep is empty, variants has a name other than \"easier\", variants.easier has no adapt (so it is never used), adapt is combined with rating \"never\" (so it never steps down), or minimum is given but after_bad_day never chooses it. A plan the app accepts without warnings is the goal.",
   "type": "object",
   "required": ["schema_version", "week_of", "expires", "directives"],
   "properties": {
@@ -10,12 +10,12 @@
       "description": "Optional link to this schema, for editors. Ignored by the app."
     },
     "schema_version": {
-      "description": "Version of this file format. Must be 1. The app refuses higher versions it does not understand.",
+      "description": "Version of this file format. Write 2. Version 1 plans still load: version 2 only added optional fields (rating, variants and adapt on directives; minimum and after_bad_day at the top), and the app reads them in either version. The app refuses higher versions it does not understand.",
       "type": "integer",
-      "const": 1
+      "enum": [1, 2]
     },
     "week_of": {
-      "description": "Local date (YYYY-MM-DD) the plan's week starts, normally a Monday, e.g. \"2026-10-19\". Used to name the files (plan-2026-10-19.json, log-2026-10-19.json). Must be a real date, and expires must be after it (both checked by the app).",
+      "description": "Local date (YYYY-MM-DD) the plan's week starts, normally a Monday, e.g. \"2026-10-19\". Used to name the weekly bundle the app exports (vigil-week-2026-10-19.json). Must be a real date, and expires must be after it (both checked by the app).",
       "type": "string",
       "format": "date",
       "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$"
@@ -44,7 +44,7 @@
       "type": ["string", "null"]
     },
     "day_boundary": {
-      "description": "When one day ends and the next begins, as 24-hour \"HH:MM\". \"I'm not okay today\" mode lasts until the next day_boundary, and a plain-date expires means that date at this time. Defaults to \"04:00\" when left out, so 01:30 still counts as the previous day. If present it must be a valid time (not null).",
+      "description": "When one day ends and the next begins, as 24-hour \"HH:MM\". \"I'm not okay today\" mode and a minimum day last until the next day_boundary, the morning check-in (see after_bad_day) belongs to the day that starts then, and a plain-date expires means that date at this time. Defaults to \"04:00\" when left out, so 01:30 still counts as the previous day. If present it must be a valid time (not null).",
       "allOf": [{ "$ref": "#/definitions/localTime" }]
     },
     "directives": {
@@ -54,7 +54,7 @@
       "items": { "$ref": "#/definitions/directive" }
     },
     "bad_day": {
-      "description": "What still fires in \"I'm not okay today\" mode. The user can switch that mode on at any time; until the next day_boundary only the directives listed in keep fire, and the rest are skipped and logged as skipped_bad_day. A bad day is not a failure; keep the list to what truly matters. If bad_day is left out (or null), nothing fires on a bad day and the app warns.",
+      "description": "What still fires in \"I'm not okay today\" mode. The user can switch that mode on at any time; until the next day_boundary only the directives listed in keep fire, and the rest are skipped and logged as skipped_bad_day. A bad day is not a failure; keep the list to what truly matters. What the next day looks like is set by after_bad_day. If bad_day is left out (or null), nothing fires on a bad day and the app warns.",
       "type": ["object", "null"],
       "required": ["keep"],
       "properties": {
@@ -70,8 +70,46 @@
       "patternProperties": { "^_": { "$ref": "#/definitions/comment" } },
       "additionalProperties": { "$ref": "#/definitions/unknownField" }
     },
+    "minimum": {
+      "description": "What still fires on a minimum day: an even lighter day than a bad day, for when the user is doing worse. Only the morning check-in can choose a minimum day (see after_bad_day); until the next day_boundary only the directives listed in keep fire, and the rest are skipped and logged as skipped_minimum. A minimum day is not a failure. Required when after_bad_day maps any answer to \"minimum\" (checked by the app); given without such an answer it is never used, and the app warns. null is the same as leaving it out.",
+      "type": ["object", "null"],
+      "required": ["keep"],
+      "properties": {
+        "keep": {
+          "description": "Ids of directives (from directives, not fallback_plan) that still fire on a minimum day: the bare essentials, usually fewer than bad_day.keep, e.g. [\"fajr\", \"sleep\"]. Every id must exist in directives (checked by the app). May be empty, though that means nothing fires on a minimum day (the app warns).",
+          "type": "array",
+          "items": {
+            "description": "A directive id from directives.",
+            "allOf": [{ "$ref": "#/definitions/id" }]
+          }
+        }
+      },
+      "patternProperties": { "^_": { "$ref": "#/definitions/comment" } },
+      "additionalProperties": { "$ref": "#/definitions/unknownField" }
+    },
+    "after_bad_day": {
+      "description": "Turns on the morning check-in. On the first day after a bad day (\"I'm not okay today\") or a minimum day, the app asks once, when the phone is first unlocked that day (or the app opened): HOW IS TODAY? BETTER, SAME or WORSE. The answer picks that day's mode: \"normal\" (everything fires), \"bad_day\" (only bad_day.keep) or \"minimum\" (only minimum.keep). Until the question is answered, and if it never is, the \"same\" mode applies. Answers are logged as check_in and exported in the weekly bundle; they are a main signal for next week's plan, and a hard day is never a failure. Without after_bad_day (or with null) there is no check-in and the day after a bad day is a normal day. All three answers are required. If any of them is \"minimum\", the plan must have minimum (checked by the app). Example: {\"better\": \"normal\", \"same\": \"bad_day\", \"worse\": \"minimum\"}.",
+      "type": ["object", "null"],
+      "required": ["better", "same", "worse"],
+      "properties": {
+        "better": {
+          "description": "The mode for the day when the user answers BETTER, usually \"normal\".",
+          "allOf": [{ "$ref": "#/definitions/dayMode" }]
+        },
+        "same": {
+          "description": "The mode when the user answers SAME, and also while the check-in is unanswered or if it is never answered; usually \"bad_day\".",
+          "allOf": [{ "$ref": "#/definitions/dayMode" }]
+        },
+        "worse": {
+          "description": "The mode when the user answers WORSE, usually \"minimum\" (then minimum is required) or \"bad_day\".",
+          "allOf": [{ "$ref": "#/definitions/dayMode" }]
+        }
+      },
+      "patternProperties": { "^_": { "$ref": "#/definitions/comment" } },
+      "additionalProperties": { "$ref": "#/definitions/unknownField" }
+    },
     "fallback_plan": {
-      "description": "A deliberately small plan the app runs after expires, until the user imports a new plan: 3-4 essential directives, ideally including one that reminds the user to plan the next week. Its ids must differ from the main directives' ids (checked by the app). On a bad day every fallback directive still fires. Without a fallback_plan (or with null) the app runs its built-in minimal plan after expires.",
+      "description": "A deliberately small plan the app runs after expires, until the user imports a new plan: 3-4 essential directives, ideally including one that reminds the user to plan the next week. Its ids must differ from the main directives' ids (checked by the app). On a bad day or a minimum day every fallback directive still fires. Without a fallback_plan (or with null) the app runs its built-in minimal plan after expires.",
       "type": ["object", "null"],
       "required": ["directives"],
       "properties": {
@@ -88,6 +126,25 @@
   },
   "patternProperties": { "^_": { "$ref": "#/definitions/comment" } },
   "additionalProperties": { "$ref": "#/definitions/unknownField" },
+  "allOf": [
+    {
+      "description": "If after_bad_day maps any answer to \"minimum\", the plan needs minimum: what still fires on a minimum day.",
+      "if": {
+        "required": ["after_bad_day"],
+        "properties": {
+          "after_bad_day": {
+            "type": "object",
+            "anyOf": [
+              { "required": ["better"], "properties": { "better": { "const": "minimum" } } },
+              { "required": ["same"], "properties": { "same": { "const": "minimum" } } },
+              { "required": ["worse"], "properties": { "worse": { "const": "minimum" } } }
+            ]
+          }
+        }
+      },
+      "then": { "required": ["minimum"], "properties": { "minimum": { "type": "object" } } }
+    }
+  ],
   "definitions": {
     "comment": {
       "description": "Keys starting with \"_\" (like \"_readme\" or \"_note\") are comments for people and planners. Allowed in every object, any value, ignored by the app."
@@ -96,9 +153,15 @@
       "description": "A field this version of the app does not know. It is accepted and ignored (the import screen shows a warning), so the plan still loads. Do not put anything the app must act on in unknown fields; use \"_\" keys for notes."
     },
     "id": {
-      "description": "1-48 characters: lowercase letters, digits, \"-\" or \"_\", starting with a letter or digit, e.g. \"fajr\", \"water-am\", \"deep_work\".",
+      "description": "1-48 characters: lowercase letters, digits, \"-\" or \"_\", starting with a letter or digit, e.g. \"fajr\", \"water-am\", \"deep_work\". Must not start with \"vigil-\": those ids belong to the app's own built-in directives (its test previews and the morning check-in).",
       "type": "string",
-      "pattern": "^[a-z0-9][a-z0-9_-]{0,47}$"
+      "pattern": "^[a-z0-9][a-z0-9_-]{0,47}$",
+      "not": { "pattern": "^vigil-" }
+    },
+    "dayMode": {
+      "description": "How much of the plan runs that day: \"normal\" (everything), \"bad_day\" (only bad_day.keep) or \"minimum\" (only minimum.keep).",
+      "type": "string",
+      "enum": ["normal", "bad_day", "minimum"]
     },
     "localTime": {
       "description": "24-hour wall-clock time \"HH:MM\" from \"00:00\" to \"23:59\", with leading zeros (\"07:05\", not \"7:05\"). Local to the phone; no seconds, no timezone.",
@@ -112,12 +175,12 @@
       "pattern": "\\S"
     },
     "directive": {
-      "description": "One thing the app makes the user do. When its trigger happens the phone shows a full-screen takeover: the title, then the steps one at a time, then the why line at the bottom. Each step's checkbox stays locked for its min_seconds. Completing every step closes the takeover (logged as directive_completed); holding the dismiss button for about 10 seconds closes it early (directive_dismissed); a takeover closes itself after 90 minutes as the active takeover, whatever its progress (directive_timed_out), so all of a directive's min_seconds together must stay at or under 4800 (80 minutes; checked by the app).",
+      "description": "One thing the app makes the user do. When its trigger happens the phone shows a full-screen takeover: the title with the why line under it, then the steps one at a time. Each step stays locked for its min_seconds before it can be confirmed. Completing every step closes the takeover (logged as directive_completed, and possibly followed by the EASY / OK / HARD question, see rating); holding the dismiss button for about 10 seconds closes it early (directive_dismissed); a takeover closes itself after 90 minutes as the active takeover, whatever its progress (directive_timed_out), so all of a directive's min_seconds together must stay at or under 4800 (80 minutes; checked by the app).",
       "type": "object",
       "required": ["id", "tier", "trigger", "steps", "why", "quiet"],
       "properties": {
         "id": {
-          "description": "Stable name for this directive, used in log.json and bad_day.keep. 1-48 characters: lowercase letters, digits, \"-\" or \"_\", starting with a letter or digit. Unique across directives and fallback_plan.directives (checked by the app). Reuse the same id for the same habit every week so the logs line up.",
+          "description": "Stable name for this directive, used in the weekly bundle, bad_day.keep and minimum.keep. Must not start with \"vigil-\" (reserved for the app's built-ins). 1-48 characters: lowercase letters, digits, \"-\" or \"_\", starting with a letter or digit. Unique across directives and fallback_plan.directives (checked by the app). Reuse the same id for the same habit every week so the logs line up.",
           "allOf": [{ "$ref": "#/definitions/id" }]
         },
         "tier": {
@@ -135,38 +198,106 @@
           "allOf": [{ "$ref": "#/definitions/trigger" }]
         },
         "steps": {
-          "description": "The checklist, revealed one step at a time in this order. At least one step; a tier 1 directive has exactly one.",
+          "description": "The steps, revealed one at a time in this order. At least one step; a tier 1 directive has exactly one.",
           "type": "array",
           "minItems": 1,
           "items": { "$ref": "#/definitions/step" }
         },
         "why": {
-          "description": "One line shown at the bottom of the takeover: why this matters. Firm and kind, never shaming or contemptuous. Under 90 characters so it fits on one line (longer is accepted with a warning). Must not be blank.",
+          "description": "One line shown under the title: why this matters. Firm and kind, never shaming or contemptuous. Under 90 characters so it fits on one line (longer is accepted with a warning). Must not be blank.",
           "allOf": [{ "$ref": "#/definitions/nonBlankText" }]
         },
         "quiet": {
           "description": "What happens if this fires while the user has quiet mode on (they switch it on by hand, e.g. in class or at work). \"queue\": held and shown when quiet mode ends. \"silent\": shown now, without sound or vibration. \"ignore\": skipped (logged as skipped_quiet). \"override\": rings anyway, if the user has allowed overrides in the app's settings (otherwise it is shown silently); only allowed on tier 3, so keep it for things like Fajr and sleep.",
           "type": "string",
           "enum": ["queue", "silent", "ignore", "override"]
+        },
+        "rating": {
+          "description": "When to ask the user, right after they complete this directive, how hard it was: one tap on EASY, OK or HARD (or skip). \"always\": after every completion. \"sample\": after the 1st, 4th, 7th ... completion in this plan (every 3rd), for frequent nudges. \"never\": not asked, e.g. for the prayers. Defaults to \"sample\" for tier 1 and \"always\" for tiers 2 and 3 when left out (or null). Ratings are logged (rated, rating_skipped) and exported in the weekly bundle: with the check-ins they are the main signal for next week's plan. adapt counts the HARD ones.",
+          "type": ["string", "null"],
+          "enum": ["always", "sample", "never", null]
+        },
+        "variants": {
+          "description": "Other versions of this directive, written in advance, that the app may switch to; the app never invents or edits steps itself. Only \"easier\" exists in this version; other names are accepted with a warning and ignored. Example: {\"easier\": {\"steps\": [{\"text\": \"Open the curtains.\", \"min_seconds\": 5}]}}. null is the same as leaving it out.",
+          "type": ["object", "null"],
+          "properties": {
+            "easier": {
+              "description": "The lighter version that runs once adapt.step_down_after_hard is reached. Without adapt it is never used (the app warns). null is the same as leaving it out.",
+              "anyOf": [{ "$ref": "#/definitions/variant" }, { "type": "null" }]
+            }
+          },
+          "patternProperties": { "^_": { "$ref": "#/definitions/comment" } },
+          "additionalProperties": { "$ref": "#/definitions/unknownField" }
+        },
+        "adapt": {
+          "description": "A rule, written in advance, for stepping this directive down to variants.easier: once the last step_down_after_hard ratings the user gave for it (in this plan, skipped questions not counted) are all HARD, variants.easier runs instead for the rest of this plan, logged as stepped_down. The app never steps back up by itself; the next plan starts fresh, so decide there whether to return to the full version. Needs variants.easier (checked by the app) and ratings, so do not combine it with rating \"never\" (the app warns). Example: {\"step_down_after_hard\": 2}. null is the same as leaving it out.",
+          "type": ["object", "null"],
+          "required": ["step_down_after_hard"],
+          "properties": {
+            "step_down_after_hard": {
+              "description": "How many HARD ratings in a row switch to variants.easier, 1-10. 2 or 3 is usual: one hard day is not a pattern.",
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10
+            }
+          },
+          "patternProperties": { "^_": { "$ref": "#/definitions/comment" } },
+          "additionalProperties": { "$ref": "#/definitions/unknownField" }
         }
       },
       "patternProperties": { "^_": { "$ref": "#/definitions/comment" } },
       "additionalProperties": { "$ref": "#/definitions/unknownField" },
       "allOf": [
         {
-          "description": "A tier 1 directive is a single nudge: exactly one step.",
+          "description": "A tier 1 directive is a single nudge: exactly one step, in variants.easier too.",
           "if": { "required": ["tier"], "properties": { "tier": { "const": 1 } } },
-          "then": { "properties": { "steps": { "maxItems": 1 } } }
+          "then": {
+            "properties": {
+              "steps": { "maxItems": 1 },
+              "variants": { "properties": { "easier": { "properties": { "steps": { "maxItems": 1 } } } } }
+            }
+          }
         },
         {
           "description": "quiet \"override\" is only allowed on tier 3.",
           "if": { "required": ["quiet"], "properties": { "quiet": { "const": "override" } } },
           "then": { "properties": { "tier": { "const": 3 } } }
+        },
+        {
+          "description": "adapt needs variants.easier: the app can only step down to a version written in advance.",
+          "if": { "required": ["adapt"], "properties": { "adapt": { "type": "object" } } },
+          "then": {
+            "required": ["variants"],
+            "properties": { "variants": { "type": "object", "required": ["easier"], "properties": { "easier": { "type": "object" } } } }
+          }
         }
       ]
     },
+    "variant": {
+      "description": "A lighter version of a directive (variants.easier). It keeps the directive's id, trigger, tier, quiet and rating; only the title, steps and why line are replaced while it runs. Its steps follow exactly the same rules as the directive's: at least one, exactly one for a tier 1 directive, and all their min_seconds together at most 4800 (checked by the app). Make it genuinely lighter: fewer or shorter steps.",
+      "type": "object",
+      "required": ["steps"],
+      "properties": {
+        "title": {
+          "description": "Headline while the easier version runs. Defaults to the directive's own title when left out (or null). Under 40 characters (longer is accepted with a warning). Must not be blank.",
+          "anyOf": [{ "$ref": "#/definitions/nonBlankText" }, { "type": "null" }]
+        },
+        "steps": {
+          "description": "The easier version's steps; they replace the directive's steps while it runs. At least one; a tier 1 directive's easier version has exactly one.",
+          "type": "array",
+          "minItems": 1,
+          "items": { "$ref": "#/definitions/step" }
+        },
+        "why": {
+          "description": "Why line while the easier version runs. Defaults to the directive's own why when left out (or null). Under 90 characters (longer is accepted with a warning). Must not be blank.",
+          "anyOf": [{ "$ref": "#/definitions/nonBlankText" }, { "type": "null" }]
+        }
+      },
+      "patternProperties": { "^_": { "$ref": "#/definitions/comment" } },
+      "additionalProperties": { "$ref": "#/definitions/unknownField" }
+    },
     "step": {
-      "description": "One item of the checklist.",
+      "description": "One step of a directive.",
       "type": "object",
       "required": ["text", "min_seconds"],
       "properties": {
@@ -175,7 +306,7 @@
           "allOf": [{ "$ref": "#/definitions/nonBlankText" }]
         },
         "min_seconds": {
-          "description": "How long the checkbox stays locked after the step appears, 0-3600 seconds. Match the real time the step takes (about 60 for wudu, 180-300 for a prayer, 5-10 for standing up); 0 means it can be ticked at once. The next step only appears once this one is ticked.",
+          "description": "How long the step stays locked after it appears, 0-3600 seconds: it cannot be confirmed before. Match the real time the step takes (about 60 for wudu, 180-300 for a prayer, 5-10 for standing up); 0 means it can be confirmed at once. The next step only appears once this one is confirmed.",
           "type": "integer",
           "minimum": 0,
           "maximum": 3600

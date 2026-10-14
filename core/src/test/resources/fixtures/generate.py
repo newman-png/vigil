@@ -12,7 +12,7 @@ import shutil
 OUT = os.path.dirname(os.path.abspath(__file__))
 
 BASE = {
-    "schema_version": 1,
+    "schema_version": 2,
     "week_of": "2026-10-19",
     "expires": "2026-10-26T04:00",
     "day_boundary": "04:00",
@@ -70,10 +70,37 @@ def trig(plan, i):
     return plan["directives"][i]["trigger"]
 
 
+def fb(plan, i):
+    return plan["fallback_plan"]["directives"][i]
+
+
+def with_easier(dd, n=2, **variant):
+    """Gives directive dd a one-step variants.easier (fields in [variant] replace or add to it) and, unless n is None,
+    adapt.step_down_after_hard n. Returns the variant so a fixture can change it further."""
+    easier = {"steps": [{"text": "Put the phone down.", "min_seconds": 5}]}
+    easier.update(variant)
+    dd["variants"] = {"easier": easier}
+    if n is not None:
+        dd["adapt"] = {"step_down_after_hard": n}
+    return easier
+
+
+# The check-in mapping planners are told to use; "worse" needs a minimum list.
+CHECK_IN = {"better": "normal", "same": "bad_day", "worse": "minimum"}
+
+
+def with_minimum(p, keep=("fajr",), after=None):
+    """Adds minimum.keep and an after_bad_day mapping (CHECK_IN unless given). Returns after_bad_day."""
+    p["minimum"] = {"keep": list(keep)}
+    p["after_bad_day"] = dict(CHECK_IN if after is None else after)
+    return p["after_bad_day"]
+
+
 # name -> (problem, parser path prefix, mutation)
 INVALID = {
     "schema-version-missing": ("schema_version is missing", "schema_version", lambda p: p.pop("schema_version")),
-    "schema-version-2": ("schema_version 2 is newer than the app", "schema_version", lambda p: p.update(schema_version=2)),
+    "schema-version-3": ("schema_version 3 is newer than the app", "schema_version", lambda p: p.update(schema_version=3)),
+    "schema-version-0": ("schema_version 0 does not exist", "schema_version", lambda p: p.update(schema_version=0)),
     "week-of-slashes": ("week_of is not YYYY-MM-DD", "week_of", lambda p: p.update(week_of="2026/10/19")),
     "week-of-not-a-date": ("week_of is not a real date", "week_of", lambda p: p.update(week_of="2026-02-30")),
     "expires-missing": ("expires is missing", "expires", lambda p: p.pop("expires")),
@@ -135,6 +162,55 @@ INVALID = {
     "fallback-not-object": ("fallback_plan is a list", "fallback_plan", lambda p: p.update(fallback_plan=[])),
     "fallback-directives-empty": ("fallback_plan.directives is empty", "fallback_plan.directives", lambda p: p["fallback_plan"].update(directives=[])),
     "fallback-directive-tier-five": ("a fallback directive has tier 5", "fallback_plan.directives[0].tier", lambda p: p["fallback_plan"]["directives"][0].update(tier=5)),
+    "reserved-id": ("an id starting with vigil- (reserved for the app's built-ins)", "directives[1].id", lambda p: d(p, 1).update(id="vigil-water")),
+    "reserved-id-in-fallback": ("a fallback id starting with vigil-", "fallback_plan.directives[0].id", lambda p: fb(p, 0).update(id="vigil-sleep")),
+    "rating-unknown": ("rating is not always, sample or never", "directives[1].rating", lambda p: d(p, 1).update(rating="often")),
+    "rating-capitalised": ("rating written as Always", "directives[0].rating", lambda p: d(p, 0).update(rating="Always")),
+    "rating-number": ("rating is a number", "directives[2].rating", lambda p: d(p, 2).update(rating=3)),
+    "variants-not-object": ("variants is a list", "directives[2].variants", lambda p: d(p, 2).update(variants=[{"steps": []}])),
+    "easier-not-object": ("variants.easier is a string", "directives[2].variants.easier",
+                          lambda p: d(p, 2).update(variants={"easier": "fewer steps"}, adapt={"step_down_after_hard": 2})),
+    "easier-steps-missing": ("variants.easier without steps", "directives[2].variants.easier.steps", lambda p: with_easier(d(p, 2)).pop("steps")),
+    "easier-steps-empty": ("variants.easier.steps is empty", "directives[2].variants.easier.steps", lambda p: with_easier(d(p, 2), steps=[])),
+    "easier-step-not-object": ("an easier step is a string", "directives[2].variants.easier.steps[0]",
+                               lambda p: with_easier(d(p, 2), steps=["Put the phone down."])),
+    "easier-step-text-blank": ("an easier step's text is only spaces", "directives[2].variants.easier.steps[0].text",
+                               lambda p: with_easier(d(p, 2), steps=[{"text": " ", "min_seconds": 5}])),
+    "easier-step-min-seconds-too-large": ("an easier step's min_seconds is 3601", "directives[2].variants.easier.steps[0].min_seconds",
+                                          lambda p: with_easier(d(p, 2), steps=[{"text": "Wait.", "min_seconds": 3601}])),
+    "easier-tier1-two-steps": ("variants.easier of a tier 1 directive with two steps", "directives[1].variants.easier.steps",
+                               lambda p: with_easier(d(p, 1), steps=[{"text": "Sip.", "min_seconds": 3}, {"text": "Sip again.", "min_seconds": 3}])),
+    "easier-title-empty": ("variants.easier.title is an empty string", "directives[2].variants.easier.title", lambda p: with_easier(d(p, 2), title="")),
+    "easier-why-blank": ("variants.easier.why is only spaces", "directives[2].variants.easier.why", lambda p: with_easier(d(p, 2), why="   ")),
+    "fallback-easier-steps-empty": ("a fallback directive's variants.easier has no steps", "fallback_plan.directives[0].variants.easier.steps",
+                                    lambda p: with_easier(fb(p, 0), steps=[])),
+    "adapt-not-object": ("adapt is a number", "directives[2].adapt", lambda p: (with_easier(d(p, 2)), d(p, 2).update(adapt=2))),
+    "adapt-step-down-missing": ("adapt without step_down_after_hard", "directives[2].adapt.step_down_after_hard",
+                                lambda p: (with_easier(d(p, 2)), d(p, 2).update(adapt={}))),
+    "adapt-step-down-zero": ("step_down_after_hard 0", "directives[2].adapt.step_down_after_hard", lambda p: with_easier(d(p, 2), n=0)),
+    "adapt-step-down-eleven": ("step_down_after_hard 11", "directives[2].adapt.step_down_after_hard", lambda p: with_easier(d(p, 2), n=11)),
+    "adapt-step-down-fraction": ("step_down_after_hard 1.5", "directives[2].adapt.step_down_after_hard", lambda p: with_easier(d(p, 2), n=1.5)),
+    "adapt-step-down-text": ("step_down_after_hard written as text", "directives[2].adapt.step_down_after_hard", lambda p: with_easier(d(p, 2), n="2")),
+    "adapt-without-easier": ("adapt on a directive without variants.easier", "directives[2].adapt",
+                             lambda p: d(p, 2).update(adapt={"step_down_after_hard": 2})),
+    "adapt-with-unknown-variant-only": ("adapt with only an unknown variant name", "directives[2].adapt",
+                                        lambda p: d(p, 2).update(variants={"shorter": {"steps": [{"text": "Breathe.", "min_seconds": 5}]}},
+                                                                 adapt={"step_down_after_hard": 2})),
+    "adapt-with-null-easier": ("adapt with variants.easier null", "directives[2].adapt",
+                               lambda p: d(p, 2).update(variants={"easier": None}, adapt={"step_down_after_hard": 2})),
+    "minimum-not-object": ("minimum is a list", "minimum", lambda p: (with_minimum(p), p.update(minimum=["fajr"]))),
+    "minimum-keep-missing": ("minimum without keep", "minimum.keep", lambda p: (with_minimum(p), p.update(minimum={}))),
+    "minimum-keep-not-list": ("minimum.keep is a string", "minimum.keep", lambda p: (with_minimum(p), p.update(minimum={"keep": "fajr"}))),
+    "minimum-keep-not-an-id": ("minimum.keep entry is not an id", "minimum.keep[0]", lambda p: with_minimum(p, keep=["Fajr prayer"])),
+    "after-bad-day-not-object": ("after_bad_day is a string", "after_bad_day", lambda p: p.update(after_bad_day="minimum")),
+    "after-bad-day-answer-missing": ("after_bad_day without same", "after_bad_day.same", lambda p: with_minimum(p).pop("same")),
+    "after-bad-day-answer-null": ("after_bad_day.same is null", "after_bad_day.same", lambda p: with_minimum(p).update(same=None)),
+    "after-bad-day-mode-unknown": ("after_bad_day.worse is not a mode", "after_bad_day.worse", lambda p: with_minimum(p).update(worse="off")),
+    "after-bad-day-mode-not-text": ("after_bad_day.better is true", "after_bad_day.better", lambda p: with_minimum(p).update(better=True)),
+    "after-bad-day-minimum-without-minimum": ("after_bad_day chooses minimum but there is no minimum", "after_bad_day.worse",
+                                              lambda p: p.update(after_bad_day=dict(CHECK_IN))),
+    "after-bad-day-minimum-with-null-minimum": ("after_bad_day chooses minimum and minimum is null", "after_bad_day.same",
+                                                lambda p: p.update(minimum=None, after_bad_day={"better": "normal", "same": "minimum", "worse": "bad_day"})),
 }
 
 # name -> (what it shows, parser warning path prefix, mutation)
@@ -159,16 +235,43 @@ WARNINGS = {
                       lambda p: trig(p, 2).update(apps=["com.zhiliaoapp.musically", "com.zhiliaoapp.musically"])),
     "bad-day-keep-repeated": ("an id listed twice in bad_day.keep", "bad_day.keep", lambda p: p.update(bad_day={"keep": ["fajr", "fajr"]})),
     "bad-day-keep-empty": ("an empty bad_day.keep", "bad_day.keep", lambda p: p.update(bad_day={"keep": []})),
+    "easier-without-adapt": ("variants.easier that nothing switches to (no adapt)", "directives[2].variants.easier",
+                             lambda p: with_easier(d(p, 2), n=None)),
+    "unknown-variant": ("a variant name the app does not know", "directives[2].variants.harder",
+                        lambda p: d(p, 2).update(variants={"harder": {"steps": [{"text": "Walk outside.", "min_seconds": 60}]}})),
+    "unknown-variant-field": ("an unknown field in variants.easier", "directives[2].variants.easier.sound",
+                              lambda p: with_easier(d(p, 2), sound="soft")),
+    "unknown-adapt-field": ("an unknown field in adapt", "directives[2].adapt.step_up_after_easy",
+                            lambda p: (with_easier(d(p, 2)), d(p, 2)["adapt"].update(step_up_after_easy=3))),
+    "adapt-with-rating-never": ("adapt on a directive that is never rated", "directives[2].adapt",
+                                lambda p: (with_easier(d(p, 2)), d(p, 2).update(rating="never"))),
+    "easier-title-too-long": ("a 41-character variants.easier title", "directives[2].variants.easier.title", lambda p: with_easier(d(p, 2), title="P" * 41)),
+    "easier-why-too-long": ("a 91-character variants.easier why line", "directives[2].variants.easier.why", lambda p: with_easier(d(p, 2), why="x" * 91)),
+    "easier-step-text-too-long": ("a 121-character variants.easier step", "directives[2].variants.easier.steps[0].text",
+                                  lambda p: with_easier(d(p, 2), steps=[{"text": "y" * 121, "min_seconds": 5}])),
+    "easier-tier2-nine-steps": ("variants.easier of a tier 2 directive with 9 steps", "directives[2].variants.easier.steps",
+                                lambda p: with_easier(d(p, 2), steps=[{"text": f"Step {i}.", "min_seconds": 1} for i in range(1, 10)])),
+    "minimum-never-used": ("minimum without after_bad_day, so nothing chooses it", "minimum", lambda p: p.update(minimum={"keep": ["fajr"]})),
+    "minimum-never-chosen": ("minimum while no after_bad_day answer is minimum", "minimum",
+                             lambda p: with_minimum(p, after={"better": "normal", "same": "bad_day", "worse": "bad_day"})),
+    "minimum-keep-empty": ("an empty minimum.keep", "minimum.keep", lambda p: with_minimum(p, keep=[])),
+    "minimum-keep-repeated": ("an id listed twice in minimum.keep", "minimum.keep", lambda p: with_minimum(p, keep=["fajr", "fajr"])),
+    "unknown-minimum-field": ("an unknown field in minimum", "minimum.until", lambda p: (with_minimum(p), p["minimum"].update(until="noon"))),
+    "unknown-after-bad-day-field": ("an unknown answer in after_bad_day", "after_bad_day.unsure", lambda p: with_minimum(p).update(unsure="normal")),
 }
 
 
 def comments_everywhere(p):
     p["_readme"] = "Comments are allowed in every object."
-    for obj in [p["bad_day"], p["fallback_plan"]] + p["directives"] + p["fallback_plan"]["directives"]:
+    easier = with_easier(d(p, 2))
+    with_minimum(p)
+    for obj in [p["bad_day"], p["fallback_plan"], p["minimum"], p["after_bad_day"]] + p["directives"] + p["fallback_plan"]["directives"]:
         obj["_note"] = "a comment"
+    for obj in [d(p, 2)["variants"], easier, d(p, 2)["adapt"]]:
+        obj["_note"] = ["a", "comment"]
     for dd in p["directives"] + p["fallback_plan"]["directives"]:
         dd["trigger"]["_note"] = {"any": ["value", 1, None]}
-        for s in dd["steps"]:
+        for s in dd["steps"] + dd.get("variants", {}).get("easier", {}).get("steps", []):
             s["_why"] = 42
 
 
@@ -189,12 +292,18 @@ def boundaries(p):
         "quiet": "ignore",
     })
     p["day_boundary"] = "23:59"
+    # variants.easier locks add up to exactly 4800 seconds; step_down_after_hard at both ends of 1-10.
+    with_easier(d(p, 0), n=10, steps=[{"text": "Sit.", "min_seconds": 0}, {"text": "Pray.", "min_seconds": 3600}, {"text": "Rest.", "min_seconds": 1200}])
+    with_easier(fb(p, 1), n=1, steps=[{"text": "Close it now.", "min_seconds": 3600}])
+    with_minimum(p, keep=["a" * 48])
 
 
 def nulls(p):
-    p.update(generated_by=None, context=None, fallback_plan=None)
-    d(p, 1)["title"] = None
+    p.update(generated_by=None, context=None, fallback_plan=None, minimum=None, after_bad_day=None)
+    d(p, 1).update(title=None, rating=None, variants=None, adapt=None)
     trig(p, 1)["days"] = None
+    d(p, 0)["variants"] = {"easier": None}
+    with_easier(d(p, 2), title=None, why=None)
 
 
 def minimal(p):
@@ -224,6 +333,24 @@ VALID = {
     "comments-everywhere": ("'_' comment keys in every kind of object", comments_everywhere),
     "schema-link": ("a $schema link and generated_by/context", lambda p: p.update(
         {"$schema": "../../../../../spec/schema.json", "generated_by": "a test", "context": "Fixture."})),
+    "schema-version-1": ("a version 1 plan still loads", lambda p: p.update(schema_version=1)),
+    "v2-fields-in-version-1": ("the version 2 fields are read in a version 1 plan too", lambda p: (
+        p.update(schema_version=1), d(p, 1).update(rating="never"), with_easier(d(p, 2)), with_minimum(p))),
+    "ratings": ("every rating value, on main and fallback directives", lambda p: (
+        d(p, 0).update(rating="always"), d(p, 1).update(rating="never"), d(p, 2).update(rating="sample"), fb(p, 0).update(rating="never"))),
+    "easier-variant": ("variants.easier with its own title and why, and adapt", lambda p: with_easier(
+        d(p, 2), n=2, title="PAUSE", why="One breath is enough today.", steps=[{"text": "Put the phone face down.", "min_seconds": 5}])),
+    "easier-variant-steps-only": ("variants.easier with steps only (title and why come from the directive)", lambda p: with_easier(
+        d(p, 0), n=3, steps=[{"text": "Pray Fajr.", "min_seconds": 180}])),
+    "easier-tier1": ("a tier 1 directive's variants.easier with its one step", lambda p: with_easier(
+        d(p, 1), n=2, steps=[{"text": "Drink a sip of water.", "min_seconds": 3}])),
+    "easier-in-fallback": ("variants.easier and adapt on a fallback directive", lambda p: with_easier(
+        fb(p, 0), n=2, steps=[{"text": "Phone on charge. Lights off.", "min_seconds": 5}])),
+    "minimum-day": ("minimum.keep and the usual after_bad_day mapping", lambda p: with_minimum(p, keep=["fajr", "water"])),
+    "after-bad-day-without-minimum": ("after_bad_day that never chooses minimum, without a minimum list", lambda p: p.update(
+        after_bad_day={"better": "normal", "same": "bad_day", "worse": "bad_day"})),
+    "after-bad-day-same-minimum": ("after_bad_day where same and worse both choose minimum", lambda p: with_minimum(
+        p, after={"better": "bad_day", "same": "minimum", "worse": "minimum"})),
 }
 
 

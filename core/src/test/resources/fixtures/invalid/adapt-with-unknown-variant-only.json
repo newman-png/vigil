@@ -1,6 +1,6 @@
 {
-  "_problem": "schema_version 2 is newer than the app",
-  "_expect_error_at": "schema_version",
+  "_problem": "adapt with only an unknown variant name",
+  "_expect_error_at": "directives[2].adapt",
   "schema_version": 2,
   "week_of": "2026-10-19",
   "expires": "2026-10-26T04:00",
@@ -34,7 +34,9 @@
         {"text": "Take three slow breaths.", "min_seconds": 20}
       ],
       "why": "Make it a choice.",
-      "quiet": "queue"
+      "quiet": "queue",
+      "variants": {"shorter": {"steps": [{"text": "Breathe.", "min_seconds": 5}]}},
+      "adapt": {"step_down_after_hard": 2}
     }
   ],
   "bad_day": {"keep": ["fajr"]},

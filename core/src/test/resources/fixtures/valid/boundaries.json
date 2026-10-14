@@ -1,6 +1,6 @@
 {
   "_shows": "every number and time at the edge of its allowed range",
-  "schema_version": 1,
+  "schema_version": 2,
   "week_of": "2026-10-19",
   "expires": "2026-10-26T04:00",
   "day_boundary": "23:59",
@@ -12,7 +12,17 @@
       "trigger": {"type": "adhan", "prayer": "fajr"},
       "steps": [{"text": "Make wudu.", "min_seconds": 0}, {"text": "Pray Fajr.", "min_seconds": 3600}],
       "why": "The day starts here.",
-      "quiet": "override"
+      "quiet": "override",
+      "variants": {
+        "easier": {
+          "steps": [
+            {"text": "Sit.", "min_seconds": 0},
+            {"text": "Pray.", "min_seconds": 3600},
+            {"text": "Rest.", "min_seconds": 1200}
+          ]
+        }
+      },
+      "adapt": {"step_down_after_hard": 10}
     },
     {
       "id": "water",
@@ -65,8 +75,12 @@
         },
         "steps": [{"text": "Close it.", "min_seconds": 1}],
         "why": "Enough.",
-        "quiet": "ignore"
+        "quiet": "ignore",
+        "variants": {"easier": {"steps": [{"text": "Close it now.", "min_seconds": 3600}]}},
+        "adapt": {"step_down_after_hard": 1}
       }
     ]
-  }
+  },
+  "minimum": {"keep": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]},
+  "after_bad_day": {"better": "normal", "same": "bad_day", "worse": "minimum"}
 }

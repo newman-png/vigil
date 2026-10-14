@@ -35,7 +35,7 @@ class PlanParserTest {
         val plan = result.plan()
         assertEquals(emptyList<Issue>(), result.warnings)
 
-        assertEquals(1, plan.schemaVersion)
+        assertEquals(2, plan.schemaVersion)
         assertEquals(LocalDate.of(2026, 10, 19), plan.weekOf)
         assertEquals(LocalTime.of(3, 30), plan.dayBoundary)
         // A date-only expires means that date at the plan's day boundary.
@@ -85,6 +85,31 @@ class PlanParserTest {
         assertEquals(fallback[0], plan.directive("fallback-fajr"))
         assertEquals(fajr, plan.directive("fajr"))
         assertNull(plan.directive("nope"))
+
+        // Version 2 fields. A rating left out is "sample" for tier 1 and "always" for tiers 2 and 3.
+        assertEquals(RatingPolicy.ALWAYS, fajr.rating)
+        assertEquals(RatingPolicy.ALWAYS, isha.rating)
+        assertEquals(RatingPolicy.SAMPLE, water.rating)
+        assertEquals(RatingPolicy.ALWAYS, sleep.rating)
+        assertEquals(RatingPolicy.NEVER, plan.directives[OPENS].rating)
+        assertEquals(RatingPolicy.SAMPLE, plan.directives[SCROLL].rating)
+        assertEquals(RatingPolicy.SAMPLE, fallback[0].rating)
+        assertEquals(RatingPolicy.SAMPLE, fallback[1].rating)
+
+        val sleepEasier = Variant("PHONE AWAY", listOf(Step("Put the phone on charge, away from the bed.", 10)), "Just the phone tonight.")
+        assertEquals(sleepEasier, sleep.easier)
+        assertEquals(3, sleep.stepDownAfterHard)
+        assertEquals(Variant(null, listOf(Step("Look away from the screen.", 5)), null), plan.directives[SCROLL].easier)
+        assertEquals(1, plan.directives[SCROLL].stepDownAfterHard)
+        assertEquals(Variant(null, listOf(Step("Pray Fajr.", 180)), null), fallback[0].easier)
+        assertEquals(2, fallback[0].stepDownAfterHard)
+        for (d in listOf(fajr, isha, water, plan.directives[OPENS], fallback[1])) {
+            assertNull(d.id, d.easier)
+            assertNull(d.id, d.stepDownAfterHard)
+        }
+
+        assertEquals(Minimum(listOf("fajr", "sleep")), plan.minimum)
+        assertEquals(AfterBadDay(DayMode.NORMAL, DayMode.BAD_DAY, DayMode.MINIMUM), plan.afterBadDay)
     }
 
     @Test
@@ -104,6 +129,11 @@ class PlanParserTest {
             "day_boundary" to Remove,
             "fallback_plan" to Remove,
             "directives[$FAJR].title" to Remove,
+            "directives[$SLEEP].rating" to Remove,
+            "directives[$SLEEP].variants" to Remove,
+            "directives[$SLEEP].adapt" to Remove,
+            "minimum" to Remove,
+            "after_bad_day" to Remove,
         ).plan()
         assertNull(plan.generatedBy)
         assertNull(plan.context)
@@ -111,6 +141,11 @@ class PlanParserTest {
         assertEquals(Plan.DEFAULT_DAY_BOUNDARY, plan.dayBoundary)
         assertEquals("date-only expires uses the default boundary", LocalDateTime.of(2026, 10, 26, 4, 0), plan.expires)
         assertEquals("fajr", plan.directives[FAJR].title)
+        assertEquals(RatingPolicy.ALWAYS, plan.directives[SLEEP].rating)
+        assertNull(plan.directives[SLEEP].easier)
+        assertNull(plan.directives[SLEEP].stepDownAfterHard)
+        assertNull(plan.minimum)
+        assertNull(plan.afterBadDay)
     }
 
     @Test
@@ -124,8 +159,22 @@ class PlanParserTest {
             "directives[$WATER].trigger.days" to null,
             "directives[$OPENS].trigger.cooldown_min" to null,
             "directives[$OPENS].trigger.continuous_min" to null,
+            "directives[$OPENS].rating" to null,
+            "directives[$SLEEP].variants.easier.title" to null,
+            "directives[$SLEEP].variants.easier.why" to null,
+            "directives[$SCROLL].variants" to null,
+            "directives[$SCROLL].adapt" to null,
+            "minimum" to null,
+            "after_bad_day" to null,
         )
         val plan = result.plan()
+        assertEquals(emptyList<Issue>(), result.warnings)
+        assertEquals(RatingPolicy.ALWAYS, plan.directives[OPENS].rating)
+        assertEquals(Variant(null, plan.directives[SLEEP].easier!!.steps, null), plan.directives[SLEEP].easier)
+        assertNull(plan.directives[SCROLL].easier)
+        assertNull(plan.directives[SCROLL].stepDownAfterHard)
+        assertNull(plan.minimum)
+        assertNull(plan.afterBadDay)
         assertEquals(Plan.DEFAULT_DAY_BOUNDARY, plan.dayBoundary)
         assertNull(plan.fallbackPlan)
         assertEquals("fajr", plan.directives[FAJR].title)
@@ -390,16 +439,29 @@ class PlanParserTest {
 
     @Test
     fun newerSchemaVersionAsksForAppUpdate() {
-        val error = parse("schema_version" to 2).errors().single()
+        val error = parse("schema_version" to 3).errors().single()
         assertEquals("schema_version", error.path)
-        assertContains(error.message, "2", "Update the app", "version 1")
+        assertContains(error.message, "schema_version 3", "versions up to 2", "Update the app", "version 2 plan")
     }
 
     @Test
     fun schemaVersionBelowOneIsRejected() {
         for (version in listOf(0, -1)) {
-            assertIssue(parse("schema_version" to version).errors(), "schema_version", "must be 1")
+            assertIssue(parse("schema_version" to version).errors(), "schema_version", "must be 2", "version 1 plans still load")
         }
+    }
+
+    @Test
+    fun versionOneAndTwoBothLoadAndReadTheSameFields() {
+        assertEquals(2, Plan.SUPPORTED_SCHEMA_VERSION)
+        val v2 = parse().plan()
+        val v1Result = parse("schema_version" to 1)
+        val v1 = v1Result.plan()
+        assertEquals(emptyList<Issue>(), v1Result.warnings)
+        assertEquals(1, v1.schemaVersion)
+        // The version 2 fields are optional and read in a version 1 plan too.
+        assertEquals(v2.copy(schemaVersion = 1), v1)
+        assertTrue(v1.minimum != null && v1.afterBadDay != null && v1.directives[SLEEP].easier != null)
     }
 
     // ---------------------------------------------------------------- ids
@@ -410,8 +472,10 @@ class PlanParserTest {
         for (id in listOf("Fajr", "fajr prayer", "-fajr", "_fajr", "", "fajr!", "fajr.am", "ﬁjr", "a".repeat(49), "fajr\n")) {
             assertIssue(parse(path to id).errors(), path, "not a valid id", "lowercase")
         }
-        assertEquals("a".repeat(48), parse(path to "a".repeat(48), "bad_day.keep[0]" to "a".repeat(48)).plan().directives[FAJR].id)
-        assertEquals("0-fajr_2", parse(path to "0-fajr_2", "bad_day.keep[0]" to "0-fajr_2").plan().directives[FAJR].id)
+        // bad_day.keep and minimum.keep name fajr, so they follow the new id.
+        fun renamed(id: String) = parse(path to id, "bad_day.keep[0]" to id, "minimum.keep[0]" to id).plan().directives[FAJR].id
+        assertEquals("a".repeat(48), renamed("a".repeat(48)))
+        assertEquals("0-fajr_2", renamed("0-fajr_2"))
     }
 
     @Test
@@ -678,6 +742,12 @@ class PlanParserTest {
             "bad_day.until",
             "fallback_plan.note",
             "fallback_plan.directives[1].priority",
+            "directives[$SLEEP].variants.easier.sound",
+            "directives[$SLEEP].variants.easier.steps[0].duration",
+            "directives[$SLEEP].adapt.step_up_after_easy",
+            "fallback_plan.directives[0].adapt.reset",
+            "minimum.until",
+            "after_bad_day.unsure",
         )
         val result = parse(*paths.map { it to "x" }.toTypedArray())
         result.plan()
@@ -697,6 +767,12 @@ class PlanParserTest {
             "bad_day._reason",
             "fallback_plan._readme",
             "fallback_plan.directives[0]._x",
+            "directives[$SLEEP].variants._why",
+            "directives[$SLEEP].variants.easier._note",
+            "directives[$SLEEP].variants.easier.steps[0]._x",
+            "directives[$SLEEP].adapt._because",
+            "minimum._note",
+            "after_bad_day._note",
         )
         val result = parse(*paths.map { it to lit("{\"anything\": [1, {\"deep\": true}]}") }.toTypedArray())
         result.plan()
@@ -746,6 +822,433 @@ class PlanParserTest {
     fun badDayMayKeepAnUnsupportedDirective() {
         val result = parse("directives[$SLEEP].trigger.type" to "geofence")
         assertTrue("sleep" in result.plan().badDay.keep)
+    }
+
+    // ---------------------------------------------------------------- reserved ids
+
+    @Test
+    fun idsStartingWithVigilAreReservedForTheApp() {
+        val path = "directives[$WATER].id"
+        assertIssue(parse(path to "vigil-water").errors(), path, "\"vigil-\"", "reserved", "built-in", "like \"water\"")
+        for (id in listOf("vigil-demo", "vigil-demo-3", "vigil-check-in")) {
+            assertIssue(parse(path to id).errors(), path, "reserved")
+        }
+        // Nothing valid is left to suggest.
+        val bare = parse(path to "vigil-").errors().single { it.path == path }
+        assertContains(bare.message, "reserved", "Choose another id.")
+        assertFalse(bare.message, bare.message.contains("like"))
+        // Stripping the prefix once would leave another reserved id, so that is not suggested either.
+        val twice = parse(path to "vigil-vigil-water").errors().single { it.path == path }
+        assertContains(twice.message, "reserved", "Choose another id.")
+        assertFalse(twice.message, twice.message.contains("like"))
+        assertIssue(parse("fallback_plan.directives[0].id" to "vigil-fajr").errors(), "fallback_plan.directives[0].id", "reserved")
+        // Only the prefix is reserved.
+        for (id in listOf("vigilance", "vigil_water", "my-vigil-water", "vigil")) {
+            assertEquals(id, parse(path to id).plan().directives[WATER].id)
+        }
+    }
+
+    // ---------------------------------------------------------------- rating
+
+    @Test
+    fun ratingDefaultsToSampleForTierOneAndAlwaysForTiersTwoAndThree() {
+        assertEquals(RatingPolicy.SAMPLE, RatingPolicy.defaultFor(1))
+        val plan = parse(
+            "directives[$SLEEP].rating" to Remove,
+            "directives[$OPENS].rating" to null,
+            "fallback_plan.directives[0].rating" to Remove,
+        ).plan()
+        assertEquals(RatingPolicy.ALWAYS, plan.directives[FAJR].rating) // tier 3
+        assertEquals(RatingPolicy.ALWAYS, plan.directives[ISHA].rating) // tier 2
+        assertEquals(RatingPolicy.SAMPLE, plan.directives[WATER].rating) // tier 1
+        assertEquals(RatingPolicy.ALWAYS, plan.directives[SLEEP].rating)
+        assertEquals(RatingPolicy.ALWAYS, plan.directives[OPENS].rating)
+        assertEquals(RatingPolicy.SAMPLE, plan.directives[SCROLL].rating)
+        assertEquals(RatingPolicy.ALWAYS, plan.fallbackPlan!!.directives[0].rating)
+        assertEquals(RatingPolicy.SAMPLE, plan.fallbackPlan!!.directives[1].rating)
+        // The default follows the tier the plan gives.
+        assertEquals(RatingPolicy.ALWAYS, parse("directives[$WATER].tier" to 2).plan().directives[WATER].rating)
+    }
+
+    @Test
+    fun everyRatingValueIsRead() {
+        for (policy in RatingPolicy.entries) {
+            val plan = parse("directives[$WATER].rating" to policy.json, "fallback_plan.directives[1].rating" to policy.json).plan()
+            assertEquals(policy, plan.directives[WATER].rating)
+            assertEquals(policy, plan.fallbackPlan!!.directives[1].rating)
+        }
+    }
+
+    @Test
+    fun badRatingIsRejected() {
+        val path = "directives[$ISHA].rating"
+        for (value in listOf("often", "Always", "NEVER", "", "sampled", "every 3")) {
+            assertIssue(parse(path to value).errors(), path, "\"always\", \"sample\" or \"never\"")
+        }
+        for (value in listOf<Any>(1, true, lit("[\"always\"]"), lit("{\"policy\": \"always\"}"))) {
+            assertIssue(parse(path to value).errors(), path, "text in quotes")
+        }
+        assertIssue(parse("fallback_plan.directives[1].rating" to "x").errors(), "fallback_plan.directives[1].rating", "\"sample\"")
+    }
+
+    // ---------------------------------------------------------------- variants.easier
+
+    @Test
+    fun withVariantRunsTheEasierVersionThePlanWrote() {
+        val plan = parse().plan()
+        val sleep = plan.directives[SLEEP]
+        val easier = sleep.withVariant(Variant.EASIER)
+        assertEquals("PHONE AWAY", easier.title)
+        assertEquals("Just the phone tonight.", easier.why)
+        assertEquals(sleep.easier!!.steps, easier.steps)
+        // Everything else stays the directive's own.
+        assertEquals(sleep.copy(title = easier.title, steps = easier.steps, why = easier.why), easier)
+
+        // Without its own title and why, the easier version keeps the directive's (here the id, as there is no title).
+        val scroll = plan.directives[SCROLL]
+        val scrollEasier = scroll.withVariant(Variant.EASIER)
+        assertEquals("scroll_long", scrollEasier.title)
+        assertEquals("Twenty minutes is enough.", scrollEasier.why)
+        assertEquals(listOf(Step("Look away from the screen.", 5)), scrollEasier.steps)
+
+        // No variant, an unknown one, or a directive without variants.easier: unchanged.
+        assertEquals(sleep, sleep.withVariant(null))
+        assertEquals(sleep, sleep.withVariant("harder"))
+        assertEquals(plan.directives[WATER], plan.directives[WATER].withVariant(Variant.EASIER))
+    }
+
+    @Test
+    fun easierStepsFollowTheSameRulesAsTheDirectiveSteps() {
+        val e = "directives[$SLEEP].variants.easier"
+        assertIssue(parse("$e.steps[0].min_seconds" to -1).errors(), "$e.steps[0].min_seconds", "between 0 and 3600")
+        assertIssue(parse("$e.steps[0].min_seconds" to 3601).errors(), "$e.steps[0].min_seconds", "between 0 and 3600")
+        assertIssue(parse("$e.steps[0].min_seconds" to 2.5).errors(), "$e.steps[0].min_seconds", "whole number")
+        assertIssue(parse("$e.steps[0].min_seconds" to Remove).errors(), "$e.steps[0].min_seconds", "missing")
+        assertIssue(parse("$e.steps[0].text" to " ").errors(), "$e.steps[0].text", "must not be empty")
+        assertIssue(parse("$e.steps[0].text" to Remove).errors(), "$e.steps[0].text", "missing")
+        assertIssue(parse("$e.steps[0]" to "Phone away.").errors(), "$e.steps[0]", "must be an object")
+        assertIssue(parse("$e.steps" to Remove).errors(), "$e.steps", "missing", "variants.easier needs at least one step")
+        assertIssue(parse("$e.steps" to null).errors(), "$e.steps", "missing")
+        assertIssue(parse("$e.steps" to lit("[]")).errors(), "$e.steps", "empty", "variants.easier")
+        assertIssue(parse("$e.steps" to lit("{}")).errors(), "$e.steps", "list of steps")
+
+        val long = parse("$e.steps[0].text" to "x".repeat(121))
+        long.plan()
+        assertIssue(long.warnings, "$e.steps[0].text", "121 characters")
+    }
+
+    @Test
+    fun easierOfATierOneDirectiveHasExactlyOneStep() {
+        val e = "directives[$SCROLL].variants.easier"
+        val two = lit("[{\"text\": \"Look away.\", \"min_seconds\": 5}, {\"text\": \"Stand up.\", \"min_seconds\": 5}]")
+        assertIssue(parse("$e.steps" to two).errors(), "$e.steps", "tier 1", "exactly one step", "2")
+        // Tier 2 and 3 easier versions may have several steps, like their directives.
+        val sleep = parse("directives[$SLEEP].variants.easier.steps" to two).plan().directives[SLEEP]
+        assertEquals(2, sleep.easier!!.steps.size)
+    }
+
+    @Test
+    fun easierStepLocksMustFitInsideTheTakeoverMaximum() {
+        val e = "directives[$SLEEP].variants.easier"
+        fun locks(vararg seconds: Int) = lit("[" + seconds.joinToString { "{\"text\": \"Rest.\", \"min_seconds\": $it}" } + "]")
+        assertEquals(4800, parse("$e.steps" to locks(3600, 1200)).plan().directives[SLEEP].easier!!.steps.sumOf { it.minSeconds })
+        val error = parse("$e.steps" to locks(3600, 1201)).errors().single()
+        assertEquals("$e.steps", error.path)
+        assertContains(error.message, "81 minutes", "90 minutes", "variants.easier under 80 minutes")
+    }
+
+    @Test
+    fun longTierTwoEasierChecklistWarns() {
+        val nine = lit("[" + (1..9).joinToString { "{\"text\": \"Step $it.\", \"min_seconds\": 1}" } + "]")
+        val result = parse(
+            "directives[$ISHA].variants" to lit("{\"easier\": {\"steps\": $nine}}"),
+            "directives[$ISHA].adapt" to lit("{\"step_down_after_hard\": 2}"),
+        )
+        assertEquals(9, result.plan().directives[ISHA].easier!!.steps.size)
+        assertIssue(result.warnings, "directives[$ISHA].variants.easier.steps", "9 steps")
+        assertEquals(1, result.warnings.size)
+    }
+
+    @Test
+    fun easierTitleAndWhyProblems() {
+        val e = "directives[$SLEEP].variants.easier"
+        assertIssue(parse("$e.title" to "").errors(), "$e.title", "must not be empty")
+        assertIssue(parse("$e.title" to "  ").errors(), "$e.title", "must not be empty")
+        assertIssue(parse("$e.title" to 5).errors(), "$e.title", "text in quotes")
+        assertIssue(parse("$e.why" to " ").errors(), "$e.why", "must not be empty", "leave it out")
+        assertIssue(parse("$e.why" to false).errors(), "$e.why", "text in quotes")
+
+        val long = parse("$e.title" to "T".repeat(41), "$e.why" to "w".repeat(91))
+        val easier = long.plan().directives[SLEEP].easier!!
+        assertEquals("T".repeat(41), easier.title)
+        assertIssue(long.warnings, "$e.title", "41 characters")
+        assertIssue(long.warnings, "$e.why", "91 characters")
+
+        // Left out: the directive's own title and why are used when it runs.
+        val plain = parse("$e.title" to Remove, "$e.why" to Remove).plan().directives[SLEEP]
+        assertEquals(Variant(null, plain.easier!!.steps, null), plain.easier)
+        assertEquals("SLEEP", plain.withVariant(Variant.EASIER).title)
+        assertEquals("Tomorrow is decided tonight.", plain.withVariant(Variant.EASIER).why)
+    }
+
+    @Test
+    fun variantsAndEasierMustBeObjects() {
+        val v = "directives[$SLEEP].variants"
+        for (value in listOf<Any>("easier", lit("[]"), lit("[{\"steps\": []}]"), 1)) {
+            assertIssue(parse(v to value).errors(), v, "variants must be an object")
+        }
+        for (value in listOf<Any>("fewer steps", lit("[]"), 2, true)) {
+            assertIssue(parse("$v.easier" to value).errors(), "$v.easier", "must be an object", "\"steps\"")
+        }
+    }
+
+    @Test
+    fun brokenEasierIsReportedOnlyOnce() {
+        // adapt is fine: the problem is the variant, so nothing is reported at adapt as well.
+        val errors = parse("directives[$SLEEP].variants.easier" to "short").errors()
+        assertEquals(listOf("directives[$SLEEP].variants.easier"), errors.map { it.path })
+        val noSteps = parse("directives[$SLEEP].variants.easier.steps" to Remove).errors()
+        assertEquals(listOf("directives[$SLEEP].variants.easier.steps"), noSteps.map { it.path })
+        val notAnObject = parse("directives[$SLEEP].variants" to "easier").errors()
+        assertEquals(listOf("directives[$SLEEP].variants"), notAnObject.map { it.path })
+    }
+
+    @Test
+    fun unknownVariantNamesWarnAndAreIgnored() {
+        val result = parse("directives[$WATER].variants" to lit("{\"harder\": {\"steps\": []}, \"_note\": \"later\"}"))
+        val water = result.plan().directives[WATER]
+        assertNull(water.easier)
+        assertIssue(result.warnings, "directives[$WATER].variants.harder", "Unknown variant", "\"harder\"", "only knows \"easier\"")
+        assertEquals(1, result.warnings.size)
+
+        // Next to an easier version, which is still read.
+        val both = parse("directives[$SLEEP].variants.shorter" to lit("{\"steps\": [{\"text\": \"x\", \"min_seconds\": 1}]}"))
+        assertEquals("PHONE AWAY", both.plan().directives[SLEEP].easier!!.title)
+        assertIssue(both.warnings, "directives[$SLEEP].variants.shorter", "Unknown variant")
+        assertEquals(1, both.warnings.size)
+    }
+
+    @Test
+    fun emptyOrNullVariantsMeanNoEasierVersion() {
+        for (variants in listOf(lit("{}"), lit("{\"easier\": null}"), JsonNull)) {
+            val result = parse("directives[$WATER].variants" to variants)
+            assertNull(result.plan().directives[WATER].easier)
+            assertEquals(emptyList<Issue>(), result.warnings)
+        }
+    }
+
+    @Test
+    fun easierWithoutAdaptIsNeverUsedAndWarns() {
+        for (adapt in listOf<Any?>(Remove, null)) {
+            val result = parse("directives[$SCROLL].adapt" to adapt)
+            val scroll = result.plan().directives[SCROLL]
+            assertEquals("still read", listOf(Step("Look away from the screen.", 5)), scroll.easier!!.steps)
+            assertNull(scroll.stepDownAfterHard)
+            assertIssue(result.warnings, "directives[$SCROLL].variants.easier", "never used", "adapt", "step_down_after_hard")
+            assertEquals(1, result.warnings.size)
+        }
+        val fallback = parse("fallback_plan.directives[0].adapt" to Remove)
+        assertIssue(fallback.warnings, "fallback_plan.directives[0].variants.easier", "never used")
+    }
+
+    // ---------------------------------------------------------------- adapt
+
+    @Test
+    fun stepDownAfterHardIsOneToTen() {
+        val a = "directives[$SLEEP].adapt"
+        for (n in listOf(1, 10)) {
+            assertEquals(n, parse("$a.step_down_after_hard" to n).plan().directives[SLEEP].stepDownAfterHard)
+        }
+        for (n in listOf(0, 11, -1, 100)) {
+            assertIssue(parse("$a.step_down_after_hard" to n).errors(), "$a.step_down_after_hard", "between 1 and 10", "$n")
+        }
+        assertIssue(parse("$a.step_down_after_hard" to 1.5).errors(), "$a.step_down_after_hard", "whole number")
+        assertIssue(parse("$a.step_down_after_hard" to "2").errors(), "$a.step_down_after_hard", "without quotes")
+        assertIssue(parse("$a.step_down_after_hard" to Remove).errors(), "$a.step_down_after_hard", "missing")
+        assertIssue(parse("$a.step_down_after_hard" to null).errors(), "$a.step_down_after_hard", "missing")
+        assertEquals(10, PlanParser.MAX_STEP_DOWN_AFTER_HARD)
+    }
+
+    @Test
+    fun adaptMustBeAnObject() {
+        val a = "directives[$SLEEP].adapt"
+        for (value in listOf<Any>(2, "2", lit("[2]"), true)) {
+            assertIssue(parse(a to value).errors(), a, "adapt must be an object", "step_down_after_hard")
+        }
+    }
+
+    @Test
+    fun adaptNeedsAnEasierVariant() {
+        val adapt = lit("{\"step_down_after_hard\": 2}")
+        val a = "directives[$WATER].adapt"
+        assertIssue(parse(a to adapt).errors(), a, "adapt needs variants.easier", "remove adapt")
+        assertIssue(parse(a to adapt, "directives[$WATER].variants" to null).errors(), a, "needs variants.easier")
+        assertIssue(parse(a to adapt, "directives[$WATER].variants" to lit("{}")).errors(), a, "needs variants.easier")
+        assertIssue(parse(a to adapt, "directives[$WATER].variants" to lit("{\"easier\": null}")).errors(), a, "needs variants.easier")
+        val onlyUnknown = parse(a to adapt, "directives[$WATER].variants" to lit("{\"shorter\": {\"steps\": []}}"))
+        assertIssue(onlyUnknown.errors(), a, "needs variants.easier")
+        assertIssue(onlyUnknown.warnings, "directives[$WATER].variants.shorter", "Unknown variant")
+        val f = "fallback_plan.directives[1].adapt"
+        assertIssue(parse(f to adapt).errors(), f, "needs variants.easier")
+        // Removing the variant from a directive that has adapt.
+        assertIssue(parse("directives[$SLEEP].variants" to Remove).errors(), "directives[$SLEEP].adapt", "needs variants.easier")
+    }
+
+    @Test
+    fun adaptWithRatingNeverWarns() {
+        val result = parse("directives[$SLEEP].rating" to "never")
+        val sleep = result.plan().directives[SLEEP]
+        assertEquals(RatingPolicy.NEVER, sleep.rating)
+        assertEquals(3, sleep.stepDownAfterHard)
+        assertIssue(result.warnings, "directives[$SLEEP].adapt", "rating is \"never\"", "never run", "\"always\" or \"sample\"")
+        assertEquals(1, result.warnings.size)
+        // "sample" still asks now and then, so it can step down.
+        assertEquals(emptyList<Issue>(), parse("directives[$SLEEP].rating" to "sample").warnings)
+    }
+
+    // ---------------------------------------------------------------- minimum
+
+    @Test
+    fun minimumIsOptional() {
+        for (value in listOf<Any?>(Remove, null)) {
+            val result = parse("minimum" to value, "after_bad_day" to value)
+            assertNull(result.plan().minimum)
+            assertEquals(emptyList<Issue>(), result.warnings)
+        }
+    }
+
+    @Test
+    fun minimumKeepMustReferenceRealDirectives() {
+        assertIssue(parse("minimum.keep[1]" to "slep").errors(), "minimum.keep[1]", "\"slep\"", "no directive")
+        // A fallback_plan id does not count, as for bad_day.
+        assertIssue(parse("minimum.keep[1]" to "fallback-fajr").errors(), "minimum.keep[1]", "no directive in \"directives\"")
+        // Checked even when a directive has other problems; the broken directive's id still counts.
+        val errors = parse("directives[$WATER].tier" to 9, "minimum.keep[1]" to "water").errors()
+        assertTrue(errors.toString(), errors.none { it.path.startsWith("minimum") })
+        // Any directive may be kept, also one bad_day does not keep.
+        assertEquals(listOf("fajr", "water"), parse("minimum.keep[1]" to "water").plan().minimum!!.keep)
+    }
+
+    @Test
+    fun minimumShapeProblems() {
+        assertIssue(parse("minimum" to lit("[\"fajr\"]")).errors(), "minimum", "minimum must be an object", "keep")
+        assertIssue(parse("minimum" to "fajr").errors(), "minimum", "must be an object")
+        assertIssue(parse("minimum.keep" to "fajr").errors(), "minimum.keep", "list of directive ids")
+        assertIssue(parse("minimum.keep" to Remove).errors(), "minimum.keep", "list of directive ids")
+        assertIssue(parse("minimum.keep" to null).errors(), "minimum.keep", "list of directive ids")
+        assertIssue(parse("minimum.keep[0]" to 1).errors(), "minimum.keep[0]", "directive id")
+    }
+
+    @Test
+    fun emptyOrDuplicateMinimumKeepWarns() {
+        val empty = parse("minimum.keep" to lit("[]"))
+        assertEquals(emptyList<String>(), empty.plan().minimum!!.keep)
+        assertIssue(empty.warnings, "minimum.keep", "empty", "nothing will fire on a minimum day")
+        assertEquals(1, empty.warnings.size)
+
+        val twice = parse("minimum.keep" to listOf("sleep", "fajr", "sleep"))
+        assertEquals(listOf("sleep", "fajr"), twice.plan().minimum!!.keep)
+        assertIssue(twice.warnings, "minimum.keep[2]", "\"sleep\"", "twice in minimum.keep")
+    }
+
+    @Test
+    fun minimumThatNothingChoosesWarns() {
+        for (afterBadDay in listOf<Any?>(Remove, null)) {
+            val result = parse("after_bad_day" to afterBadDay)
+            assertEquals(listOf("fajr", "sleep"), result.plan().minimum!!.keep)
+            assertIssue(result.warnings, "minimum", "never used", "Add \"after_bad_day\"", "\"worse\": \"minimum\"", "remove minimum")
+            assertEquals(1, result.warnings.size)
+        }
+        // With an after_bad_day that never says "minimum", the fix is to change an answer, not to add after_bad_day.
+        val neverChosen = parse("after_bad_day" to lit("{\"better\": \"normal\", \"same\": \"bad_day\", \"worse\": \"bad_day\"}"))
+        assertEquals(listOf("fajr", "sleep"), neverChosen.plan().minimum!!.keep)
+        val warning = neverChosen.warnings.single()
+        assertEquals("minimum", warning.path)
+        assertContains(warning.message, "never used", "None of the after_bad_day answers", "usually \"worse\"", "remove minimum")
+        assertFalse(warning.message, warning.message.contains("Add \"after_bad_day\""))
+        // Any one answer choosing it is enough.
+        val viaBetter = parse("after_bad_day" to lit("{\"better\": \"minimum\", \"same\": \"bad_day\", \"worse\": \"bad_day\"}"))
+        assertEquals(emptyList<Issue>(), viaBetter.warnings)
+        // A broken after_bad_day is reported by itself; minimum is not blamed as well.
+        for (broken in listOf(parse("after_bad_day" to "minimum"), parse("after_bad_day.worse" to "minimal"), parse("after_bad_day.worse" to Remove))) {
+            broken.errors()
+            assertTrue(broken.warnings.toString(), broken.warnings.none { it.path == "minimum" })
+        }
+    }
+
+    // ---------------------------------------------------------------- after_bad_day
+
+    @Test
+    fun afterBadDayMapsEachAnswerToAMode() {
+        val after = parse().plan().afterBadDay!!
+        assertEquals(DayMode.NORMAL, after.modeFor(CheckInAnswer.BETTER))
+        assertEquals(DayMode.BAD_DAY, after.modeFor(CheckInAnswer.SAME))
+        assertEquals(DayMode.MINIMUM, after.modeFor(CheckInAnswer.WORSE))
+
+        // Any mode for any answer: the plan decides.
+        val odd = parse(
+            "after_bad_day" to lit("{\"better\": \"bad_day\", \"same\": \"minimum\", \"worse\": \"normal\", \"_why\": \"testing\"}"),
+        )
+        assertEquals(emptyList<Issue>(), odd.warnings)
+        assertEquals(AfterBadDay(DayMode.BAD_DAY, DayMode.MINIMUM, DayMode.NORMAL), odd.plan().afterBadDay)
+    }
+
+    @Test
+    fun afterBadDayIsOptional() {
+        for (value in listOf<Any?>(Remove, null)) {
+            val result = parse("after_bad_day" to value, "minimum" to Remove)
+            assertNull(result.plan().afterBadDay)
+            assertEquals(emptyList<Issue>(), result.warnings)
+        }
+        // It does not need a minimum list when no answer chooses "minimum".
+        val noMinimum = parse("minimum" to Remove, "after_bad_day.worse" to "bad_day")
+        assertEquals(AfterBadDay(DayMode.NORMAL, DayMode.BAD_DAY, DayMode.BAD_DAY), noMinimum.plan().afterBadDay)
+        assertEquals(emptyList<Issue>(), noMinimum.warnings)
+    }
+
+    @Test
+    fun everyAnswerNeedsAMode() {
+        for (key in listOf("better", "same", "worse")) {
+            for (value in listOf<Any?>(Remove, null)) {
+                assertIssue(parse("after_bad_day.$key" to value).errors(), "after_bad_day.$key", "missing", "better, same and worse")
+            }
+        }
+        val errors = parse("after_bad_day" to lit("{}")).errors()
+        for (key in listOf("better", "same", "worse")) assertIssue(errors, "after_bad_day.$key", "missing")
+    }
+
+    @Test
+    fun unknownModeIsRejected() {
+        val path = "after_bad_day.worse"
+        for (value in listOf("off", "Normal", "bad-day", "badday", "", "minimal")) {
+            assertIssue(parse(path to value).errors(), path, "\"normal\", \"bad_day\" or \"minimum\"")
+        }
+        for (value in listOf<Any>(1, true, lit("[\"normal\"]"))) {
+            assertIssue(parse(path to value).errors(), path, "text in quotes")
+        }
+    }
+
+    @Test
+    fun afterBadDayMustBeAnObject() {
+        for (value in listOf<Any>("minimum", lit("[\"normal\", \"bad_day\", \"minimum\"]"), 3)) {
+            assertIssue(parse("after_bad_day" to value).errors(), "after_bad_day", "must be an object", "\"worse\": \"minimum\"")
+        }
+    }
+
+    @Test
+    fun choosingMinimumNeedsAMinimumList() {
+        for (value in listOf<Any?>(Remove, null)) {
+            val errors = parse("minimum" to value).errors()
+            assertIssue(errors, "after_bad_day.worse", "chooses \"minimum\"", "no minimum list", "\"minimum\": {\"keep\"", "\"bad_day\" instead")
+            assertEquals(1, errors.size)
+        }
+        // Each answer that chooses it is named.
+        val two = parse("minimum" to Remove, "after_bad_day.same" to "minimum").errors()
+        assertIssue(two, "after_bad_day.same", "no minimum list")
+        assertIssue(two, "after_bad_day.worse", "no minimum list")
+        // A minimum that is there but broken is reported by itself.
+        val broken = parse("minimum" to lit("[\"fajr\"]")).errors()
+        assertEquals(listOf("minimum"), broken.map { it.path })
     }
 
     // ---------------------------------------------------------------- dates
@@ -810,6 +1313,14 @@ class PlanParserTest {
             "expires" to huge,
             "week_of" to huge,
             "bad_day.keep[0]" to huge,
+            "minimum.keep[0]" to huge,
+            "after_bad_day.worse" to huge,
+            "directives[$FAJR].rating" to huge,
+            "directives[$SLEEP].variants.$huge" to lit("{}"),
+            "directives[$SLEEP].variants.easier.title" to huge,
+            "directives[$SLEEP].variants.easier.why" to huge,
+            "directives[$SLEEP].variants.easier.steps[0].text" to huge,
+            "directives[$SLEEP].adapt.step_down_after_hard" to lit("9".repeat(100_000)),
         )
         for (edit in cases) {
             val result = parse(edit)
@@ -829,6 +1340,18 @@ class PlanParserTest {
             "",
             "{\"a\": }",
             edited("directives[$FAJR].tier" to 2.5, "directives[$WATER].trigger.days" to lit("[\"x\"]"), "plan_name" to 1),
+            edited(
+                "directives[$FAJR].id" to "vigil-fajr",
+                "directives[$FAJR].rating" to "often",
+                "directives[$WATER].adapt" to lit("{\"step_down_after_hard\": 0}"),
+                "directives[$ISHA].variants" to lit("{\"harder\": {}, \"easier\": {\"steps\": []}}"),
+                "directives[$SLEEP].variants.easier" to lit("[]"),
+                "directives[$SCROLL].variants.easier.steps" to lit("[{\"text\": \"a\", \"min_seconds\": 1}, {\"text\": \"b\", \"min_seconds\": 1}]"),
+                "minimum" to Remove,
+                "after_bad_day.same" to Remove,
+                "after_bad_day.better" to "fine",
+            ),
+            edited("minimum.keep" to lit("[]"), "after_bad_day" to Remove, "directives[$OPENS].rating" to "never", "directives[$OPENS].adapt" to lit("{\"step_down_after_hard\": 2}")),
         )
         val issues = texts.flatMap { text ->
             val result = PlanParser.parse(text)
@@ -881,7 +1404,8 @@ class PlanParserTest {
             "null", "true", "0", "-0", "1", "-1", "2.5", "1e999", "-1e-999", "99999999999999999999", "\"\"", "\" \"",
             "\"\\u0000\"", "\"\\ud800\"", "[]", "{}", "[null]", "[[]]", "[{}]", "{\"type\": null}", "\"07:00\"",
             "\"2026-10-26\"", "\"override\"", "\"time\"", "\"app_usage\"", "\"geofence\"", "[\"mon\", \"mon\"]",
-            "[\"com.a.b\", 1]", "{\"keep\": [1, null, \"fajr\"]}", "unquoted", "'single'",
+            "[\"com.a.b\", 1]", "{\"keep\": [1, null, \"fajr\"]}", "unquoted", "'single'", "\"never\"", "\"minimum\"",
+            "{\"easier\": {}}", "{\"easier\": {\"steps\": [{}]}}", "{\"step_down_after_hard\": 2}", "\"vigil-x\"",
         ).map { lit(it) }
         val paths = mutableListOf<String>()
         collectPaths(Json.parseToJsonElement(FULL), "", paths)
@@ -905,6 +1429,10 @@ class PlanParserTest {
             "{\"directives\": [{\"trigger\": {\"type\": \"app_usage\", \"apps\": [null], \"opens\": null}}]}",
             "{\"bad_day\": {\"keep\": null}}",
             "{\"fallback_plan\": {}}",
+            "{\"directives\": [{\"variants\": {\"easier\": {\"steps\": [null]}}, \"adapt\": {\"step_down_after_hard\": null}}]}",
+            "{\"directives\": [{\"variants\": null, \"adapt\": [], \"rating\": {}}]}",
+            "{\"minimum\": {\"keep\": [null]}, \"after_bad_day\": {\"better\": null, \"same\": [], \"worse\": \"minimum\"}}",
+            "{\"after_bad_day\": \"minimum\", \"minimum\": 1}",
             "{\"directives\": {\"0\": {}}}",
             "\uFEFF\uFEFF{}",
             "{\"a\": \"\\u0000\\ud800\\udfff\"}",

@@ -1,7 +1,7 @@
 {
   "_shows": "no bad_day at all",
   "_expect_warning_at": "bad_day",
-  "schema_version": 1,
+  "schema_version": 2,
   "week_of": "2026-10-19",
   "expires": "2026-10-26T04:00",
   "day_boundary": "04:00",
