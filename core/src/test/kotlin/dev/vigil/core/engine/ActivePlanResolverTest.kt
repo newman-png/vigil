@@ -1,8 +1,11 @@
 package dev.vigil.core.engine
 
+import dev.vigil.core.plan.AfterBadDay
 import dev.vigil.core.plan.BadDay
+import dev.vigil.core.plan.DayMode
 import dev.vigil.core.plan.Directive
 import dev.vigil.core.plan.FallbackPlan
+import dev.vigil.core.plan.Minimum
 import dev.vigil.core.plan.ParseResult
 import dev.vigil.core.plan.Plan
 import dev.vigil.core.plan.PlanParser
@@ -91,6 +94,47 @@ class ActivePlanResolverTest {
         assertEquals(builtin.badDay.keep.toSet(), set.badDayKeep)
         assertEquals(LocalTime.of(5, 0), set.dayBoundary)
         assertSame(p, set.plan)
+    }
+
+    private val after = AfterBadDay(better = DayMode.NORMAL, same = DayMode.BAD_DAY, worse = DayMode.MINIMUM)
+
+    @Test
+    fun runningPlanCarriesMinimumAndAfterBadDay() {
+        val p = plan(fallback = listOf(directive("fb"))).copy(minimum = Minimum(listOf("a")), afterBadDay = after)
+        val set = ActivePlanResolver.resolve(p, builtin, expires.minusSeconds(1))
+        assertEquals(setOf("a"), set.minimumKeep)
+        assertEquals(after, set.afterBadDay)
+    }
+
+    @Test
+    fun fallbackKeepsAllOfItOnAMinimumDayAndKeepsThePlansCheckIn() {
+        val p = plan(fallback = listOf(directive("fb1"), directive("fb2"))).copy(minimum = Minimum(listOf("a")), afterBadDay = after)
+        val set = ActivePlanResolver.resolve(p, builtin, expires)
+        assertEquals(PlanSource.FALLBACK, set.source)
+        assertEquals(setOf("fb1", "fb2"), set.minimumKeep)
+        assertEquals(after, set.afterBadDay)
+    }
+
+    @Test
+    fun withoutMinimumOrAfterBadDayThereIsNoCheckInAndAMinimumDayKeepsTheBadDayList() {
+        // No check-in can choose a minimum day here, but one chosen before a new import or the switch to the built-in
+        // plan can still be running: then the essentials (bad_day.keep) fire, not nothing.
+        val running = ActivePlanResolver.resolve(plan(), builtin, expires.minusSeconds(1))
+        assertEquals(setOf("a"), running.minimumKeep)
+        assertNull(running.afterBadDay)
+        // The built-in plan has neither, also when an expired plan without a fallback had them.
+        val none = ActivePlanResolver.resolve(null, builtin, expires)
+        assertNull(builtin.minimum)
+        assertEquals(builtin.badDay.keep.toSet(), none.minimumKeep)
+        assertTrue("default-fajr" in none.minimumKeep)
+        assertNull(none.afterBadDay)
+        val expired = ActivePlanResolver.resolve(plan().copy(minimum = Minimum(listOf("a")), afterBadDay = after), builtin, expires)
+        assertEquals(PlanSource.DEFAULT, expired.source)
+        assertEquals(builtin.badDay.keep.toSet(), expired.minimumKeep)
+        assertNull(expired.afterBadDay)
+        // An explicit empty minimum.keep stays empty (the parser warns that nothing fires on a minimum day).
+        val empty = ActivePlanResolver.resolve(plan().copy(minimum = Minimum(emptyList())), builtin, expires.minusSeconds(1))
+        assertTrue(empty.minimumKeep.isEmpty())
     }
 
     @Test

@@ -89,11 +89,12 @@ object Scheduling {
 
     /**
      * The developer kill switch: closes everything showing or waiting, without counting it as a failure.
-     * Quiet mode and bad-day mode are left as they were.
+     * Quiet mode and the day's mode are left as they were. A dropped morning check-in stays fired, so it is not shown
+     * again; it is logged as not answered when its day ends.
      */
     fun clearAll(state: RuntimeState, env: Env, reason: String): Outcome {
         val events = (listOfNotNull(state.active) + state.pending).map {
-            LogEvent(env.timestamp(), EventType.DROPPED, directiveId = it.directiveId, takeoverId = it.takeoverId, detail = reason)
+            LogEvent(env.timestamp(), EventType.DROPPED, directiveId = it.directiveId, takeoverId = it.takeoverId, variant = it.variant, detail = reason)
         }
         return Outcome(state.copy(active = null, pending = emptyList()), events)
     }

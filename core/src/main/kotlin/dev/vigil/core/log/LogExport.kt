@@ -58,9 +58,16 @@ object LogExport {
         day_boundary, ${Plan.DEFAULT_DAY_BOUNDARY} by default). Meanwhile only the directives in bad_day.keep fire: the others are logged
         as skipped_bad_day, and a takeover showing or waiting when it was switched on closes as bypassed_bad_day.
         These are NOT failures; the user was honest about a hard day. Read them with compassion, never as weakness.
+        A bad day ends when the user taps "I'm okay again" (bad_day_off) or by itself at the day boundary (day_mode). If the
+        plan has after_bad_day, the morning after a bad or minimum day the user answers a check-in (check_in: better,
+        same or worse) that picks the day's mode: normal, bad_day, or minimum, where only minimum.keep fires
+        (skipped_minimum, bypassed_minimum: NOT failures either). Until it is answered its "same" answer applies.
+        After a completion the user may rate the directive EASY, OK or HARD (rated, rating_skipped), as its rating field
+        says. With adapt.step_down_after_hard, that many HARD ratings in a row switch it to its variants.easier for the
+        rest of the plan (stepped_down; later events of it carry variant "easier").
         When the plan's expires time passes, the app logs plan_expired and runs the plan's fallback_plan, or, if
         there is none, a built-in minimal plan (prayers, water, sleep; its directive ids start with "default-").
-        On a bad day the fallback_plan keeps all its directives; the built-in plan keeps only its own essentials
+        On a bad or minimum day the fallback_plan keeps all its directives; the built-in plan keeps only its own essentials
         (prayers and sleep).
         HOW TO READ THIS FILE. "events" lists what happened in time order, starting at "since" (null = the whole
         log). ts is the phone's local time with its UTC offset ("timezone" names the zone). Fields that do not
@@ -69,8 +76,10 @@ object LogExport {
         for step_completed, since that step appeared; for the closing event, since the directive fired, including
         any time it waited behind another takeover. scheduled_for is the planned moment of a time trigger; ts can
         be later. tier is 1 (nudge), 2 (short checklist) or 3 (full sequence). Triggers "debug" and "adhan_test"
-        and directive "vigil-demo" are the user testing the app: they are left out of "summary"; ignore them.
-        "summary" counts outcomes per directive id and gives avg_completion_s; it counts, it does not judge. "event_types" explains every event type. "plan"
+        and the demo directives (ids starting with "${Engine.DEMO_ID}") are the user testing the app: ignore them.
+        "summary" counts outcomes per directive id and gives avg_completion_s; it counts, it does not judge. It leaves out
+        test triggers and the app's own directives (ids starting with "${Engine.BUILTIN_ID_PREFIX}", such as the check-in
+        "${Engine.CHECK_IN_ID}"). "event_types" explains every event type. "plan"
         identifies the last imported plan. "settings" lists app settings that change behaviour.
         Use this log together with vision.md and the last plan.json to write next week's plan.json (see HANDOFF.md
         in the VIGIL repository). Treat every outcome as information for a better plan, not as grounds for blame.
@@ -100,12 +109,15 @@ object LogExport {
     /**
      * Per-directive counts of each outcome, plus the average completion time. Counting only, no judgement.
      * Once every takeover has closed, directive_fired equals the sum of the outcomes that close one.
-     * Test fires (debug buttons, the adhan test) are left out, whole takeovers included.
+     * Test fires (debug buttons, the adhan test) are left out, whole takeovers included, and so are the app's own
+     * directives (the demos and the check-in, ids starting with [Engine.BUILTIN_ID_PREFIX]). Event types it does not
+     * count (ratings, check-ins, ...) are ignored.
      */
     fun summary(events: List<LogEvent>): JsonObject {
         val testTakeovers = events.filter { it.trigger in TEST_TRIGGERS }.mapNotNull { it.takeoverId }.toSet()
         val byId = events
-            .filter { it.directiveId != null && it.trigger !in TEST_TRIGGERS && it.takeoverId !in testTakeovers }
+            .filter { it.trigger !in TEST_TRIGGERS && it.takeoverId !in testTakeovers }
+            .filter { it.directiveId?.startsWith(Engine.BUILTIN_ID_PREFIX) == false }
             .groupBy { it.directiveId!! }
         return JsonObject(
             byId.toSortedMap().mapValues { (_, list) ->

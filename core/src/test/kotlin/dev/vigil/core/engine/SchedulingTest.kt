@@ -149,4 +149,41 @@ class SchedulingTest {
         assertEquals(listOf("water", "sleep"), outcome.events.map { it.directiveId })
         assertTrue(outcome.events.all { it.type == EventType.DROPPED && it.detail == "developer kill switch" })
     }
+
+    @Test
+    fun clearAllDropsACheckInAndLeavesItFired() {
+        val p = plan(water, sleep)
+        val now = at("2026-10-20T08:00")
+        val checkIn = CheckInState("2026-10-20", "bad_day", fired = true, takeoverId = "t1")
+        val state = RuntimeState(
+            lastSource = PlanSource.PLAN.json,
+            active = Ticket("t1", Engine.CHECK_IN_ID, Engine.TRIGGER_CHECK_IN, silent = false, firedAtMs = now.toEpochMilli()),
+            pending = listOf(Ticket("t2", "sleep", "time", silent = false, firedAtMs = now.toEpochMilli(), variant = "easier")),
+            checkIn = checkIn,
+            dayMode = DayModeState("2026-10-20", "bad_day", DayModeState.SOURCE_CHECK_IN_PENDING),
+        )
+        val outcome = Scheduling.clearAll(state, env(now, p), "developer kill switch")
+        assertNull(outcome.state.active)
+        assertTrue(outcome.state.pending.isEmpty())
+        assertEquals(checkIn, outcome.state.checkIn)
+        assertEquals(state.dayMode, outcome.state.dayMode)
+        assertEquals(listOf(Engine.CHECK_IN_ID, "sleep"), outcome.events.map { it.directiveId })
+        assertEquals(listOf(null, "easier"), outcome.events.map { it.variant })
+        // A dropped check-in is not shown again.
+        assertTrue(Engine.onUserPresent(outcome.state, env(now, p)).events.isEmpty())
+    }
+
+    @Test
+    fun theClockEndsABadDayAtTheBoundary() {
+        val p = plan(water, sleep)
+        val state = RuntimeState(
+            lastSource = PlanSource.PLAN.json,
+            scheduleCursorMs = at("2026-10-21T03:00").toEpochMilli(),
+            dayMode = DayModeState("2026-10-20", "bad_day", DayModeState.SOURCE_USER),
+        )
+        val (outcome, _) = Scheduling.onClock(state, env(at("2026-10-21T04:00:05"), p), catchUp = true)
+        assertEquals(listOf(EventType.DAY_MODE), outcome.events.map { it.type })
+        assertEquals("day ended", outcome.events.single().detail)
+        assertNull(outcome.state.dayMode)
+    }
 }

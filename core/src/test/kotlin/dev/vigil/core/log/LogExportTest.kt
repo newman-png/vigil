@@ -14,6 +14,7 @@ import dev.vigil.core.plan.Plan
 import dev.vigil.core.plan.PlanParser
 import dev.vigil.core.plan.Prayer
 import dev.vigil.core.plan.QuietPolicy
+import dev.vigil.core.plan.Rating
 import dev.vigil.core.plan.Step
 import dev.vigil.core.plan.Trigger
 import dev.vigil.core.plan.UsageLimit
@@ -81,6 +82,25 @@ class LogExportTest {
         for (event in listOf(full, minimal)) {
             assertEquals(listOf(event), LogJson.decodeLines(LogJson.encodeLine(event)))
         }
+    }
+
+    @Test
+    fun newFieldsAreWrittenOnlyWhenSet() {
+        val rated = LogEvent(
+            "2026-10-22T23:04:27+01:00", EventType.RATED, directiveId = "sleep", tier = 3, trigger = "time",
+            takeoverId = "t1", variant = "easier", rating = "hard",
+        )
+        val line = LogJson.encodeLine(rated)
+        assertTrue(line, line.endsWith(""""takeover_id":"t1","variant":"easier","rating":"hard"}"""))
+        val checkIn = LogEvent("2026-10-23T07:12:00+01:00", EventType.CHECK_IN, answer = "worse", mode = "minimum", detail = "for 2026-10-23")
+        assertEquals(
+            """{"ts":"2026-10-23T07:12:00+01:00","type":"check_in","answer":"worse","mode":"minimum","detail":"for 2026-10-23"}""",
+            LogJson.encodeLine(checkIn),
+        )
+        for (event in listOf(rated, checkIn)) assertEquals(listOf(event), LogJson.decodeLines(LogJson.encodeLine(event)))
+        // A v1 line has none of them.
+        val v1 = LogJson.encodeLine(full)
+        for (key in listOf("variant", "rating", "answer", "mode")) assertFalse(key, v1.contains("\"$key\":"))
     }
 
     @Test
@@ -280,6 +300,28 @@ class LogExportTest {
     }
 
     @Test
+    fun summaryLeavesOutBuiltinsAndIgnoresTypesItDoesNotCount() {
+        fun e(type: String, id: String?, trigger: String? = null, takeover: String? = null) =
+            LogEvent("2026-10-22T07:00:01+01:00", type, directiveId = id, trigger = trigger, takeoverId = takeover)
+        val events = listOf(
+            e(EventType.DAY_MODE, null),
+            e(EventType.DIRECTIVE_FIRED, Engine.CHECK_IN_ID, Engine.TRIGGER_CHECK_IN, "c1"),
+            e(EventType.CHECK_IN, null, Engine.TRIGGER_CHECK_IN, "c1"),
+            e(EventType.DIRECTIVE_FIRED, "sleep", "time", "t1"),
+            e(EventType.DIRECTIVE_COMPLETED, "sleep", "time", "t1"),
+            e(EventType.RATED, "sleep", "time", "t1"),
+            e(EventType.STEPPED_DOWN, "sleep"),
+            e(EventType.SKIPPED_MINIMUM, "study-block", "time"),
+            e(EventType.RATING_SKIPPED, "water-am", "time", "t2"),
+        )
+        val summary = LogExport.summary(events)
+        assertEquals(listOf("sleep", "study-block", "water-am"), summary.keys.toList())
+        assertEquals(1, summary["sleep"]!!.jsonObject.int("directive_fired"))
+        assertEquals(1, summary["sleep"]!!.jsonObject.int("directive_completed"))
+        assertEquals(0, summary["water-am"]!!.jsonObject.int("directive_fired"))
+    }
+
+    @Test
     fun readmeIsOneCleanLineThatExplainsTheBehaviour() {
         val readme = LogExport.README
         assertFalse(readme.contains('\n'))
@@ -292,7 +334,10 @@ class LogExportTest {
             Engine.TRIGGER_QUIET_QUEUE, Engine.DEMO_ID, "settings.${LogExport.SETTING_ALLOW_QUIET_OVERRIDE}",
             EventType.DIRECTIVE_COMPLETED, EventType.DIRECTIVE_DISMISSED, EventType.DIRECTIVE_TIMED_OUT, EventType.MISSED,
             EventType.QUEUED_QUIET, EventType.SKIPPED_QUIET, EventType.SKIPPED_BAD_DAY, EventType.BYPASSED_BAD_DAY,
-            EventType.PLAN_EXPIRED, "NOT failures",
+            EventType.PLAN_EXPIRED, "NOT failures", EventType.BAD_DAY_OFF, EventType.DAY_MODE, EventType.CHECK_IN,
+            EventType.SKIPPED_MINIMUM, EventType.BYPASSED_MINIMUM, EventType.RATED, EventType.RATING_SKIPPED,
+            EventType.STEPPED_DOWN, "after_bad_day", "minimum.keep", "variants.easier", Engine.CHECK_IN_ID,
+            Engine.BUILTIN_ID_PREFIX,
         )
         for (m in mentions) assertTrue("readme should mention $m", readme.contains(m))
         for (p in QuietPolicy.entries) assertTrue(p.json, readme.contains("${p.json} ="))
@@ -317,7 +362,9 @@ class LogExportTest {
         has(EventType.BAD_DAY_ON)
         has(EventType.BYPASSED_BAD_DAY)
         has(EventType.SKIPPED_BAD_DAY)
-        has(EventType.BAD_DAY_OFF) { it.detail == "day ended" }
+        has(EventType.DAY_MODE) // the bad day ended at the day boundary
+        has(EventType.RATED) { it.rating != null }
+        has(EventType.RATING_SKIPPED)
         has(EventType.MISSED) { it.scheduledFor != null }
         has(EventType.DIRECTIVE_FIRED) { it.directiveId == "sleep" && it.ts.startsWith("2026-10-22") } // kept on the bad day
 
@@ -381,9 +428,10 @@ private object SampleWeek {
             detail = "week_of ${plan.weekOf}, expires ${plan.expires}, generated_by ${plan.generatedBy}, ${plan.directives.size} directives, 0 warnings",
         )
 
-        // Monday: Fajr, all four steps.
+        // Monday: Fajr, all four steps, rated OK.
         phone.trigger("2026-10-19T05:47:52", "fajr", "adhan")
         phone.steps("2026-10-19T05:47:53", 11, 31, 95, 412)
+        phone.rate("2026-10-19T05:57:06", Rating.OK)
         // Monday night: TikTok/Instagram opened six times in half an hour; one step ticked, then abandoned.
         phone.trigger("2026-10-19T21:37:26", "scroll-check", "app_usage")
         phone.steps("2026-10-19T21:37:27", 12)
@@ -394,6 +442,7 @@ private object SampleWeek {
         phone.trigger("2026-10-20T12:52:02", "dhuhr", "adhan")
         phone.run("2026-10-20T13:55:44") { s, e -> Engine.setQuiet(s, e, false) }
         phone.steps("2026-10-20T13:55:45", 7, 75, 301)
+        phone.rate("2026-10-20T14:02:11", Rating.EASY)
 
         // Wednesday: the battery died at 10:05; back on at 11:24, too late for water-am.
         phone.catchUp(from = "2026-10-21T10:05:00", now = "2026-10-21T11:24:51")
@@ -405,8 +454,10 @@ private object SampleWeek {
         phone.trigger("2026-10-22T09:00:01", "study-block", "time", scheduledFor = "2026-10-22T09:00")
         phone.trigger("2026-10-22T10:30:02", "water-am", "time", scheduledFor = "2026-10-22T10:30")
         phone.steps("2026-10-22T10:30:03", 18)
+        phone.rate("2026-10-22T10:30:25", null) // SKIP
         phone.trigger("2026-10-22T23:00:02", "sleep", "time", scheduledFor = "2026-10-22T23:00")
         phone.steps("2026-10-22T23:00:03", 14, 131, 66, 41, 9)
+        phone.rate("2026-10-22T23:04:28", Rating.HARD)
 
         // Friday: the day boundary passed overnight, so bad-day mode ends with the first event of the day.
         phone.trigger("2026-10-23T05:53:10", "fajr", "adhan")
@@ -449,6 +500,12 @@ private object SampleWeek {
             run(local) { s, e -> Engine.onTrigger(s, e, listOf(id), trigger, scheduledFor?.let(::timestamp)) }
 
         fun shown(local: String) = run(local) { s, e -> Engine.stepShown(s, e, takeoverId) }
+
+        /** EASY / OK / HARD (null = SKIP) after the last completion, if the engine asked for it. */
+        fun rate(local: String, rating: Rating?) {
+            val open = state.pendingRating ?: return
+            run(local) { s, e -> Engine.rate(s, e, open.takeoverId, rating) }
+        }
 
         /** From the moment the next step appears, ticks it after each number of seconds (the next step appears at once). */
         fun steps(firstShown: String, vararg seconds: Long) {

@@ -31,6 +31,14 @@ data class LogEvent(
     @SerialName("steps_total") val stepsTotal: Int? = null,
     /** True when shown without sound or vibration (quiet mode). */
     val silent: Boolean? = null,
+    /** The version of the directive the takeover ran when it was not the one as written: "easier" after a step-down. */
+    val variant: String? = null,
+    /** For rated: easy, ok or hard. */
+    val rating: String? = null,
+    /** For check_in: better, same, worse, or none (not answered). */
+    val answer: String? = null,
+    /** For check_in and day_mode: the day's mode from then on (normal, bad_day or minimum). */
+    val mode: String? = null,
     val detail: String? = null,
 )
 
@@ -55,23 +63,32 @@ object EventType {
     const val QUIET_OFF = "quiet_off"
     const val BAD_DAY_ON = "bad_day_on"
     const val BAD_DAY_OFF = "bad_day_off"
+    const val DAY_MODE = "day_mode"
+    const val CHECK_IN = "check_in"
+    const val SKIPPED_MINIMUM = "skipped_minimum"
+    const val BYPASSED_MINIMUM = "bypassed_minimum"
+    const val RATED = "rated"
+    const val RATING_SKIPPED = "rating_skipped"
+    const val STEPPED_DOWN = "stepped_down"
+    const val BUNDLE_EXPORTED = "bundle_exported"
 
     val DESCRIPTIONS: Map<String, String> = linkedMapOf(
         PLAN_IMPORTED to "A plan was imported and became active (detail: week_of and generated_by).",
         PLAN_IMPORT_FAILED to "An import was rejected; the previous plan stayed active (detail: the first error).",
         PLAN_EXPIRED to "The plan's expires time passed; the app now runs its fallback_plan or, without one, " +
             "the built-in minimal plan (detail says which).",
-        DIRECTIVE_FIRED to "A trigger happened and a takeover opened (trigger, scheduled_for, silent, steps_total). " +
-            "If another takeover was on screen, this one waited for it to close.",
+        DIRECTIVE_FIRED to "A trigger happened and a takeover opened (trigger, scheduled_for, silent, steps_total; " +
+            "variant \"easier\" after a step-down). If another takeover was on screen, this one waited for it to close.",
         STEP_COMPLETED to "A checklist step was ticked (step_index from 0, step_text, duration_s since the step appeared).",
         DIRECTIVE_COMPLETED to "Every step was ticked (duration_s since it fired).",
         DIRECTIVE_DISMISSED to "Closed early by holding the dismiss button for about 10 seconds " +
             "(steps_done of steps_total, duration_s since it fired).",
         DIRECTIVE_TIMED_OUT to "Still open ${Engine.MAX_TAKEOVER_MINUTES} minutes after it fired, so it closed itself " +
             "(steps_done of steps_total).",
-        BYPASSED_BAD_DAY to "Closed while showing or waiting because the user switched on \"I'm not okay today\" " +
-            "and it is not in bad_day.keep. Not a failure.",
-        SKIPPED_BAD_DAY to "Not shown because \"I'm not okay today\" was on and it is not in bad_day.keep. Not a failure.",
+        BYPASSED_BAD_DAY to "Closed while showing or waiting because the day became a bad day (the user switched on " +
+            "\"I'm not okay today\", or the morning check-in chose bad_day) and it is not in bad_day.keep. Not a failure.",
+        SKIPPED_BAD_DAY to "Not shown because it was a bad day (\"I'm not okay today\", or bad_day chosen by the morning " +
+            "check-in or by its \"same\" answer while it was unanswered) and it is not in bad_day.keep. Not a failure.",
         QUEUED_QUIET to "Triggered during quiet mode (quiet: queue): held, and fired when quiet mode ends.",
         SKIPPED_QUIET to "Not shown because quiet mode was on (quiet: ignore).",
         MISSED to "A time trigger's moment passed more than ${TimeSchedule.DEFAULT_GRACE_MINUTES} minutes before the " +
@@ -83,7 +100,29 @@ object EventType {
         QUIET_ON to "Quiet mode switched on.",
         QUIET_OFF to "Quiet mode switched off; directives held by it fire now.",
         BAD_DAY_ON to "\"I'm not okay today\" switched on; it lasts until the day boundary (detail).",
-        BAD_DAY_OFF to "\"I'm not okay today\" ended (detail: switched off by the user, or the day ended).",
+        BAD_DAY_OFF to "The user tapped \"I'm okay again\": a bad day or a minimum day ended early and everything fires " +
+            "again. A day that ends by itself at the day boundary is day_mode instead.",
+        DAY_MODE to "The day's mode changed by itself at the day boundary (mode). Detail: the day ended, so the next day " +
+            "is normal; or the morning check-in is due after a bad or minimum day, and until it is answered its " +
+            "\"same\" answer applies.",
+        CHECK_IN to "The morning check-in after a bad or minimum day. Answered: answer better, same or worse, and mode is " +
+            "what the plan's after_bad_day chose for that answer. Not answered: answer \"none\" and mode is the day's " +
+            "mode then. Detail: not answered that day, dismissed or timed out (the \"same\" mode stayed); or replaced by " +
+            "\"I'm not okay today\" (then a bad day, see bad_day_on, unless it already was a bad or minimum day). Its " +
+            "takeover is logged as directive_fired for \"${Engine.CHECK_IN_ID}\" with trigger " +
+            "\"${Engine.TRIGGER_CHECK_IN}\". Never a failure.",
+        SKIPPED_MINIMUM to "Not shown because it was a minimum day (chosen by the morning check-in, or by its \"same\" " +
+            "answer while it was unanswered) and it is not in minimum.keep. Not a failure.",
+        BYPASSED_MINIMUM to "Closed while showing or waiting because the morning check-in chose a minimum day and it " +
+            "is not in minimum.keep. Not a failure.",
+        RATED to "After completing it the user tapped EASY, OK or HARD (rating; variant is \"easier\" if the easier " +
+            "version ran). When it is asked follows the directive's rating field.",
+        RATING_SKIPPED to "The difficulty question (EASY / OK / HARD) was asked after a completion but not answered " +
+            "(detail: skipped by the user, not answered within ${Engine.RATING_WINDOW_MS / 60_000} minutes, or " +
+            "replaced by the next one).",
+        STEPPED_DOWN to "adapt.step_down_after_hard was reached (that many HARD ratings in a row), so variants.easier " +
+            "runs for the rest of this plan. The app never steps back up; only a new plan does.",
+        BUNDLE_EXPORTED to "The user exported the weekly bundle.",
     )
 }
 
