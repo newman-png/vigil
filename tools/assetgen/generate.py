@@ -87,45 +87,71 @@ def on_black(pixels):
 # Eye sprite sheet
 #
 # One horizontal strip of FRAME x FRAME frames, transparent background:
-#   0 .. OPEN_FRAMES-1    opening: closed red slit -> fully open eye
-#   then IDLE_FRAMES      idle loop on the open eye
-# The app plays the opening frames backwards to close the eye.
+#   opening   OPEN_FRAMES      frame 0 is the closed red slit, the last one the
+#                              fully open eye at rest
+#   idle      IDLE_FRAMES      the open eye at rest (the first is identical to
+#                              the last opening frame); the others only move
+#                              the glint. No blink.
+#   contract  CONTRACT_FRAMES  the pupil narrowing from rest to a pinpoint,
+#                              one step per frame
+# The app plays the opening frames backwards to close the eye, and steps
+# through the contract frames while a step is held.
+#
+# Everything is computed from the constants below: the lids are two curves
+# that meet in pointed corners (an almond), scaled by how open the eye is.
+# Coordinates are pixel centres; the eye is mirror-symmetric about CX.
 
-FRAME = 32
-OPEN_FRAMES = 12
-IDLE_FRAMES = 4
+FRAME = 64
+CX = 31.5          # between columns 31 and 32
+CY = 32            # the row of the closed slit
+HALF_WIDTH = 30    # the eye spans the 60 columns 2 .. 61
+UPPER = 16         # how far the lids sit above / below CY at the centre, fully open
+LOWER = 11
+UPPER_FULLNESS = 1.0   # exponent of the lid curves: < 1 rounder, > 1 more pointed
+LOWER_FULLNESS = 1.3
 
-CX = 15.5  # horizontal centre, between columns 15 and 16
-CY = 16    # centre row; the closed slit sits on it
+# Iris and pupil are discs around (CX, IRIS_CY); radii are compared squared, so
+# the values below pick clean pixel circles. The ring is a thin black circle
+# inside the iris with four small gaps (right, down, left, up), like a lens.
+IRIS_CY = 31.5
+IRIS_R2 = 156.25           # radius 12.5
+RING = (8.0, 9.0)          # inner and outer radius of the ring
+RING_GAP = 0.2             # half-width of each gap, in radians
+PUPIL_DILATED = 32.5       # 12 px wide: while the eye opens
+PUPIL_REST = 22.5          # 10 px wide
+PUPIL_CONTRACT = [14.5, 8.5, 2.5, 0.5]   # 8, 6, 4 and 2 px wide (the pinpoint)
 
-# Fully open lid shape, hand-tuned for clean pixel steps. Entry i is how far the
-# lid sits from CY in the two columns i steps out from the centre (15 and 16,
-# then 14 and 17, ...); the last entry is the corner. 10 entries: 20 px wide.
-UPPER_LID = [7, 7, 7, 6, 6, 5, 4, 3, 2, 0]
-LOWER_LID = [5, 5, 5, 4, 4, 3, 3, 2, 1, 0]
-IRIS_R = 6.6
-GLINT_A = (12, 13)
-GLINT_B = (13, 13)
+# White glint: the top-left pixel of a 2 x 2 block on the upper left edge of the
+# resting pupil. It is a reflection, so it stays put while the pupil changes.
+GLINT = (28, 27)
+GLINT_SHIFTED = (29, 27)   # the second idle frame
 
-# Lid opening per frame, 0 = closed, 1 = fully open. Hand-picked for the lid
-# shapes above so every frame moves a similar number of pixels (re-pick them if
-# you change the lids); the app can ease the frame timing. Frame 1 already
-# shows a red gap between the lids.
-OPENING = [0.0, 0.11, 0.19, 0.27, 0.365, 0.45, 0.54, 0.67, 0.77, 0.85, 0.91, 1.0]
+# Lid opening per frame, 0 = closed, 1 = fully open: even steps, so every frame
+# moves the lids by one or two pixels.
+OPEN_STEPS = 13
+OPENING = [i / OPEN_STEPS for i in range(OPEN_STEPS + 1)]
 
-# Pupils: for each row offset from CY, the pupil covers the columns with
-# |x - CX| < value, so 1 -> 2 px wide and 2 -> 4 px wide. Mirrored above and below.
-PUPIL_WIDE = [2, 2, 2, 1, 1, 1]
-PUPIL_SLIT = [1, 1, 1, 1, 1, 1]
+OPEN_FRAMES = len(OPENING)
+IDLE_FRAMES = 2
+CONTRACT_FRAMES = len(PUPIL_CONTRACT)
+
+
+def lid_curve(u, fullness):
+    """Lid height at distance u (0 = centre, 1 = corner) as a fraction of the
+    height at the centre."""
+    return max(0.0, 1 - u * u) ** fullness
 
 
 def lid_rows(openness):
     """Per column inside the eye: (top, bottom) rows of the lid outline."""
     rows = {}
-    for i, (up, down) in enumerate(zip(UPPER_LID, LOWER_LID)):
-        top = CY - math.floor(openness * up + 0.5)
-        bottom = CY + math.floor(openness * down + 0.5)
-        rows[15 - i] = rows[16 + i] = (top, bottom)
+    for x in range(FRAME):
+        u = abs(x - CX) / HALF_WIDTH
+        if u >= 1:
+            continue
+        top = CY - math.floor(openness * UPPER * lid_curve(u, UPPER_FULLNESS) + 0.5)
+        bottom = CY + math.floor(openness * LOWER * lid_curve(u, LOWER_FULLNESS) + 0.5)
+        rows[x] = (top, bottom)
     return rows
 
 
@@ -147,9 +173,21 @@ def lid_outline(rows):
     return pixels
 
 
-def in_pupil(x, y, pupil):
-    dy = abs(y - CY)
-    return dy < len(pupil) and abs(x - CX) < pupil[dy]
+def iris_colour(x, y, pupil):
+    """What the open eye shows at (x, y) behind the lids."""
+    dx, dy = x - CX, y - IRIS_CY
+    d2 = dx * dx + dy * dy
+    if d2 <= pupil:
+        return BLACK
+    if d2 > IRIS_R2:
+        return BLACK
+    inner, outer = RING
+    if inner * inner <= d2 < outer * outer:
+        # How far round the ring the pixel is from the nearest gap, in radians.
+        quarter = math.atan2(dy, dx) % (math.pi / 2)
+        if min(quarter, math.pi / 2 - quarter) > RING_GAP:
+            return BLACK
+    return RED
 
 
 def eye_frame(openness, pupil, glint):
@@ -159,17 +197,11 @@ def eye_frame(openness, pupil, glint):
         for x in rows:
             grid[CY][x] = RED
         return grid
+    gx, gy = glint
     for x, (top, bottom) in rows.items():
         for y in range(top + 1, bottom):
-            if (x, y) == glint:
-                colour = WHITE
-            elif in_pupil(x, y, pupil):
-                colour = BLACK
-            elif (x - CX) ** 2 + (y - CY) ** 2 <= IRIS_R ** 2:
-                colour = RED
-            else:
-                colour = BLACK
-            grid[y][x] = colour
+            in_glint = 0 <= x - gx <= 1 and 0 <= y - gy <= 1
+            grid[y][x] = WHITE if in_glint else iris_colour(x, y, pupil)
     for x, y in lid_outline(rows):
         grid[y][x] = WHITE
     return grid
@@ -177,17 +209,23 @@ def eye_frame(openness, pupil, glint):
 
 def eye_frames():
     frames = []
-    for i, openness in enumerate(OPENING):
-        # The pupil stays wide while the eye opens and narrows as it focuses.
-        pupil = PUPIL_SLIT if i == OPEN_FRAMES - 1 else PUPIL_WIDE
-        frames.append(eye_frame(openness, pupil, GLINT_A))
-    # Idle loop: each step changes one thing (glint or pupil), so it cycles smoothly.
-    frames.append(eye_frame(1.0, PUPIL_SLIT, GLINT_A))
-    frames.append(eye_frame(1.0, PUPIL_SLIT, GLINT_B))
-    frames.append(eye_frame(1.0, PUPIL_WIDE, GLINT_B))
-    frames.append(eye_frame(1.0, PUPIL_WIDE, GLINT_A))
-    assert len(frames) == OPEN_FRAMES + IDLE_FRAMES
+    for openness in OPENING:
+        # The pupil is wide while the eye opens and settles as it focuses.
+        pupil = PUPIL_REST if openness >= 0.85 else PUPIL_DILATED
+        frames.append(eye_frame(openness, pupil, GLINT))
+    frames.append(eye_frame(1.0, PUPIL_REST, GLINT))
+    frames.append(eye_frame(1.0, PUPIL_REST, GLINT_SHIFTED))
+    for pupil in PUPIL_CONTRACT:
+        frames.append(eye_frame(1.0, pupil, GLINT))
+    assert len(frames) == OPEN_FRAMES + IDLE_FRAMES + CONTRACT_FRAMES
+    assert frames[OPEN_FRAMES - 1] == frames[OPEN_FRAMES]
     return frames
+
+
+def eye_width(frames):
+    """Width of the open eye inside a frame: the columns the last opening frame uses."""
+    used = [x for x in range(FRAME) if any(row[x] != CLEAR for row in frames[OPEN_FRAMES - 1])]
+    return used[-1] - used[0] + 1
 
 
 def strip(frames):
@@ -204,17 +242,33 @@ def gen_eye():
         (
             '<?xml version="1.0" encoding="utf-8"?>\n'
             "<!-- Generated by tools/assetgen/generate.py: layout of drawable-nodpi/eye_sheet.png.\n"
-            "     Frames are square and side by side: opening frames first, then the idle loop. -->\n"
+            "     Frames are square and side by side: the opening frames, then the idle frames, then the\n"
+            "     contract frames. eye_width is how wide the open eye is inside a frame. -->\n"
             "<resources>\n"
             f'    <integer name="eye_frame_size">{FRAME}</integer>\n'
+            f'    <integer name="eye_width">{eye_width(frames)}</integer>\n'
             f'    <integer name="eye_open_frames">{OPEN_FRAMES}</integer>\n'
             f'    <integer name="eye_idle_frames">{IDLE_FRAMES}</integer>\n'
+            f'    <integer name="eye_contract_frames">{CONTRACT_FRAMES}</integer>\n'
             "</resources>\n"
         ).encode(),
     )
-    # Previews are drawn on black, like the takeover screen.
-    write_png(os.path.join(PREVIEW, "eye_sheet_x10.png"), upscale(on_black(sheet), 10))
-    for i in (0, 3, 7, 11, 14):
+    # Previews are drawn on black, like the takeover screen: the sheet as one row
+    # per part, and a few single frames. Old eye previews are removed first.
+    if os.path.isdir(PREVIEW):
+        for name in sorted(os.listdir(PREVIEW)):
+            if name.startswith("eye_") and name.endswith(".png"):
+                os.remove(os.path.join(PREVIEW, name))
+    parts = [
+        frames[:OPEN_FRAMES],
+        frames[OPEN_FRAMES:OPEN_FRAMES + IDLE_FRAMES],
+        frames[OPEN_FRAMES + IDLE_FRAMES:],
+    ]
+    blank = [[CLEAR] * FRAME for _ in range(FRAME)]
+    rows = [strip(part + [blank] * (OPEN_FRAMES - len(part))) for part in parts]
+    write_png(os.path.join(PREVIEW, "eye_sheet_x10.png"), upscale(on_black(sum(rows, [])), 10))
+    last = len(frames) - 1
+    for i in (0, 3, 7, OPEN_FRAMES - 1, last - 2, last):
         write_png(os.path.join(PREVIEW, f"eye_frame{i:02d}_x10.png"), upscale(on_black(frames[i]), 10))
 
 # ---------------------------------------------------------------------------

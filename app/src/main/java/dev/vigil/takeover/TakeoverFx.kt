@@ -260,14 +260,6 @@ class TakeoverFx(
         pool?.release()
     }
 
-    /** Old typing sound. The takeover has no UI sounds any more; kept only until the new takeover screen lands. */
-    @Deprecated("The takeover has no UI sounds; remove the call.")
-    fun blip() = Unit
-
-    /** Old name of [droneIn], kept only until the new takeover screen lands. */
-    @Deprecated("Use droneIn().", ReplaceWith("droneIn()"))
-    fun startDrone() = droneIn()
-
     /** True when nothing may play right now: not visible, muted, over or released. */
     private fun quietNow() = paused || muted || ended || released
 

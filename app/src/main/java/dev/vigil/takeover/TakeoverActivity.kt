@@ -16,7 +16,6 @@ import androidx.activity.enableEdgeToEdge
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -29,8 +28,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import dev.vigil.Graph
 import dev.vigil.core.engine.Engine
+import dev.vigil.core.plan.CheckInAnswer
+import dev.vigil.core.plan.Rating
 import dev.vigil.engine.Vigil
-import dev.vigil.ui.components.scanlines
 import dev.vigil.ui.theme.Palette
 
 /**
@@ -94,7 +94,7 @@ class TakeoverActivity : ComponentActivity() {
             Modifier
                 .fillMaxSize()
                 .background(Palette.Black)
-                .scanlines(),
+                .crtScanlines(),
         ) {
             if (ticket == null) {
                 LaunchedEffect(Unit) { close() }
@@ -124,18 +124,17 @@ class TakeoverActivity : ComponentActivity() {
                 LaunchedEffect(liveTicket?.silent) {
                     if (liveTicket?.silent == true && !ticket.silent) fx.mute()
                 }
-                Box(Modifier.safeDrawingPadding()) {
-                    TakeoverScreen(
-                        initial = ticket,
-                        live = liveTicket,
-                        directive = directive,
-                        fx = fx,
-                        callbacks = callbacks(onFinished = {
-                            val next = Graph.state.current.active
-                            if (next != null && next.takeoverId != ticket.takeoverId) shown = next else close()
-                        }),
-                    )
-                }
+                // The screen keeps its text clear of cutouts itself, so its flashes and effects cover the whole display.
+                TakeoverScreen(
+                    initial = ticket,
+                    live = liveTicket,
+                    directive = directive,
+                    fx = fx,
+                    callbacks = callbacks(onFinished = {
+                        val next = Graph.state.current.active
+                        if (next != null && next.takeoverId != ticket.takeoverId) shown = next else close()
+                    }),
+                )
             }
         }
     }
@@ -150,6 +149,9 @@ class TakeoverActivity : ComponentActivity() {
             openDialer()
         }
         override fun suspend(minutes: Long) = TakeoverLauncher.suspend(minutes)
+        override fun pendingRatingFor(takeoverId: String) = Vigil.pendingRatingFor(takeoverId)
+        override fun rate(takeoverId: String, rating: Rating?) = Vigil.rate(takeoverId, rating)
+        override fun answerCheckIn(takeoverId: String, answer: CheckInAnswer) = Vigil.answerCheckIn(takeoverId, answer)
         override fun finished() = onFinished()
     }
 

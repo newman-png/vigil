@@ -21,46 +21,50 @@ committed, so nobody has to run the script to build the app.
 | `res/font/vt323_regular.ttf` | downloaded once, committed (see Font) |
 | `assets/licenses/OFL-VT323.txt` | downloaded once, committed (see Font) |
 
-`tools/assetgen/preview/` holds x10 nearest-neighbour previews of the sheet and
-of frames 0, 3, 7, 11 and 14. They are drawn on black, like the takeover
-screen, and are not shipped in the app.
+`tools/assetgen/preview/` holds x10 nearest-neighbour previews of the sheet (one
+row per part) and of frames 0, 3, 7, 13, 17 and 19. They are drawn on black,
+like the takeover screen, and are not shipped in the app.
 
 ## Eye sprite sheet
 
-One horizontal strip of square frames, 32 x 32 px each, on a transparent
-background. The current sheet is 512 x 32 (16 frames):
+One horizontal strip of square frames, 64 x 64 px each, on a transparent
+background. The current sheet is 1280 x 64 (20 frames):
 
 | Frames | What | How the app plays it |
 | --- | --- | --- |
-| 0 - 11 | opening: frame 0 is a 1 px red slit, 20 px wide; the lids part until frame 11, fully open | 0 -> 11 to open, 11 -> 0 to close |
-| 12 - 15 | idle loop on the open eye: the glint shifts 1 px, the pupil widens and narrows | loop 12 -> 15 |
-
-Frame 12 is identical to frame 11, so opening flows straight into the idle
-loop, and each idle step changes one thing so the loop has no jump. The opening
-frames are spaced evenly in pixels; ease the timing in the app if wanted.
+| 0 - 13 | opening: frame 0 is a 1 px red slit, 60 px wide; the lids part in even steps until frame 13, fully open. The pupil is wide while the eye opens and settles at frame 12 | 0 -> 13 to open (the first frames flash in negative), 13 -> 0 slowly to close |
+| 14 - 15 | idle: 14 is the open eye at rest (identical to 13), 15 moves only the glint 1 px. No blink | holds 14; flicks to 15 for a moment every few seconds |
+| 16 - 19 | contract: the pupil narrows from rest (10 px) to 8, 6, 4 and a 2 px pinpoint | stepped through while a step is held to confirm it |
 
 `res/values/eye_sheet.xml` tells the app the layout, so the app never
 hard-codes it:
 
 ```xml
-<integer name="eye_frame_size">32</integer>   <!-- frame width = height, px -->
-<integer name="eye_open_frames">12</integer>  <!-- frames 0 .. 11 -->
-<integer name="eye_idle_frames">4</integer>   <!-- the frames right after -->
+<integer name="eye_frame_size">64</integer>      <!-- frame width = height, px -->
+<integer name="eye_width">60</integer>           <!-- the open eye's width inside a frame, px -->
+<integer name="eye_open_frames">14</integer>     <!-- frames 0 .. 13 -->
+<integer name="eye_idle_frames">2</integer>      <!-- the frames right after -->
+<integer name="eye_contract_frames">4</integer>  <!-- the last frames -->
 ```
+
+The app scales the eye by the largest whole number that keeps `eye_width`
+within about 90% of the screen width.
 
 Palette: only `#000000`, `#FFFFFF`, red `#FF2B2B` and fully transparent, with
 no anti-aliasing (the script asserts this). Scale the frames up by an integer
 factor with nearest-neighbour filtering (in Compose, `FilterQuality.None`), or
 the pixels blur.
 
-The design is original: an almond outline of white 1 px lids, black inside,
-a plain red iris disc with a black vertical-slit pupil and one white glint
-pixel. Keep any replacement free of marks arranged around the pupil (no
-tomoe or comma shapes, no pinwheels) so it does not resemble a trademarked eye.
+The design is original: an almond of white 1 px lids (two curves meeting in
+pointed corners), black inside, a red iris disc with one thin black ring broken
+by four small gaps, a round black pupil and a 2 x 2 white glint. Keep any
+replacement free of marks arranged around the pupil (no tomoe or comma shapes,
+no pinwheels) so it does not resemble a trademarked eye.
 
-To tweak the drawn eye, edit the constants at the top of the eye section in
-`generate.py` (`UPPER_LID` / `LOWER_LID` lid shapes, `IRIS_R`, the pupils,
-the glint positions, `OPENING`) and run `generate.py eye`.
+Everything is computed from the constants at the top of the eye section in
+`generate.py` (`FRAME`, `HALF_WIDTH`, `UPPER` / `LOWER` and the lid
+`*_FULLNESS`, `IRIS_R2`, `RING`, the pupil sizes, `GLINT`, `OPEN_STEPS`). Edit
+them and run `generate.py eye`.
 
 ## Sounds
 
@@ -120,10 +124,10 @@ file swap. After hand-replacing a file, do not run the generator target that
 writes it (that would overwrite your file); run only the other targets.
 
 - **Eye:** draw a new horizontal strip of square frames: the opening frames
-  first (closed to open), then the idle loop. Save it as
-  `res/drawable-nodpi/eye_sheet.png` with a transparent background and set the
-  three integers in `res/values/eye_sheet.xml` to its frame size and frame
-  counts. Any frame size works as long as the XML matches it.
+  first (closed to open), then the idle frames, then the contract frames. Save
+  it as `res/drawable-nodpi/eye_sheet.png` with a transparent background and set
+  the integers in `res/values/eye_sheet.xml` to its frame size, eye width and
+  frame counts. Any frame size works as long as the XML matches it.
 - **Sounds:** replace `res/raw/<name>.wav` (`drone`, `heartbeat`, `swell`,
   `tone`, `thud`) with a CC0 file of the same name (see Licence above). Any
   format Android plays works (WAV, OGG, MP3), but keep exactly one file per name:
