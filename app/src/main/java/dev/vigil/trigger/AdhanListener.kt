@@ -88,7 +88,12 @@ class AdhanListener : NotificationListenerService() {
     private fun isCall(sbn: StatusBarNotification): Boolean {
         if (sbn.packageName == packageName) return false
         val n = sbn.notification ?: return false
-        if (n.category == Notification.CATEGORY_CALL) return true
+        // Only a live call: a missed-call or "call back" notice also uses the call category but stays in the shade,
+        // and would otherwise keep every takeover away until it is cleared.
+        if (n.category == Notification.CATEGORY_CALL) {
+            val live = (n.flags and (Notification.FLAG_ONGOING_EVENT or Notification.FLAG_FOREGROUND_SERVICE)) != 0
+            return live || n.fullScreenIntent != null
+        }
         // Calling apps that use the call template without setting the category.
         return try {
             n.extras?.getString(Notification.EXTRA_TEMPLATE) == CALL_STYLE

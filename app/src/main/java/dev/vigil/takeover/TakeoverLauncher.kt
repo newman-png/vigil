@@ -260,7 +260,8 @@ object TakeoverLauncher {
         }
 
         val canStart = Settings.canDrawOverlays(context) || vigilInFront
-        if (present && canStart && startTried != id) {
+        // Only when the front app is known: otherwise the call-app check above proved nothing (no usage access).
+        if (present && front != null && canStart && startTried != id) {
             // Unlocked and in use: the full-screen intent would only show a banner (over the takeover, once it is
             // up), so start the activity directly and use the notification only if it has not appeared shortly after.
             startTried = id
@@ -274,9 +275,11 @@ object TakeoverLauncher {
         // notification. For a takeover not yet on screen it carries the full-screen intent, which opens the
         // takeover by itself on a locked phone or a dark screen; on an unlocked phone it is a banner to tap.
         post(context, ticket, fullScreen = fresh, mayAlert = awake && mayAdd, overLock = !present)
-        // Also start it directly: with "display over other apps" that works over the lock screen too, should the
-        // full-screen intent not be allowed. Without it the system ignores the start; nothing breaks.
-        if (fresh || canStart) start(context)
+        // Also start it directly, but only where nothing can be covered: on a dark screen (with "display over other
+        // apps" that works under the lock screen too, should the full-screen intent not be allowed), or in use with
+        // a known front app. On an awake, locked phone the user may be typing an emergency number over the lock
+        // screen, so there only the full-screen intent is used: the system shows it as a banner over that dialer.
+        if (!awake || (present && front != null && canStart)) start(context)
         if (fresh && attempts < MAX_ATTEMPTS) {
             attempts++
             retryIn(VERIFY_MS, mayAdd = true)

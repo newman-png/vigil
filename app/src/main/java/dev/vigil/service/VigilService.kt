@@ -121,7 +121,9 @@ class VigilService : Service() {
             // The tick below still notices an unlocked phone, only a little later.
             Log.e(TAG, "Could not watch the screen", e)
         }
-        present = Device.isPresent(this)
+        // Not yet seen as present: when the service starts on a phone already in use (after a reboot, an update or a
+        // restart), the first tick handles it like an unlock, so a takeover that was waiting comes back.
+        present = false
         ticks = 0
         running = true
         handler.removeCallbacks(tick)

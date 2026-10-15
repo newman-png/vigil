@@ -13,7 +13,7 @@ import dev.vigil.service.VigilService
 private const val TAG = "VigilTestAlarm"
 
 /**
- * TEST > FIRE IN 60 S: fires the tier-2 preview through a real alarm clock, so the whole path (an alarm in deep
+ * TEST > FIRE IN 60 S: fires the tier-2 preview through a real exact alarm, so the whole path (an alarm in deep
  * sleep, the wake lock, the full-screen takeover over the lock screen) can be tried with the screen off.
  * It has its own alarm and never replaces the one for the plan.
  */
@@ -27,7 +27,8 @@ object TestAlarm {
         val app = context.applicationContext
         val am = app.getSystemService(AlarmManager::class.java) ?: return
         val atMs = System.currentTimeMillis() + seconds.coerceIn(1L, MAX_SECONDS) * 1000
-        AlarmScheduler.set(app, am, atMs, pendingIntent(app), alarmClock = true)
+        // The same kind of alarm as a directive's time, so the test runs the real path.
+        AlarmScheduler.set(am, atMs, pendingIntent(app))
     }
 
     /** Cancels a test alarm that has not gone off yet. */

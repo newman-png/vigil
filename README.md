@@ -144,7 +144,8 @@ Only CC0 audio may be committed to this repository. The generated placeholders a
 
 ### Reliability notes
 
-- **The alarm clock icon is VIGIL.** Directive times are set as alarm clock alarms, the one kind Android always delivers on time, even in Doze with the screen off. So Android shows its alarm clock icon in the status bar and lists the next directive as your next alarm.
+- **Time directives use exact alarms** that Android delivers on the minute even in Doze with the screen off (VIGIL holds the exact-alarm permission and is exempt from battery limits once BATTERY is unrestricted). They are deliberately not "alarm clock" alarms: those would show as your next alarm, and a bedtime Do Not Disturb schedule set to end at the next alarm would switch off at every directive.
+- **Takeovers never cover a dialer.** On an awake, locked phone a new directive only uses the full-screen notification (so it never opens over the emergency dialer), and on an unlocked phone it opens directly only when VIGIL can see the app in front (usage access). A takeover left on a locked or dark phone steps back, so the next screen-on shows the plain lock screen; it comes back after unlocking. An unattended takeover lets the screen sleep 10 minutes after the last touch.
 - **Notification access is rebound.** Android sometimes disconnects a notification listener, which would silently stop the adhan trigger. VIGIL asks Android to reconnect it at once and checks again about every minute. SETUP › ADHAN shows whether it is connected; if it stays disconnected, switch VIGIL's notification access off and on.
 - **Known limit:** after a reboot, VIGIL starts once the phone has been unlocked for the first time (Android keeps app data locked until then), so a directive due more than 30 minutes before the first unlock is logged as `missed`.
 

@@ -40,7 +40,8 @@ object Notifications {
             },
         )
         nm.createNotificationChannel(
-            NotificationChannel(CHANNEL_PLAN, "Plan complete", NotificationManager.IMPORTANCE_DEFAULT).apply {
+            // Low importance: it never pulses or lights a dark screen (only a new directive may wake the phone).
+            NotificationChannel(CHANNEL_PLAN, "Plan complete", NotificationManager.IMPORTANCE_LOW).apply {
                 description = "Says when the week's plan has ended and its bundle is ready to export."
                 setSound(null, null)
                 enableVibration(false)
