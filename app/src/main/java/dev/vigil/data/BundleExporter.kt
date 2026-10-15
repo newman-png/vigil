@@ -11,6 +11,7 @@ import dev.vigil.core.log.EventType
 import dev.vigil.core.log.LogEvent
 import dev.vigil.core.log.LogExport
 import dev.vigil.engine.Device
+import dev.vigil.engine.Notifications
 import dev.vigil.trigger.UsageWatcher
 import java.time.Instant
 import java.time.LocalDate
@@ -40,7 +41,8 @@ object BundleExporter {
         val zone = Graph.zone
         val snapshot = Graph.plans.snapshot.value
         val weekStart = snapshot.plan?.weekOf?.atStartOfDay(zone)?.toInstant()?.toEpochMilli()
-        val since = listOfNotNull(snapshot.importedAtMs, weekStart).minOrNull()
+        // Event times are whole seconds, so the import time is too: otherwise its own plan_imported event is left out.
+        val since = listOfNotNull(snapshot.importedAtMs?.let { it - it % 1000 }, weekStart).minOrNull()
         val all = Graph.eventLog.readAll()
         // Timestamps are ISO-8601 with offset, so compare as instants.
         val events = if (since == null) all else all.filter { e ->
@@ -86,6 +88,7 @@ object BundleExporter {
         val snapshot = Graph.plans.snapshot.value
         Graph.settings.lastBundleExportImportedAtMs = snapshot.importedAtMs ?: -1L
         Graph.settings.lastBundleExportAtMs = now.toEpochMilli()
+        Notifications.cancelPlanComplete(context)
         Graph.eventLog.append(
             LogEvent(
                 format(now), EventType.BUNDLE_EXPORTED,

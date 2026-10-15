@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
 import android.provider.OpenableColumns
+import android.provider.Settings
 import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
@@ -20,8 +21,11 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.text.selection.LocalTextSelectionColors
+import androidx.compose.foundation.text.selection.TextSelectionColors
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
@@ -38,6 +42,7 @@ import dev.vigil.engine.Notifications
 import dev.vigil.engine.Vigil
 import dev.vigil.service.VigilService
 import dev.vigil.takeover.TakeoverActivity
+import dev.vigil.trigger.TriggerSetup
 import dev.vigil.ui.components.scanlines
 import dev.vigil.ui.home.HomeActions
 import dev.vigil.ui.home.HomeScreen
@@ -70,14 +75,18 @@ class MainActivity : ComponentActivity() {
 
     private var screen by mutableStateOf<Screen>(Screen.Home)
 
-    /** PLAN COMPLETE opens by itself once per visit (until the bundle is exported), not on every resume. */
-    private var planCompleteShown = false
+    /**
+     * The plan (its import time) PLAN COMPLETE last opened by itself for, during this visit; [NOT_SHOWN] = none.
+     * It opens once per visit and per plan until the bundle is exported, not on every resume; leaving VIGIL
+     * resets it, and so does the next plan.
+     */
+    private var planCompleteShownFor = NOT_SHOWN
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // The app is always black, so the system bars always use light icons.
         enableEdgeToEdge(SystemBarStyle.dark(Color.TRANSPARENT), SystemBarStyle.dark(Color.TRANSPARENT))
-        planCompleteShown = savedInstanceState?.getBoolean(KEY_PLAN_COMPLETE_SHOWN) ?: false
+        planCompleteShownFor = savedInstanceState?.getLong(KEY_PLAN_COMPLETE_SHOWN, NOT_SHOWN) ?: NOT_SHOWN
         screen = when {
             !Graph.settings.setupDone -> Screen.Setup
             savedInstanceState != null -> restore(savedInstanceState.getString(KEY_SCREEN))
@@ -91,7 +100,15 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        // Opening VIGIL again from the launcher starts on HOME, like a fresh start.
+        if (intent.action == Intent.ACTION_MAIN && Graph.settings.setupDone) screen = Screen.Home
         handleOpen(intent)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // A new visit may show PLAN COMPLETE again (until the bundle is exported).
+        if (!isChangingConfigurations) planCompleteShownFor = NOT_SHOWN
     }
 
     override fun onResume() {
@@ -101,15 +118,18 @@ class MainActivity : ComponentActivity() {
         // Opening VIGIL counts as being at the phone: a due morning check-in shows now.
         Vigil.onUserPresent()
         // The week is over and its bundle not exported yet: say so when VIGIL opens on HOME.
-        if (!planCompleteShown && screen == Screen.Home && Vigil.planComplete()) {
-            planCompleteShown = true
+        val complete = Vigil.planComplete()
+        val plan = currentPlanKey()
+        if (!complete && screen == Screen.PlanComplete) screen = Screen.Home
+        if (complete && planCompleteShownFor != plan && screen == Screen.Home) {
+            planCompleteShownFor = plan
             screen = Screen.PlanComplete
         }
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
         super.onSaveInstanceState(outState)
-        outState.putBoolean(KEY_PLAN_COMPLETE_SHOWN, planCompleteShown)
+        outState.putLong(KEY_PLAN_COMPLETE_SHOWN, planCompleteShownFor)
         outState.putString(KEY_SCREEN, save(screen))
     }
 
@@ -119,14 +139,25 @@ class MainActivity : ComponentActivity() {
         if (i.getStringExtra(Notifications.EXTRA_OPEN) != Notifications.OPEN_PLAN_COMPLETE) return
         i.removeExtra(Notifications.EXTRA_OPEN)
         if (!Graph.settings.setupDone) return
-        planCompleteShown = true
+        planCompleteShownFor = currentPlanKey()
         screen = if (Vigil.planComplete()) Screen.PlanComplete else Screen.Home
     }
+
+    /** Identifies the imported plan by its import time (-1 when it has none). */
+    private fun currentPlanKey(): Long = Graph.plans.snapshot.value.importedAtMs ?: -1L
 
     @Composable
     private fun App() {
         val scope = rememberCoroutineScope()
-        val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            // Denied twice, Android no longer asks: open VIGIL's notification settings instead.
+            if (!granted && !shouldShowRequestPermissionRationale(Manifest.permission.POST_NOTIFICATIONS)) {
+                TriggerSetup.open(
+                    this,
+                    Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).putExtra(Settings.EXTRA_APP_PACKAGE, packageName),
+                    Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")),
+                )
+            }
             resumeTick++
             VigilService.start(this)
         }
@@ -159,43 +190,47 @@ class MainActivity : ComponentActivity() {
 
         BackHandler(enabled = screen != Screen.Home) { screen = Screen.Home }
 
-        Box(
-            Modifier
-                .fillMaxSize()
-                .background(Palette.Black)
-                .scanlines(0.12f),
-        ) {
-            // Each screen keeps its own scroll position.
-            key(screen) {
-                Box(
-                    Modifier
-                        .safeDrawingPadding()
-                        .verticalScroll(rememberScrollState())
-                        .padding(horizontal = 24.dp, vertical = 16.dp),
-                ) {
-                    when (val s = screen) {
-                        Screen.Home -> HomeScreen(
-                            refreshKey = resumeTick,
-                            actions = HomeActions(
-                                openSetup = { screen = Screen.Setup },
-                                openPlan = { screen = Screen.Plan },
-                                openTest = { reveal -> screen = Screen.Test(reveal) },
-                                openTakeover = { startActivity(TakeoverActivity.intent(this@MainActivity)) },
-                            ),
-                        )
-                        Screen.Setup -> SetupScreen(
-                            refreshKey = resumeTick,
-                            firstRun = !Graph.settings.setupDone,
-                            requestNotifications = { notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS) },
-                            onDone = {
-                                Graph.settings.setupDone = true
-                                screen = Screen.Home
-                            },
-                        )
-                        Screen.Plan -> PlanScreen(importPlan = pickPlan, exportBundle = startExport)
-                        Screen.PlanComplete -> PlanCompleteScreen(export = startExport)
-                        is Screen.Test -> TestScreen(revealKillSwitch = s.revealKillSwitch)
-                        is Screen.ImportResult -> ImportResultScreen(s.outcome) { screen = Screen.Plan }
+        // Black, white and red only: text selection and cursor handles too (Compose's default is blue).
+        val selection = TextSelectionColors(handleColor = Palette.White, backgroundColor = Palette.White.copy(alpha = 0.3f))
+        CompositionLocalProvider(LocalTextSelectionColors provides selection) {
+            Box(
+                Modifier
+                    .fillMaxSize()
+                    .background(Palette.Black)
+                    .scanlines(0.12f),
+            ) {
+                // Each screen keeps its own scroll position.
+                key(screen) {
+                    Box(
+                        Modifier
+                            .safeDrawingPadding()
+                            .verticalScroll(rememberScrollState())
+                            .padding(horizontal = 24.dp, vertical = 16.dp),
+                    ) {
+                        when (val s = screen) {
+                            Screen.Home -> HomeScreen(
+                                refreshKey = resumeTick,
+                                actions = HomeActions(
+                                    openSetup = { screen = Screen.Setup },
+                                    openPlan = { screen = Screen.Plan },
+                                    openTest = { reveal -> screen = Screen.Test(reveal) },
+                                    openTakeover = { startActivity(TakeoverActivity.intent(this@MainActivity)) },
+                                ),
+                            )
+                            Screen.Setup -> SetupScreen(
+                                refreshKey = resumeTick,
+                                firstRun = !Graph.settings.setupDone,
+                                requestNotifications = { notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS) },
+                                onDone = {
+                                    Graph.settings.setupDone = true
+                                    screen = Screen.Home
+                                },
+                            )
+                            Screen.Plan -> PlanScreen(importPlan = pickPlan, exportBundle = startExport)
+                            Screen.PlanComplete -> PlanCompleteScreen(export = startExport)
+                            is Screen.Test -> TestScreen(revealKillSwitch = s.revealKillSwitch)
+                            is Screen.ImportResult -> ImportResultScreen(s.outcome) { screen = Screen.Plan }
+                        }
                     }
                 }
             }
@@ -254,5 +289,6 @@ class MainActivity : ComponentActivity() {
         const val MAX_IMPORT_BYTES = 1_000_000
         const val KEY_SCREEN = "screen"
         const val KEY_PLAN_COMPLETE_SHOWN = "plan_complete_shown"
+        const val NOT_SHOWN = Long.MIN_VALUE
     }
 }

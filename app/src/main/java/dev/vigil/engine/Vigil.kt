@@ -58,6 +58,7 @@ object Vigil {
                     ),
                 )
                 // A new plan starts from now: nothing from before the import is replayed.
+                Notifications.cancelPlanComplete(Graph.app)
                 UsageWatcher.reset()
                 onClock(catchUp = false)
             }
@@ -165,6 +166,8 @@ object Vigil {
     fun suspend(minutes: Long) {
         Graph.settings.suspendedUntilMs = System.currentTimeMillis() + minutes * 60_000
         exec { state, env -> Scheduling.clearAll(state, env, "developer kill switch") }
+        // Nothing may have been showing, so the engine step changed nothing: update the status line anyway.
+        VigilService.refreshNotification(Graph.app)
     }
 
     fun resume() {
@@ -180,8 +183,18 @@ object Vigil {
      */
     fun onServiceTick(context: Context) {
         exec { state, env -> Engine.refresh(state, env) }
-        UsageWatcher.poll(context, System.currentTimeMillis())
+        val now = System.currentTimeMillis()
+        // A kill-switch suspension that runs out by itself changes no engine state: refresh the status line then.
+        val suspended = Graph.settings.isSuspended(now)
+        if (suspended != wasSuspended) {
+            wasSuspended = suspended
+            VigilService.refreshNotification(context)
+        }
+        UsageWatcher.poll(context, now)
     }
+
+    @Volatile
+    private var wasSuspended = false
 
     fun onScreenOn(context: Context) {
         // The morning check-in waits for the user to be there: an awake, unlocked phone. It never wakes the screen.

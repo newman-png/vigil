@@ -48,6 +48,11 @@ object Notifications {
         )
     }
 
+    /** The bundle was exported or a new plan imported: the export prompt goes away. */
+    fun cancelPlanComplete(context: Context) {
+        context.getSystemService(NotificationManager::class.java)?.cancel(ID_PLAN_COMPLETE)
+    }
+
     /** The plan's week is over: export the bundle. Silent, like everything VIGIL posts outside a takeover. */
     fun planComplete(context: Context) {
         val nm = context.getSystemService(NotificationManager::class.java) ?: return
