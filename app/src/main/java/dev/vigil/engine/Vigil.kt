@@ -12,6 +12,7 @@ import dev.vigil.core.engine.Scheduling
 import dev.vigil.core.engine.TimeSchedule
 import dev.vigil.core.log.EventType
 import dev.vigil.core.log.LogEvent
+import dev.vigil.core.log.LogExport
 import dev.vigil.core.plan.CheckInAnswer
 import dev.vigil.core.plan.DayMode
 import dev.vigil.core.plan.Rating
@@ -127,6 +128,9 @@ object Vigil {
 
     /** "I'm not okay today" held on the takeover. Tells it whether it was closed by that. */
     fun notOkay(takeoverId: String): BadDayResult {
+        // A TEST preview (or the adhan test) is the user trying the app out: it never switches on a real bad day.
+        val ticket = Graph.state.current.active?.takeIf { it.takeoverId == takeoverId }
+        if (ticket != null && ticket.trigger in LogExport.TEST_TRIGGERS) return BadDayResult.PREVIEW
         val outcome = setBadDay(true)
         // A check-in on screen is replaced by the bad day (one check_in event) rather than bypassed.
         val closed = outcome.events.any {
@@ -205,6 +209,9 @@ object Vigil {
 
     /** The user is at the phone (unlocked it, or opened VIGIL): show a due morning check-in. */
     fun onUserPresent() {
+        // During a kill-switch suspension it would be dropped at once and never come back: it waits instead
+        // (the service tick offers it again within seconds of the suspension ending).
+        if (Graph.settings.isSuspended(System.currentTimeMillis())) return
         // Always ask the engine: a check-in only becomes due in its housekeeping at the day boundary.
         exec { state, env -> Engine.onUserPresent(state, env) }
     }

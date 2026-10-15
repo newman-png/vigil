@@ -5,6 +5,9 @@ import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import android.os.PowerManager
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
@@ -19,6 +22,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
@@ -44,11 +48,19 @@ class TakeoverActivity : ComponentActivity() {
     /** Sound, vibration and lights of the takeover on screen, paused whenever the activity is not visible. */
     private var fx: TakeoverFx? = null
 
+    /** The takeover this screen is playing (its ending may still run after the engine has moved on to the next one). */
+    private var onScreenId: String? = null
+
+    private val handler = Handler(Looper.getMainLooper())
+
+    // An unattended takeover lets the display sleep after a while instead of keeping it lit for up to 90 minutes.
+    private val letScreenSleep = Runnable { window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setShowWhenLocked(true)
         setTurnScreenOn(true)
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        keepScreenOn()
         enableEdgeToEdge(SystemBarStyle.dark(Color.TRANSPARENT), SystemBarStyle.dark(Color.TRANSPARENT))
         hideSystemBars()
         TakeoverLauncher.register(this)
@@ -67,15 +79,43 @@ class TakeoverActivity : ComponentActivity() {
         super.onStart()
         TakeoverLauncher.visible = true
         TakeoverLauncher.onVisible(this)
+        keepScreenOn()
         fx?.resume()
     }
 
     override fun onStop() {
         super.onStop()
         TakeoverLauncher.visible = false
+        handler.removeCallbacks(letScreenSleep)
         // Nothing keeps sounding, vibrating or glowing behind other apps, a call or a dark screen.
         fx?.pause()
-        if (!closing && !isChangingConfigurations) TakeoverLauncher.onEscaped(this)
+        if (closing || isChangingConfigurations) return
+        // Left on a locked or dark phone: step back, so the next screen-on shows the plain lock screen (and its
+        // emergency button). An unfinished takeover comes back after unlock, as the launcher's rules say.
+        val locked = getSystemService(KeyguardManager::class.java)?.isKeyguardLocked == true
+        val awake = getSystemService(PowerManager::class.java)?.isInteractive ?: true
+        if (locked || !awake) moveTaskToBack(true)
+        // Left while the previous takeover's ending was still playing: the next one has never been on screen, so it
+        // is still a new directive (it may wake the screen), not one the user walked away from.
+        val active = Graph.state.current.active?.takeoverId
+        if (active != null && active != onScreenId) TakeoverLauncher.ensureShowing(this) else TakeoverLauncher.onEscaped(this)
+    }
+
+    override fun onUserInteraction() {
+        super.onUserInteraction()
+        keepScreenOn()
+    }
+
+    override fun onDestroy() {
+        handler.removeCallbacks(letScreenSleep)
+        super.onDestroy()
+    }
+
+    /** Keeps the display on for [KEEP_SCREEN_ON_MS] after the takeover appears or is touched. */
+    private fun keepScreenOn() {
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        handler.removeCallbacks(letScreenSleep)
+        handler.postDelayed(letScreenSleep, KEEP_SCREEN_ON_MS)
     }
 
     /** The engine closed the takeover while it was behind other apps (timed out, kill switch, bad day elsewhere). */
@@ -89,6 +129,7 @@ class TakeoverActivity : ComponentActivity() {
         val plans by Graph.plans.snapshot.collectAsState()
         var shown by remember { mutableStateOf(Graph.state.current.active) }
         val ticket = shown
+        SideEffect { onScreenId = ticket?.takeoverId }
 
         Box(
             Modifier
@@ -187,6 +228,9 @@ class TakeoverActivity : ComponentActivity() {
     companion object {
         /** The phone app's emergency dialer, the same screen the lock screen's "Emergency call" opens. */
         private const val EMERGENCY_DIAL_ACTION = "com.android.phone.EmergencyDialer.DIAL"
+
+        /** How long the display stays on after the takeover appears or is last touched. */
+        private const val KEEP_SCREEN_ON_MS = 10 * 60_000L
 
         fun intent(context: android.content.Context): Intent =
             Intent(context, TakeoverActivity::class.java)

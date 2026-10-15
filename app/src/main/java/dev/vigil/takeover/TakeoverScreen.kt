@@ -33,6 +33,7 @@ import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.integerResource
 import androidx.compose.ui.unit.dp
@@ -49,7 +50,13 @@ import kotlinx.coroutines.delay
 enum class StepResult { NEXT, COMPLETED, IGNORED }
 
 /** What the user did with "I'm not okay today" while this takeover was showing. */
-enum class BadDayResult { BYPASSED, KEPT }
+enum class BadDayResult {
+    BYPASSED,
+    KEPT,
+
+    /** A TEST preview: nothing was switched on. */
+    PREVIEW,
+}
 
 /** What the takeover screen reports. Each call goes straight to the engine; the screen decides nothing. */
 interface TakeoverCallbacks {
@@ -236,7 +243,8 @@ fun TakeoverScreen(
     fun rate(rating: Rating?) {
         if (phase != Phase.RATING) return
         phase = Phase.DONE
-        cb.rate(id, rating)
+        // The question may have run out (30 min) while the screen was away; then there is nothing to record.
+        if (cb.pendingRatingFor(id)) cb.rate(id, rating)
         cb.finished()
     }
 
@@ -259,6 +267,10 @@ fun TakeoverScreen(
             BadDayResult.KEPT -> {
                 ended = false
                 note = "THIS ONE IS ON YOUR ESSENTIALS LIST. IT STAYS."
+            }
+            BadDayResult.PREVIEW -> {
+                ended = false
+                note = "PREVIEW: NOTHING CHANGED."
             }
         }
     }
@@ -334,6 +346,12 @@ fun TakeoverScreen(
                 }
             }
             Phase.RATING -> {
+                // Asked while the screen was away and since expired: never show a question that no longer counts.
+                if (!cb.pendingRatingFor(id)) {
+                    phase = Phase.DONE
+                    cb.finished()
+                    return@LaunchedEffect
+                }
                 delay(RATING_TIMEOUT_MS)
                 rate(null)
             }
@@ -516,7 +534,7 @@ fun TakeoverScreen(
                         .fillMaxWidth()
                         .clickable(remember { MutableInteractionSource() }, indication = null) { cb.suspend(60) }
                         .padding(vertical = 12.dp),
-                    color = Palette.Red,
+                    color = Palette.White,
                 )
             }
             note?.let {
@@ -641,9 +659,9 @@ private fun HoldWord(label: String, holdMs: Long, onComplete: () -> Unit) {
     }
 
     val held = heldSince != 0L
-    TakeoverText(
-        if (held) secondsLeft.toString() else label,
-        TakeoverType.Strip,
+    // The label always takes its space (invisible while held), so the target never shrinks under the finger
+    // when the countdown replaces it; a press that slid off a shrinking target would cancel itself.
+    Box(
         Modifier
             .pointerInput(Unit) {
                 awaitEachGesture {
@@ -655,8 +673,11 @@ private fun HoldWord(label: String, holdMs: Long, onComplete: () -> Unit) {
                 }
             }
             .padding(horizontal = 16.dp, vertical = 14.dp),
-        color = if (held) Palette.White else TakeoverType.Faint,
-    )
+        contentAlignment = Alignment.Center,
+    ) {
+        TakeoverText(label, TakeoverType.Strip, color = if (held) Color.Transparent else TakeoverType.Faint)
+        if (held) TakeoverText(secondsLeft.toString(), TakeoverType.Strip, color = Palette.White)
+    }
 }
 
 private const val CHECK_IN_LINE = "YESTERDAY WAS HARD."
