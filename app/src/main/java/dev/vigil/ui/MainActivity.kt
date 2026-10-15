@@ -26,6 +26,7 @@ import androidx.compose.foundation.text.selection.TextSelectionColors
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
@@ -38,10 +39,12 @@ import dev.vigil.Graph
 import dev.vigil.core.plan.Issue
 import dev.vigil.data.BundleExporter
 import dev.vigil.data.PlanRepository
+import dev.vigil.engine.Device
 import dev.vigil.engine.Notifications
 import dev.vigil.engine.Vigil
 import dev.vigil.service.VigilService
 import dev.vigil.takeover.TakeoverActivity
+import dev.vigil.takeover.TakeoverLauncher
 import dev.vigil.trigger.TriggerSetup
 import dev.vigil.ui.components.scanlines
 import dev.vigil.ui.home.HomeActions
@@ -53,6 +56,7 @@ import dev.vigil.ui.setup.SetupScreen
 import dev.vigil.ui.test.TestScreen
 import dev.vigil.ui.theme.Palette
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -107,8 +111,11 @@ class MainActivity : ComponentActivity() {
 
     override fun onStop() {
         super.onStop()
-        // A new visit may show PLAN COMPLETE again (until the bundle is exported).
-        if (!isChangingConfigurations) planCompleteShownFor = NOT_SHOWN
+        // A new visit may show PLAN COMPLETE again (until the bundle is exported). A takeover over VIGIL, or the
+        // screen going off, is not a new visit.
+        if (!isChangingConfigurations && !TakeoverLauncher.visible && Device.isInteractive(this)) {
+            planCompleteShownFor = NOT_SHOWN
+        }
     }
 
     override fun onResume() {
@@ -117,14 +124,8 @@ class MainActivity : ComponentActivity() {
         VigilService.start(this)
         // Opening VIGIL counts as being at the phone: a due morning check-in shows now.
         Vigil.onUserPresent()
-        // The week is over and its bundle not exported yet: say so when VIGIL opens on HOME.
-        val complete = Vigil.planComplete()
-        val plan = currentPlanKey()
-        if (!complete && screen == Screen.PlanComplete) screen = Screen.Home
-        if (complete && planCompleteShownFor != plan && screen == Screen.Home) {
-            planCompleteShownFor = plan
-            screen = Screen.PlanComplete
-        }
+        if (!Vigil.planComplete() && screen == Screen.PlanComplete) screen = Screen.Home
+        maybeShowPlanComplete()
     }
 
     override fun onSaveInstanceState(outState: Bundle) {
@@ -141,6 +142,15 @@ class MainActivity : ComponentActivity() {
         if (!Graph.settings.setupDone) return
         planCompleteShownFor = currentPlanKey()
         screen = if (Vigil.planComplete()) Screen.PlanComplete else Screen.Home
+    }
+
+    /** The week is over and its bundle not exported yet: on HOME, say so (once per visit and plan). */
+    private fun maybeShowPlanComplete() {
+        if (screen != Screen.Home || !Vigil.planComplete()) return
+        val plan = currentPlanKey()
+        if (planCompleteShownFor == plan) return
+        planCompleteShownFor = plan
+        screen = Screen.PlanComplete
     }
 
     /** Identifies the imported plan by its import time (-1 when it has none). */
@@ -165,8 +175,9 @@ class MainActivity : ComponentActivity() {
         val picker = rememberLauncherForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
             if (uri != null) {
                 scope.launch {
-                    val read = withContext(Dispatchers.IO) { readPlanFile(uri) }
-                    screen = Screen.ImportResult(importPlan(read))
+                    // Not cancelled by a rotation mid-read: the chosen plan is always imported.
+                    val outcome = withContext(NonCancellable) { importPlan(withContext(Dispatchers.IO) { readPlanFile(uri) }) }
+                    screen = Screen.ImportResult(outcome)
                 }
             }
         }
@@ -174,14 +185,17 @@ class MainActivity : ComponentActivity() {
         val exporter = rememberLauncherForActivityResult(ActivityResultContracts.CreateDocument("application/json")) { uri ->
             if (uri != null) {
                 scope.launch {
-                    val ok = withContext(Dispatchers.IO) { BundleExporter.write(this@MainActivity, uri) }
-                    Toast.makeText(
-                        this@MainActivity,
-                        if (ok) "Bundle saved. Give it to your planner." else "Could not save the bundle.",
-                        Toast.LENGTH_SHORT,
-                    ).show()
-                    // PLAN COMPLETE has done its job.
-                    if (ok && screen == Screen.PlanComplete) screen = Screen.Home
+                    // Not cancelled by a rotation mid-write, so the user always hears how it went.
+                    withContext(NonCancellable) {
+                        val ok = withContext(Dispatchers.IO) { BundleExporter.write(applicationContext, uri) }
+                        Toast.makeText(
+                            applicationContext,
+                            if (ok) "Bundle saved. Give it to your planner." else "Could not save the bundle.",
+                            Toast.LENGTH_SHORT,
+                        ).show()
+                        // PLAN COMPLETE has done its job (a recreated activity also moves on, in onResume).
+                        if (ok && screen == Screen.PlanComplete) screen = Screen.Home
+                    }
                 }
             }
         }
@@ -189,6 +203,8 @@ class MainActivity : ComponentActivity() {
         val startExport = { exporter.launch(BundleExporter.suggestedName()) }
 
         BackHandler(enabled = screen != Screen.Home) { screen = Screen.Home }
+        // Coming back to HOME during a visit (not only opening the app) also shows a due PLAN COMPLETE.
+        LaunchedEffect(screen, resumeTick) { if (screen == Screen.Home) maybeShowPlanComplete() }
 
         // Black, white and red only: text selection and cursor handles too (Compose's default is blue).
         val selection = TextSelectionColors(handleColor = Palette.White, backgroundColor = Palette.White.copy(alpha = 0.3f))

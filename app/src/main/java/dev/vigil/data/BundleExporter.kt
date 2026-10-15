@@ -42,12 +42,16 @@ object BundleExporter {
         val snapshot = Graph.plans.snapshot.value
         val weekStart = snapshot.plan?.weekOf?.atStartOfDay(zone)?.toInstant()?.toEpochMilli()
         // Event times are whole seconds, so the import time is too: otherwise its own plan_imported event is left out.
-        val since = listOfNotNull(snapshot.importedAtMs?.let { it - it % 1000 }, weekStart).minOrNull()
+        val importedAt = snapshot.importedAtMs?.let { it - it % 1000 }
         val all = Graph.eventLog.readAll()
-        // Timestamps are ISO-8601 with offset, so compare as instants.
-        val events = if (since == null) all else all.filter { e ->
-            runCatching { OffsetDateTime.parse(e.ts).toInstant().toEpochMilli() >= since }.getOrDefault(true)
-        }
+        // Never before the previous plan ended: its last night (a takeover finished after midnight on the new
+        // week_of, its rating) belongs to the previous bundle. A corrected re-import mid-week keeps the whole week,
+        // because no plan expired between the two imports.
+        val previousEnd = importedAt
+            ?.let { at -> all.lastOrNull { e -> e.type == EventType.PLAN_EXPIRED && (tsMs(e) ?: Long.MAX_VALUE) < at } }
+            ?.let { e -> tsMs(e) }
+        val since = listOfNotNull(listOfNotNull(importedAt, weekStart).minOrNull(), previousEnd).maxOrNull()
+        val events = if (since == null) all else all.filter { e -> (tsMs(e) ?: Long.MAX_VALUE) >= since }
         val status = when {
             snapshot.plan == null -> "none"
             Graph.activeSet(now).source == PlanSource.PLAN -> "running"
@@ -97,6 +101,9 @@ object BundleExporter {
         )
         true
     }.getOrDefault(false)
+
+    /** An event's time as epoch ms (timestamps are ISO-8601 with offset, so they compare as instants), or null. */
+    private fun tsMs(e: LogEvent): Long? = runCatching { OffsetDateTime.parse(e.ts).toInstant().toEpochMilli() }.getOrNull()
 
     private fun format(at: Instant): String =
         OffsetDateTime.ofInstant(at, Graph.zone).truncatedTo(ChronoUnit.SECONDS).format(DateTimeFormatter.ISO_OFFSET_DATE_TIME)
