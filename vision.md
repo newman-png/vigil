@@ -1,6 +1,6 @@
 # Vision
 
-> You write this file; VIGIL's weekly planner reads it every week (see `spec/HANDOFF.md`).
+> You write this file. It is a personal reference Claude Code reads when it edits `protocols.json` for you.
 > Keep it honest and short enough to reread. Replace every prompt below with your own words.
 
 ## 10 years
@@ -23,9 +23,9 @@ _The two or three things that matter most right now._
 
 _What you won't trade away, e.g. the five prayers on time, family, honesty, health._
 
-## Tone rules for the planner
+## Tone for protocol lines
 
-_How directives should speak to you._
+_How protocol titles and steps should speak to you._
 
 - Firm and direct. Never contemptuous, sarcastic or shaming.
 - On a bad day, be gentle: fewer directives, no "making up for it".
@@ -33,7 +33,7 @@ _How directives should speak to you._
 
 ## "Why" lines
 
-_One-line reasons, used at the bottom of takeovers. Write them in your own voice._
+_One-line reasons Claude Code can work into protocol steps. Write them in your own voice._
 
 - The day starts with Fajr.
 - Tomorrow is decided tonight.
@@ -41,4 +41,4 @@ _One-line reasons, used at the bottom of takeovers. Write them in your own voice
 
 ## Known weak spots
 
-_Where you usually slip (late-night scrolling, skipping Dhuhr at work, ...). Helps the planner aim triggers._
+_Where you usually slip (late-night scrolling, skipping Dhuhr at work, ...). Helps Claude Code aim protocol triggers, locks and free windows._

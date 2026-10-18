@@ -20,7 +20,7 @@ android {
         // 36 (Android 16) also lets the Glyph SDK run without a Nothing API key.
         targetSdk = 36
         versionCode = (System.getenv("GITHUB_RUN_NUMBER") ?: "1").toInt()
-        versionName = "1.1." + (System.getenv("GITHUB_RUN_NUMBER") ?: "0")
+        versionName = "2.0." + (System.getenv("GITHUB_RUN_NUMBER") ?: "0")
         buildConfigField("boolean", "HAS_GLYPH_SDK", hasGlyphSdk.toString())
     }
 

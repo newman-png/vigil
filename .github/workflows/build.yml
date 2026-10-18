@@ -24,7 +24,7 @@ jobs:
       - name: Fetch Nothing Glyph SDK
         run: ./tools/fetch-glyph-sdk.sh
 
-      - name: Core unit tests (plan parser, validator, triggers, engine)
+      - name: Core unit tests (protocols.json parser and validator, engine, pool, journal)
         run: ./gradlew -p core test --console=plain
 
       - name: Build APK
