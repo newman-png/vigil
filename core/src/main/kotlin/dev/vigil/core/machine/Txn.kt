@@ -51,6 +51,8 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         if (owner != null && owner.id != ownerAtStart && effects.none { it is Effect.ShowTakeover && it.runId == owner.id }) {
             effects += Effect.ShowTakeover(owner.id)
         }
+        // A run that took the screen and ended within this same step (the day ended, the kill switch) shows nothing.
+        effects.removeAll { it is Effect.ShowTakeover && run(it.runId) == null }
         return Outcome(s, entries.toList(), effects.toList())
     }
 
@@ -132,6 +134,8 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
     fun advance() {
         ensureDay()
         expireSuspension()
+        expireCall()
+        settleToggles()
         settleRuns()
         settleDay()
         prunePool()
@@ -139,6 +143,38 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         settleHeadsUps()
         fireDue()
         settleRuns()
+        if (regateDue) {
+            regateDue = false
+            regate()
+        }
+    }
+
+    /** Set when a suspension ends: a pool app already in front (opened while everything was open) is judged again. */
+    private var regateDue = false
+
+    /** True while [endDay] closes the day's runs: nothing new starts then ([fire] skips it). */
+    private var dayEnding = false
+
+    /** The pool app in front without a session (it came in while VIGIL was suspended) gets the gate now. */
+    private fun regate() {
+        val app = s.foreground?.takeIf { s.foregroundIsPool } ?: return
+        if (suspended || s.pool.session != null || effects.any { it is Effect.PoolGate && it.app == app }) return
+        gate(app)
+    }
+
+    /** A call that never reported its end stops pausing the runs after [Machine.MAX_CALL_PAUSE]. */
+    private fun expireCall() {
+        val since = s.callSince ?: return
+        val limit = since.plus(Machine.MAX_CALL_PAUSE)
+        if (now.isBefore(limit)) return
+        endCall(limit, "no call end reported within ${Machine.MAX_CALL_PAUSE.toHours()} h: timers and locks run again")
+    }
+
+    /** "I'm with friends" turns itself off at its cap (spec: "Ends when you switch it off, or after the 4-hour cap"). */
+    private fun settleToggles() {
+        val end = friendsEnd() ?: return
+        if (now.isBefore(end)) return
+        setToggle(ToggleName.FRIENDS, false, at = end, detail = "off (the ${friendsCapMin()}-minute cap)")
     }
 
     private fun ensureDay() {
@@ -153,6 +189,7 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         if (now.isBefore(until)) return
         s = s.copy(suspendedUntil = null)
         log(EntryType.KILL_SWITCH, at = until, reason = "resumed", detail = "the suspension ended")
+        regateDue = true
     }
 
     private fun settleDay() {
@@ -166,7 +203,12 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
     fun endDay(reason: DayEndReason, at: Instant) {
         val d = day
         selfCheck(d, at)
-        closeRunsAtDayEnd(at)
+        // Closing the day's runs starts nothing: no `event:misses` reset offer and no `event:after` protocol at GOING TO
+        // SLEEP (or in the night the day ended in). Those triggers are skipped; the miss count starts again.
+        dayEnding = true
+        closeRunsAtDayEnd(at, d.startedAt)
+        dayEnding = false
+        endSessionAtDayEnd(at)
         log(
             EntryType.DAY_END, at = at, day = d.key, reason = reason.json,
             detail = if (at != now) "noticed at ${hhmm(now)}" else null,
@@ -201,8 +243,24 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         }
     }
 
-    private fun closeRunsAtDayEnd(at: Instant) {
-        for (r in s.runs.toList()) {
+    /**
+     * A pool session still alive when the day ends belongs to that day: it ends now (its minutes count for the day that
+     * ends and its cooldown starts), so it never eats into the new day's window caps. Still in the app: it closes.
+     */
+    private fun endSessionAtDayEnd(at: Instant) {
+        val session = s.pool.session ?: return
+        val inApp = session.inSince != null
+        endSession(if (inApp) at else session.leftAt ?: at, cooldown = true)
+        if (inApp) {
+            log(EntryType.POOL_BLOCKED, at = at, app = session.app, reason = BlockReason.OUTSIDE_WINDOW.json, detail = "session ended: the day ended")
+            effects += Effect.Kick(session.app, BlockReason.OUTSIDE_WINDOW)
+        }
+    }
+
+    private fun closeRunsAtDayEnd(at: Instant, dayStart: Instant) {
+        for (id in s.runs.map { it.id }) {
+            // Fresh each time: closing one run can start a queued one.
+            val r = run(id) ?: continue
             when {
                 r.test -> {
                     remove(r.id)
@@ -211,12 +269,11 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
                 }
                 r.prayer == Prayer.ISHA -> if (r.confirmed) complete(r) else missPrayer(r, "day_end", at)
                 r.prayer != null -> Unit
-                r.kind.survivesDayEnd -> Unit
-                r.phase == RunPhase.REMINDER -> {
-                    remove(r.id)
-                    logRun(EntryType.DROPPED, r, at = at, reason = "day_end", detail = "reminder not confirmed")
-                    cancelRunNotices(r)
-                }
+                // Tonight's sleep run lasts the night; one left over from an earlier day would block every later one.
+                r.kind.survivesDayEnd && !r.firedAt.isBefore(dayStart) -> Unit
+                // An unconfirmed stage-3 reminder is a miss like any other: without it a protocol at stage 3 could
+                // never move back a stage, however often it was ignored.
+                r.phase == RunPhase.REMINDER -> missRun(r, "day_end", at, detail = "reminder not confirmed")
                 else -> missRun(r, "day_end", at)
             }
         }
@@ -301,7 +358,7 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
             next = next.copy(step = next.step + 1)
         }
         if (next.step >= steps.size) {
-            complete(next)
+            complete(next, at)
             return null
         }
         put(next)
@@ -330,22 +387,25 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
 
     private fun currentStepText(r: Run): String = stepsOf(r).getOrNull(r.step)?.text ?: ""
 
-    /** The run finished: journal, stage outcome, `after:` triggers, the queue moves on. */
-    private fun complete(r: Run) {
+    /**
+     * The run finished at [at] (a timer that ran out while the phone dozed finished it when it ran out): journal, stage
+     * outcome, `after:` triggers, the queue moves on.
+     */
+    private fun complete(r: Run, at: Instant = now) {
         remove(r.id)
-        logRun(EntryType.COMPLETED, r, minutes = WallClock.minutesCeil(r.firedAt, now), reason = if (r.clean) "clean" else "done")
+        logRun(EntryType.COMPLETED, r, at = at, minutes = WallClock.minutesCeil(r.firedAt, at), reason = if (r.clean) "clean" else "done")
         cancelRunNotices(r)
         if (!r.test) {
-            updateDay { it.copy(completed = it.completed + (r.protocol to now)) }
+            updateDay { it.copy(completed = it.completed + (r.protocol to at)) }
             if (!r.bailed) recordOutcome(r, if (r.clean) RunOutcome.CLEAN else RunOutcome.DONE)
             if (!r.afterFired && !r.bailed) fireAfter(r)
         }
         promoteQueue()
     }
 
-    private fun missRun(r: Run, why: String, at: Instant = now) {
+    private fun missRun(r: Run, why: String, at: Instant = now, detail: String? = null) {
         remove(r.id)
-        logRun(EntryType.MISSED, r, at = at, reason = why)
+        logRun(EntryType.MISSED, r, at = at, reason = why, detail = detail)
         cancelRunNotices(r)
         if (!r.test && !r.bailed) recordOutcome(r, RunOutcome.MISSED)
         promoteQueue()
@@ -419,9 +479,20 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
 
     /** A trigger fired for [p]: start a run (or say why not). Returns the run, or null when nothing started. */
     private fun fire(p: Protocol, reason: String, planned: Instant? = null, slot: SlotInfo? = null, test: Boolean = false): Run? {
+        if (dayEnding) {
+            log(EntryType.SKIPPED, protocol = p.id, reason = "day_end", scheduled = planned, detail = "triggered ($reason) while the day ended")
+            return null
+        }
         if (suspended && !test) {
             log(EntryType.SKIPPED, protocol = p.id, reason = "suspended", scheduled = planned, detail = "VIGIL is suspended")
             return null
+        }
+        if (!test) {
+            // A run left unfinished after its lock (or an unconfirmed reminder) does not hold the protocol: its next
+            // start (lunch after breakfast, the second study block, tonight's wind-down) replaces it, as a miss.
+            for (old in s.runs.filter { it.protocol == p.id && !it.test && it.prayer == null && it.phase in REPLACEABLE }) {
+                missRun(old, "replaced", detail = "the next start of this protocol came before it was finished")
+            }
         }
         if (!test && s.runs.any { it.protocol == p.id && !it.test }) {
             log(EntryType.SKIPPED, protocol = p.id, reason = "already_running", scheduled = planned)
@@ -439,6 +510,8 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         when {
             r.stage >= 3 -> {
                 add(r.copy(phase = RunPhase.REMINDER))
+                // The reminder is this run's start (wind-down for a sleep reminder, `start:` anchors).
+                if (!r.test) recordStart(p.id)
                 logRun(EntryType.FIRED, r, reason = r.reason, scheduled = r.planned, detail = "stage 3: one notification")
                 val text = if (r.prayer != null) "Time to pray. Tap CONFIRM when done." else currentStepText(r)
                 val id = r.prayer?.let { prayerNotice(it) } ?: runNotice(r)
@@ -469,7 +542,7 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         val minimum = p.lock.doneAfterMin
         if (a.shortened && minimum != null && lockEnd != null) a = a.copy(lockEndsAt = minOf(lockEnd, now.plus(Duration.ofMinutes(minimum.toLong()))))
         put(a)
-        if (!r.test && p.id !in day.started) updateDay { it.copy(started = it.started + (p.id to now)) }
+        if (!r.test) recordStart(p.id)
         if (a.lock == LockType.SCREEN) {
             effects += Effect.ShowTakeover(a.id)
         } else {
@@ -477,8 +550,19 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         }
     }
 
+    /**
+     * Records protocol [id]'s start today (`start:` anchors, wind-down): its first start, but a start in the night
+     * before the day's wake time gives way to the first one after it.
+     */
+    private fun recordStart(id: String) {
+        val prev = day.started[id]
+        val wake = dayTimes().wake
+        if (prev == null || (!prev.isAfter(wake) && now.isAfter(wake))) updateDay { it.copy(started = it.started + (id to now)) }
+    }
+
     /** While nothing owns the screen, the next queued run (prayers first) starts. */
     private fun promoteQueue() {
+        if (suspended) return
         var guard = 0
         while (screenOwner() == null && guard++ < 50) {
             val queued = s.runs.filter { it.phase == RunPhase.QUEUED }
@@ -492,18 +576,25 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
     private fun onAdhan(prayer: Prayer, manual: Boolean) {
         val last = s.prayers.lastAdhan[prayer]
         if (last != null && Duration.between(last, now) < Machine.ADHAN_DEDUPE) return
+        // A later repeat of the same prayer (the adhan app re-posting, a manual start) while its run is open: the same
+        // prayer, not "the next adhan", so it neither misses that run nor starts a second one.
+        if (s.runs.any { it.prayer == prayer && !it.test && Duration.between(it.firedAt, now) < Machine.SAME_PRAYER }) return
         s = s.copy(prayers = s.prayers.copy(lastAdhan = s.prayers.lastAdhan + (prayer to now)))
         updateDay { it.copy(adhans = it.adhans + (prayer to now)) }
         log(EntryType.ADHAN, prayer = prayer, reason = if (manual) "manual" else null)
         effects += Effect.CancelNotify(headsUpNotice(prayer))
-        // The previous prayer's window ends with this adhan.
-        for (r in s.runs.filter { it.prayer != null && !it.test }) {
+        // The earlier prayers' windows end with this adhan (Fajr ends last night's), and so does a day-old run of this
+        // same prayer. A later prayer still open (this one started by hand after it) keeps its own window.
+        for (r in s.runs.filter { it.prayer != null && !it.test && (it.prayer == prayer || endsWindowOf(prayer, it.prayer)) }) {
             if (r.confirmed) complete(r) else missPrayer(r, "next_adhan", now)
         }
         val p = file.prayerProtocol(prayer) ?: return
         val (windowEnd, estimated) = estimateWindowEnd(prayer)
         val stage = stageOf(p)
-        val base = newRun(p, stage, "adhan", null, null, false).copy(prayer = prayer, windowEndsAt = windowEnd, windowEstimated = estimated)
+        // Class rule at stage 3 too: the one notification is silent during a class.
+        val inClass = stage >= 3 && dayTimes().classAt(now) != null
+        val base = newRun(p, stage, "adhan", null, null, false)
+            .copy(prayer = prayer, windowEndsAt = windowEnd, windowEstimated = estimated, silent = inClass)
         if (suspended) {
             s = s.copy(lastFired = s.lastFired + (p.id to now))
             val open = base.copy(phase = RunPhase.OPEN, lock = LockType.NONE)
@@ -528,6 +619,10 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         place(base, p)
     }
 
+    /** True when [arriving]'s adhan closes the window of [open]: an earlier prayer of the day, or (Fajr) any of last night's. */
+    private fun endsWindowOf(arriving: Prayer, open: Prayer?): Boolean =
+        open != null && open != arriving && (arriving == Prayer.FAJR || open.ordinal < arriving.ordinal)
+
     /** The next prayer's estimated adhan (last adhan + whole days), or a 12-hour safety end without an estimate. */
     private fun estimateWindowEnd(prayer: Prayer): Pair<Instant?, Boolean> {
         val next = prayer.next ?: return null to false
@@ -542,8 +637,8 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
     private fun warn(r: Run, p: Protocol) {
         val end = windowEnd(r)
         logRun(EntryType.WINDOW_WARNING, r, until = end, detail = "the window closes at ${end?.let { hhmm(it) }} and the prayer is not confirmed")
+        val inClass = dayTimes().classAt(now) != null
         if (r.stage <= 2 && !suspended) {
-            val inClass = dayTimes().classAt(now) != null
             put(r.copy(warned = true, returned = true, phase = RunPhase.RETURNED, classEndsAt = null, silent = inClass))
             effects += Effect.CancelNotify(prayerNotice(r.prayer!!))
             if (screenOwner()?.id == r.id) effects += Effect.ShowTakeover(r.id)
@@ -552,7 +647,7 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
             val left = end?.let { WallClock.minutesCeil(now, it) } ?: 0
             effects += Effect.Notify(
                 prayerNotice(r.prayer!!), "${p.title}: $left MIN LEFT", "Pray, then tap CONFIRM. The window closes at ${end?.let { hhmm(it) }}.",
-                silent = s.toggles.quiet, kind = NotifyKind.WARNING, runId = r.id,
+                silent = s.toggles.quiet || inClass, kind = NotifyKind.WARNING, runId = r.id,
             )
         }
     }
@@ -670,7 +765,14 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         }
         log(EntryType.HEAVY_USE, app = session.app, reason = kind, minutes = WallClock.minutesCeil(recent), seconds = recent, detail = detail)
         endSession(now, cooldown = false)
-        val cool = PoolRules.cooldownSeconds(cfg, recent)
+        var cool = PoolRules.cooldownSeconds(cfg, recent)
+        if (kind == "opens") {
+            // Until enough of these opens leave the span, the next open would be heavy use again the moment its wait
+            // ends: keep the pool shut until then instead of making the user wait only to be kicked.
+            val times = s.pool.openTimes.sorted()
+            val clears = times.getOrNull(times.size - cfg.heavyUse.opens + 1)?.plus(Duration.ofMinutes(cfg.heavyUse.withinMin.toLong()))
+            if (clears != null) cool = maxOf(cool, Duration.between(now, clears).seconds)
+        }
         if (cool > 0) {
             val until = now.plusSeconds(cool)
             updatePool { it.copy(cooldownUntil = maxOf(it.cooldownUntil ?: until, until), cooldownCause = PoolState.CAUSE_HEAVY_USE) }
@@ -736,13 +838,15 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         }
         if (Duration.between(w.startedAt, now).seconds < w.minutes * 60L - Machine.WAIT_TOLERANCE_S) return
         updatePool { it.copy(wait = null) }
-        when (val d = decision(true)) {
-            is PoolDecision.Blocked -> {
-                logBlocked(app, d)
-                effects += Effect.PoolGate(app, d)
-            }
-            else -> startSession(app, w)
+        // The wait is over: only what blocks now counts (not whether a new wait would still end inside the window).
+        val blocks = if (suspended) emptyList() else lockBlocks() + PoolRules.timeBlocks(cfg, s.pool, now, windows())
+        if (blocks.isNotEmpty()) {
+            val d = PoolDecision.Blocked(blocks)
+            logBlocked(app, d)
+            effects += Effect.PoolGate(app, d)
+            return
         }
+        startSession(app, w)
     }
 
     private fun startSession(app: String, w: PoolWait) {
@@ -796,22 +900,26 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
             is Input.BailOut -> onBailOut(input.runId)
             is Input.CallActive -> onCall(input.on)
             is Input.Screen -> {
+                // The idle count (day end after wind-down) runs from the moment the phone was last put down. Only an
+                // unlocked phone is in use: a wake that shows just the lock screen (a notification lighting it up,
+                // lifting the phone in bed) pauses the count while the screen is on but does not start it again.
                 if (!input.on) {
-                    if (s.screenOn || s.screenOffSince == null) s = s.copy(screenOn = false, screenUnlocked = false, screenOffSince = now)
+                    s = s.copy(screenOn = false, screenUnlocked = false, screenOffSince = s.screenOffSince ?: now)
                     onForeground(null, false)
                 } else {
-                    s = s.copy(screenOn = true, screenUnlocked = input.unlocked, screenOffSince = null)
+                    s = s.copy(screenOn = true, screenUnlocked = input.unlocked, screenOffSince = s.screenOffSince.takeIf { !input.unlocked })
                 }
             }
             is Input.Foreground -> onForeground(input.app, input.isPool)
             is Input.PoolWaitStarted -> onWaitStarted(input.app)
             is Input.PoolWaitDone -> onWaitDone(input.app)
             is Input.PoolWaitAbandoned -> onWaitAbandoned(input.app)
-            Input.GoingToSleep -> endDay(DayEndReason.SLEEP_TAP, now)
+            Input.GoingToSleep -> onGoingToSleep()
             is Input.Suspend -> onSuspend(input.minutes)
             Input.Resume -> if (s.suspendedUntil != null) {
                 s = s.copy(suspendedUntil = null)
                 log(EntryType.KILL_SWITCH, reason = "resumed", detail = "ended early")
+                regateDue = true
             }
             is Input.EditMyTimes -> {
                 val first = input.applyNow && !s.times.edited
@@ -826,13 +934,31 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         }
     }
 
-    private fun onToggle(name: ToggleName, on: Boolean) {
+    /**
+     * GOING TO SLEEP ends the day, but not before the day's own wake time: the day then started last night (an earlier
+     * tap, idle, the first start), and ending it again would skip a whole day (its key, MY TIMES weekday and windows).
+     */
+    private fun onGoingToSleep() {
+        val wake = dayTimes().wake
+        if (now.isAfter(wake)) {
+            endDay(DayEndReason.SLEEP_TAP, now)
+            return
+        }
+        log(
+            EntryType.SKIPPED, reason = "sleep_tap",
+            detail = "GOING TO SLEEP before ${hhmm(wake)}: the day ${day.key} began at ${hhmm(day.startedAt)} and goes on",
+        )
+    }
+
+    private fun onToggle(name: ToggleName, on: Boolean) = setToggle(name, on)
+
+    private fun setToggle(name: ToggleName, on: Boolean, at: Instant = now, detail: String = if (on) "on" else "off") {
         val t = s.toggles
         when (name) {
             ToggleName.QUIET -> {
                 if (t.quiet == on) return
                 s = s.copy(toggles = t.copy(quiet = on))
-                log(EntryType.QUIET, detail = if (on) "on" else "off")
+                log(EntryType.QUIET, at = at, detail = detail)
                 return
             }
             ToggleName.WALKING -> {
@@ -844,7 +970,7 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
                 s = s.copy(toggles = t.copy(friends = on, friendsSince = if (on) now else null))
             }
         }
-        log(EntryType.TOGGLE, reason = name.json, detail = if (on) "on" else "off")
+        log(EntryType.TOGGLE, at = at, reason = name.json, detail = detail)
         val started = file.protocols.filter { (it.parsedTrigger as? Trigger.Toggle)?.toggle == name }
         if (on) {
             started.forEach { fire(it, "toggle:${name.json}") }
@@ -977,23 +1103,30 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
             log(EntryType.CALL_PAUSE, detail = paused.joinToString(", ").ifEmpty { null })
             return
         }
+        endCall(now)
+    }
+
+    /** The call ended at [at]: every active run's lock, done lock and current step move on by the call's length. */
+    private fun endCall(at: Instant, detail: String? = null) {
         val since = s.callSince ?: return
         for (r in s.runs.filter { it.phase == RunPhase.ACTIVE }) {
             val base = maxOf(since, r.lockStartedAt ?: since)
-            val shift = Duration.between(base, now).takeIf { !it.isNegative } ?: Duration.ZERO
-            val stepStart = r.stepStartedAt?.let { if (it.isBefore(base)) it.plus(shift) else now }
+            val shift = Duration.between(base, at).takeIf { !it.isNegative } ?: Duration.ZERO
+            val stepStart = r.stepStartedAt?.let { if (it.isBefore(base)) it.plus(shift) else maxOf(it, at) }
             put(r.copy(lockEndsAt = r.lockEndsAt?.plus(shift), doneAfterAt = r.doneAfterAt?.plus(shift), stepStartedAt = stepStart))
         }
         s = s.copy(callSince = null)
-        val length = Duration.between(since, now).seconds.coerceAtLeast(0)
-        log(EntryType.CALL_RESUME, minutes = WallClock.minutesCeil(length), seconds = length)
+        val length = Duration.between(since, at).seconds.coerceAtLeast(0)
+        log(EntryType.CALL_RESUME, at = at, minutes = WallClock.minutesCeil(length), seconds = length, detail = detail)
     }
 
     private fun onSuspend(minutes: Int) {
         val until = now.plus(Duration.ofMinutes(minutes.coerceAtLeast(1).toLong()))
         s = s.copy(suspendedUntil = until)
         log(EntryType.KILL_SWITCH, minutes = minutes, until = until, reason = "suspended")
-        for (r in s.runs.toList()) {
+        for (id in s.runs.map { it.id }) {
+            // Fresh each time: closing one run can start a queued one.
+            val r = run(id) ?: continue
             val p = protocol(r)
             if (r.prayer != null && p != null) {
                 when {
@@ -1011,10 +1144,16 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
             }
         }
         updatePool { it.copy(wait = null) }
+        // The pool is simply open while suspended: a live session ends now (its minutes and cooldown count as usual), so
+        // the suspended time is never counted, and never turns into heavy use the moment the suspension ends.
+        s.pool.session?.let { endSession(if (it.inSince != null) now else it.leftAt ?: now, cooldown = true) }
     }
 
     companion object {
         private val WARNABLE = setOf(RunPhase.OPEN, RunPhase.CARD, RunPhase.REMINDER)
+
+        /** Phases in which a run no longer holds its protocol against a new start. */
+        private val REPLACEABLE = setOf(RunPhase.OPEN, RunPhase.REMINDER)
 
         fun headsUpNotice(prayer: Prayer) = "heads-up-${prayer.json}"
 

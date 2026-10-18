@@ -207,7 +207,8 @@ object PoolRules {
 
     /**
      * The pool decision (design section 3). [lockBlocks] are the run, toggle and night-lock blocks the machine found,
-     * already in design order. Suspended = everything open.
+     * already in design order. Suspended = everything open. A wait that would end after every usable window has closed
+     * could only end in a refusal, so it is refused at once (outside the window, until the next one opens).
      */
     fun decide(
         cfg: PoolConfig,
@@ -221,7 +222,13 @@ object PoolRules {
         val blocks = lockBlocks + timeBlocks(cfg, pool, now, windows)
         if (blocks.isNotEmpty()) return PoolDecision.Blocked(blocks)
         if (pool.session != null) return PoolDecision.Allowed
-        return PoolDecision.Wait(waitMinutes(cfg, pool.opens))
+        val minutes = waitMinutes(cfg, pool.opens)
+        val waitEnds = now.plusSeconds(minutes * 60L)
+        val usable = windows.filter { it.isOpen(now) && windowUsedSeconds(it.id, pool, now) < it.capSeconds }
+        if (usable.none { it.isOpen(waitEnds) }) {
+            return PoolDecision.Blocked(listOf(Block(BlockReason.OUTSIDE_WINDOW, nextOpening(windows, pool, now), usable.firstOrNull()?.id)))
+        }
+        return PoolDecision.Wait(minutes)
     }
 
     /**

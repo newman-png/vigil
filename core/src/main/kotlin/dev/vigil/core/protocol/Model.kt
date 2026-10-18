@@ -372,8 +372,9 @@ enum class ProtocolKind(val json: String, val ladder: Set<Version>, val params: 
         mapOf("rest_s" to ParamSpec.IntRange(10, 600, 90), "exercises" to ParamSpec.TextList),
     ),
     @SerialName("walk") WALK("walk", emptySet(), mapOf("still_end_min" to ParamSpec.IntRange(1, 120, 10))),
+    /** Spec: "short = 3 minutes, whatever the ramp says. There is no minimal version below that." */
     @SerialName("attention") ATTENTION(
-        "attention", ALL_LADDER,
+        "attention", setOf(Version.SHORT),
         mapOf(
             "start_min" to ParamSpec.IntRange(1, 30, 3),
             "max_min" to ParamSpec.IntRange(1, 60, 10),
@@ -397,7 +398,10 @@ enum class ProtocolKind(val json: String, val ladder: Set<Version>, val params: 
     @SerialName("reset") RESET("reset", ALL_LADDER, emptyMap()),
     ;
 
-    /** Runs of this kind stay open when the day ends (the sleep run lasts the night). */
+    /**
+     * Runs of this kind stay open when the day ends (the sleep run lasts the night). Only across the day end that follows
+     * their start: at the next one they are closed like any other run, so a run never outlives two days.
+     */
     val survivesDayEnd: Boolean get() = this == SLEEP
 
     companion object {

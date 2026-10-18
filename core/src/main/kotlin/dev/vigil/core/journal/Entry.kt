@@ -97,10 +97,12 @@ object EntryType {
         BAILED to "A lock or run was quit early (10 s hold on LEAVE). The pool penalty follows (see penalty).",
         RELEASED to "A prayer lock was left after its minimum: no penalty, the prayer stays open for confirmation.",
         LOCK_ENDED to "A run's lock ended before it was finished: the screen is free, the run waits (prayer: CONFIRM on home).",
-        MISSED to "A run ended unfinished (prayer: window closed or the next adhan came, unconfirmed). Counts for stages.",
+        MISSED to "A run ended unfinished (reason day_end, replaced = its protocol started again, prayer: window_closed or " +
+            "next_adhan, unconfirmed; an unconfirmed stage-3 reminder too). Counts for stages.",
         NOT_FIRED to "Daily self-check: a planned start that never fired (scheduled = when it was due).",
-        SKIPPED to "A trigger happened but nothing started (reason: suspended, already_running, test ...).",
-        DROPPED to "A run was closed without an outcome (reason: kill switch, day ended for a reminder ...).",
+        SKIPPED to "A trigger happened but nothing started (reason: suspended, already_running, day_end = set off while the " +
+            "day ended; sleep_tap = GOING TO SLEEP before the day's wake time, the day goes on).",
+        DROPPED to "A run was closed without an outcome (reason: kill_switch, day_end for a test run, protocol_removed).",
         CONFIRMED to "A prayer was confirmed (Done, or CONFIRM on home / the card).",
         STAGE_UP to "Promoted one stage after enough clean completions in a row (stage = the new stage).",
         STAGE_DOWN to "Moved back one stage after too many misses or bail-outs in the recent outcomes (stage = the new stage).",
@@ -113,8 +115,9 @@ object EntryType {
         COOLDOWN to "A cooldown started (minutes, until; reason session or heavy_use).",
         PENALTY to "Bail-out penalty added to the pool lock (minutes added, until; 0 when the daily cap was reached).",
         CALL_PAUSE to "A call connected: protocol timers and locks are paused.",
-        CALL_RESUME to "The call ended: timers and locks were extended by its length (minutes/seconds).",
-        TOGGLE to "A home switch changed (reason = walking or friends, detail on/off).",
+        CALL_RESUME to "The call ended: timers and locks were extended by its length (minutes/seconds). Detail when no end " +
+            "was reported and the pause ended by itself after 3 hours.",
+        TOGGLE to "A home switch changed (reason = walking or friends, detail on/off; friends also goes off at its cap).",
         QUIET to "QUIET mode switched (detail on/off): takeovers are silent while it is on.",
         ADHAN to "The adhan notification arrived for prayer.",
         HEADS_UP to "The subtle heads-up before a prayer (scheduled = the expected adhan).",

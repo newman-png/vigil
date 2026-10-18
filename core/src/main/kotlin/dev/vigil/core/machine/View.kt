@@ -9,6 +9,7 @@ import dev.vigil.core.pool.PoolRules
 import dev.vigil.core.pool.WindowSpan
 import dev.vigil.core.protocol.Anchor
 import dev.vigil.core.protocol.LockType
+import dev.vigil.core.protocol.ParamSpec
 import dev.vigil.core.protocol.Parsed
 import dev.vigil.core.protocol.Prayer
 import dev.vigil.core.protocol.Protocol
@@ -81,11 +82,29 @@ internal open class View(var s: MachineState, val env: MachineEnv) {
     /** When the run's lock ends as the user sees it (extended live during a call). */
     fun lockEndShown(r: Run): Instant? = r.lockEndsAt?.plus(callShift(r))
 
-    /** Wind-down start: the sleep protocol's run start today, or bedtime - 60 while the file has no sleep protocol. */
+    /** How long "I'm with friends" may stay on: the friends protocol's `cap_min`, else the kind's default (4 h). */
+    fun friendsCapMin(): Int = file.protocols.firstOrNull { it.kind == ProtocolKind.FRIENDS }?.intParam("cap_min")
+        ?: (ProtocolKind.FRIENDS.params["cap_min"] as ParamSpec.IntRange).default
+
+    /** When the friends switch turns itself off, or null while it is off. */
+    fun friendsEnd(): Instant? =
+        s.toggles.friendsSince?.takeIf { s.toggles.friends }?.plus(Duration.ofMinutes(friendsCapMin().toLong()))
+
+    /**
+     * Wind-down start: the sleep protocol's run start today, or bedtime - 60 while the file has no sleep protocol. A
+     * start in the night before the day's wake time is not today's wind-down: it would end the day in that same night
+     * (skipping a whole day) and arm the idle rule for the whole day after.
+     */
     fun windDownAt(): Instant? {
         val sleep = file.protocols.firstOrNull { it.kind == ProtocolKind.SLEEP }
-        return if (sleep != null) day.started[sleep.id] else dayTimes().bedtime.minus(Duration.ofMinutes(60))
+        return if (sleep != null) startedToday(sleep.id) else dayTimes().bedtime.minus(Duration.ofMinutes(60))
     }
+
+    /** When protocol [id]'s run first started today, counting only starts after the day's wake time (not the night before it). */
+    fun startedToday(id: String): Instant? = day.started[id]?.takeIf { it.isAfter(dayTimes().wake) }
+
+    /** When protocol [id]'s run last completed today, after the day's wake time. */
+    fun completedToday(id: String): Instant? = day.completed[id]?.takeIf { it.isAfter(dayTimes().wake) }
 
     /** The day's planned starts (time, slot, prayers) between its start and its latest end. */
     fun plan(): List<PlannedStart> =
@@ -105,8 +124,8 @@ internal open class View(var s: MachineState, val env: MachineEnv) {
         val anchor = (Anchor.parse(text, allowNext) as? Parsed.Ok)?.value ?: return null
         return when (anchor) {
             is Anchor.At -> dt.resolve(anchor.expr)
-            is Anchor.Done -> (if (file.find(anchor.protocolId) != null) day.completed[anchor.protocolId] else null) ?: dt.resolve(anchor.fallback)
-            is Anchor.Start -> (if (file.find(anchor.protocolId) != null) day.started[anchor.protocolId] else null) ?: dt.resolve(anchor.fallback)
+            is Anchor.Done -> (if (file.find(anchor.protocolId) != null) completedToday(anchor.protocolId) else null) ?: dt.resolve(anchor.fallback)
+            is Anchor.Start -> (if (file.find(anchor.protocolId) != null) startedToday(anchor.protocolId) else null) ?: dt.resolve(anchor.fallback)
             Anchor.Next -> plan.firstOrNull { opened != null && it.at.isAfter(opened) }?.at ?: fallback()
         }
     }
@@ -172,6 +191,8 @@ internal open class View(var s: MachineState, val env: MachineEnv) {
         val c = mutableListOf<Instant>()
         c += DayRules.nextCheck(day.date, zone, file.day, s.screenOffSince.takeIf { !s.screenOn }, windDownAt())
         s.suspendedUntil?.let { c += it }
+        s.callSince?.let { c += it.plus(Machine.MAX_CALL_PAUSE) }
+        friendsEnd()?.let { c += it }
         val plan = plan()
         plan.filter { it.source != StartSource.ADHAN && it.key !in day.handled }.forEach { c += it.at }
         if (!suspended) {

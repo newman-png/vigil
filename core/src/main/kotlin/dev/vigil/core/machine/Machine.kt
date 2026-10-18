@@ -32,6 +32,13 @@ object Machine {
     /** A repeat of the same prayer's adhan within this is ignored (adhan apps re-post their notifications). */
     val ADHAN_DEDUPE: Duration = Duration.ofMinutes(30)
 
+    /**
+     * An adhan for a prayer whose run is still open and started less than this ago is that same prayer again (a
+     * re-post, a manual start): it neither misses that run nor starts a second one. A later one (the next day's: an Isha
+     * that came after GOING TO SLEEP stays open through the next day) is a new prayer and closes the old run.
+     */
+    val SAME_PRAYER: Duration = Duration.ofHours(12)
+
     /** A planned start more than this late (phone off) does not fire late; the self-check logs it as not_fired. */
     val PLANNED_GRACE: Duration = Duration.ofMinutes(30)
 
@@ -49,6 +56,12 @@ object Machine {
 
     /** After a long gap (phone off), at most this many days are ended one by one. */
     const val MAX_CATCH_UP_DAYS = 62
+
+    /**
+     * A call pause ends by itself after this long, as if the call had ended then: a lost "call ended" report must not
+     * freeze every lock and timer for the rest of the day.
+     */
+    val MAX_CALL_PAUSE: Duration = Duration.ofHours(3)
 
     /** Applies [input] to [state] at `env.now`. Pure: same arguments, same outcome. */
     fun step(state: MachineState, input: Input, env: MachineEnv): Outcome {

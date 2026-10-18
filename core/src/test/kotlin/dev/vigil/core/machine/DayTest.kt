@@ -42,6 +42,77 @@ class DayTest {
     }
 
     @Test
+    fun goingToSleepAgainBeforeWakingDoesNotSkipADay() {
+        val sim = Sim()
+        sim.at("2026-10-19T23:30", Input.GoingToSleep)
+        assertEquals("2026-10-20", sim.state.day!!.key)
+        // Up at 03:00 for a while, then GOING TO SLEEP again: still the 20th (its Tuesday times, its windows), not the 21st.
+        sim.at("2026-10-20T03:10", Input.GoingToSleep)
+        assertEquals("2026-10-20", sim.state.day!!.key)
+        assertEquals(rome("2026-10-19T23:30"), sim.state.day!!.startedAt)
+        assertEquals(1, sim.of(EntryType.DAY_END).size)
+        val skipped = sim.lastOf(EntryType.SKIPPED)!!
+        assertEquals("sleep_tap", skipped.reason)
+        assertEquals(rome("2026-10-21T06:00"), Machine.status(sim.state, sim.env).dayEndsBy)
+        // After waking a tap ends the day as before, even in the afternoon.
+        sim.at("2026-10-20T16:00", Input.GoingToSleep)
+        assertEquals("2026-10-21", sim.state.day!!.key)
+        assertEquals(2, sim.of(EntryType.DAY_END).size)
+    }
+
+    @Test
+    fun aSleepStartInTheNightBeforeWakingIsNotTodaysWindDown() {
+        val sleep = testProtocol(
+            "sleep", trigger = "time:bedtime-60", kind = ProtocolKind.SLEEP,
+            lock = dev.vigil.core.protocol.Lock(dev.vigil.core.protocol.LockType.POOL, 30, null),
+        )
+        val sim = Sim(file = fileWith(sleep))
+        sim.at("2026-10-19T23:30", Input.GoingToSleep)
+        assertEquals("2026-10-20", sim.state.day!!.key)
+        // Awake at 03:00: the sleep protocol is started again, then the screen goes off for the rest of the night.
+        sim.at("2026-10-20T03:00", Input.Manual("sleep"))
+        sim.at("2026-10-20T03:10", Input.Screen(on = false))
+        sim.at("2026-10-20T05:30")
+        assertEquals("the 20th is not ended (and skipped) in its own night", "2026-10-20", sim.state.day!!.key)
+        assertEquals(1, sim.of(EntryType.DAY_END).size)
+        // Nor does that start arm the idle rule for the day, or close the evening window at 03:00.
+        sim.at("2026-10-20T07:30", Input.Screen(on = true))
+        sim.at("2026-10-20T14:00", Input.Screen(on = false))
+        sim.at("2026-10-20T16:30")
+        assertEquals("2026-10-20", sim.state.day!!.key)
+        assertEquals(rome("2026-10-20T22:00"), Machine.windows(sim.state, sim.env)[1].closesAt)
+        // Tonight's wind-down is the evening start.
+        sim.at("2026-10-20T21:00", Input.Screen(on = true))
+        sim.at("2026-10-20T22:00")
+        assertEquals(rome("2026-10-20T22:00"), sim.run("sleep")!!.firedAt)
+        assertEquals(rome("2026-10-20T22:00"), sim.state.day!!.started["sleep"])
+        sim.at("2026-10-20T22:30", Input.Screen(on = false))
+        sim.at("2026-10-21T00:30")
+        val end = sim.of(EntryType.DAY_END).last()
+        assertEquals("idle", end.reason)
+        assertEquals("2026-10-20T22:30:00+02:00", end.ts)
+        assertEquals("2026-10-21", sim.state.day!!.key)
+    }
+
+    @Test
+    fun aStageThreeSleepReminderStillStartsWindDown() {
+        val sleep = testProtocol(
+            "sleep", trigger = "time:bedtime-60", kind = ProtocolKind.SLEEP,
+            lock = dev.vigil.core.protocol.Lock(dev.vigil.core.protocol.LockType.POOL),
+        )
+        val sim = Sim(file = fileWith(sleep))
+        sim.state = sim.state.copy(stages = mapOf("sleep" to dev.vigil.core.run.StageMemory(3)))
+        sim.at("2026-10-19T22:00")
+        assertEquals(dev.vigil.core.run.RunPhase.REMINDER, sim.run("sleep")!!.phase)
+        assertEquals(rome("2026-10-19T22:00"), sim.state.day!!.started["sleep"])
+        sim.at("2026-10-19T22:30", Input.Screen(on = false))
+        sim.at("2026-10-20T00:30")
+        val end = sim.of(EntryType.DAY_END).single()
+        assertEquals("idle", end.reason)
+        assertEquals("2026-10-19T22:30:00+02:00", end.ts)
+    }
+
+    @Test
     fun afterMidnightBelongsToThePreviousDay() {
         val sim = Sim()
         sim.at("2026-10-20T01:30")
@@ -91,6 +162,35 @@ class DayTest {
         assertTrue(sim.of(EntryType.DAY_END).isEmpty())
         sim.at("2026-10-20T01:31")
         assertEquals("2026-10-19T23:31:00+02:00", sim.of(EntryType.DAY_END).single().ts)
+    }
+
+    @Test
+    fun aLockScreenWakeDoesNotRestartTheIdleCount() {
+        val sim = Sim()
+        sim.at("2026-10-19T22:30", Input.Screen(on = false))
+        // A notification lights up the lock screen for a moment: the phone is not in use, the count goes on from 22:30.
+        sim.at("2026-10-19T23:45", Input.Screen(on = true, unlocked = false))
+        sim.afterSeconds(10, Input.Screen(on = false))
+        assertEquals(rome("2026-10-20T00:30"), Machine.nextWake(sim.state, sim.env))
+        // Lifted again at 00:25 and still on the lock screen at 00:30: nothing ends while the screen is on ...
+        sim.at("2026-10-20T00:25", Input.Screen(on = true, unlocked = false))
+        sim.at("2026-10-20T00:31")
+        assertTrue(sim.of(EntryType.DAY_END).isEmpty())
+        // ... and as soon as it goes off the day ends, when the phone was put down.
+        sim.at("2026-10-20T00:32", Input.Screen(on = false))
+        val end = sim.of(EntryType.DAY_END).single()
+        assertEquals("idle", end.reason)
+        assertEquals("2026-10-19T22:30:00+02:00", end.ts)
+        // Unlocking is using the phone: the count starts again from the next time it goes off.
+        val used = Sim()
+        used.at("2026-10-19T22:30", Input.Screen(on = false))
+        used.at("2026-10-19T23:45", Input.Screen(on = true, unlocked = false))
+        used.afterSeconds(5, Input.Screen(on = true, unlocked = true))
+        used.at("2026-10-19T23:50", Input.Screen(on = false))
+        used.at("2026-10-20T01:49")
+        assertTrue(used.of(EntryType.DAY_END).isEmpty())
+        used.at("2026-10-20T01:50")
+        assertEquals("2026-10-19T23:50:00+02:00", used.of(EntryType.DAY_END).single().ts)
     }
 
     @Test
@@ -159,6 +259,19 @@ class DayTest {
         sim.step(Input.GoingToSleep)
         assertEquals("2026-10-25T02:30:00+01:00", sim.of(EntryType.DAY_END).single().ts)
         assertEquals("2026-10-25", sim.state.day!!.key)
+    }
+
+    @Test
+    fun aSecondTapInTheRepeatedHourKeepsThe25th() {
+        val sim = Sim("2026-10-24T08:00")
+        sim.at("2026-10-24T23:30", Input.GoingToSleep)
+        assertEquals("2026-10-25", sim.state.day!!.key)
+        sim.now = Instant.parse("2026-10-25T01:30:00Z") // 02:30 CET, the second 02:30 of the night
+        sim.step(Input.GoingToSleep)
+        assertEquals("2026-10-25", sim.state.day!!.key)
+        assertEquals(1, sim.of(EntryType.DAY_END).size)
+        // The 25th (25 hours long) still ends at 06:00 CET on the 26th at the latest.
+        assertEquals(Instant.parse("2026-10-26T05:00:00Z"), Machine.status(sim.state, sim.env).dayEndsBy)
     }
 
     @Test

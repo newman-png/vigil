@@ -285,6 +285,16 @@ class ProtocolParserTest {
         }
         assertError(noMinutes, "lock.minutes", "needs minutes")
         assertTrue(warnings(noMinutes).any { it.path.endsWith("done_after_min") })
+        // Tapping done is what confirms a prayer: without one its steps would finish it unconfirmed.
+        fun dhuhrWith(vararg fields: Pair<String, JsonElement>) = JsonObject(base).let {
+            val list = (it["protocols"] as JsonArray).toMutableList()
+            list[1] = JsonObject(list[1].jsonObject + fields)
+            JsonObject(it + ("protocols" to JsonArray(list)))
+        }
+        val noDone = dhuhrWith("steps" to JsonArray(listOf(step("Pray."), step("Quiet.", "timer"))))
+        assertError(noDone, "protocols[1] (prayer-dhuhr).steps", "needs a done step")
+        assertError(dhuhrWith("weekdays" to obj("fri" to obj("steps" to listOf(step("Pray."))))), "weekdays.fri.steps", "needs a done step")
+        assertOk(dhuhrWith("weekdays" to obj("fri" to obj("steps" to listOf(step("Pray."), step("Done.", "done"))))))
     }
 
     @Test
@@ -321,6 +331,11 @@ class ProtocolParserTest {
         }
         assertOk(withProtocols(protocol(kind = "call", extra = mapOf("short" to JsonArray(listOf(step()))))))
         assertError(withProtocols(protocol(kind = "call", extra = mapOf("minimal" to JsonArray(listOf(step()))))), "minimal", "may only define short")
+        // Attention reset (spec): "short = 3 minutes ... There is no minimal version below that."
+        assertOk(withProtocols(protocol(kind = "attention", extra = mapOf("short" to JsonArray(listOf(step()))))))
+        assertError(withProtocols(protocol(kind = "attention", extra = mapOf("minimal" to JsonArray(listOf(step()))))), "minimal", "may only define short")
+        assertError(withProtocols(protocol(kind = "attention", extra = mapOf("single" to JsonArray(listOf(step()))))), "single", "may only define short")
+        assertEquals(setOf(Version.SHORT), ProtocolKind.ATTENTION.ladder)
         assertError(withProtocols(protocol(kind = "reset", extra = mapOf("single" to JsonArray(listOf(step(), step("b")))))), "single", "exactly one step")
         assertError(withProtocols(protocol(kind = "reset", extra = mapOf("short" to JsonArray(emptyList())))), "short", "at least one step")
         val prayerShort = base.let {

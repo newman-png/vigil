@@ -12,6 +12,9 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.UseSerializers
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonObject
 import java.time.Instant
 import java.time.LocalDate
 
@@ -84,7 +87,10 @@ data class MachineState(
     @SerialName("suspended_until") val suspendedUntil: Instant? = null,
     @SerialName("screen_on") val screenOn: Boolean = true,
     @SerialName("screen_unlocked") val screenUnlocked: Boolean = true,
-    /** When the screen went off (while it is off). */
+    /**
+     * When the phone was last put down (the screen went off); kept through wakes that show only the lock screen, null
+     * once it is unlocked. The idle day end counts from it while the screen is off.
+     */
     @SerialName("screen_off_since") val screenOffSince: Instant? = null,
     /** The app in front, as last reported. */
     val foreground: String? = null,
@@ -92,7 +98,11 @@ data class MachineState(
     /** The number of the next run id. */
     @SerialName("next_run") val nextRun: Long = 1,
 ) {
-    fun encode(): String = JSON.encodeToString(serializer(), this)
+    /**
+     * The state as JSON. Nulls are written out: a field whose default is not null (a pool session's `inSince`) would
+     * otherwise come back as its default instead of null.
+     */
+    fun encode(): String = WRITER.encodeToString(serializer(), this)
 
     companion object {
         const val FORMAT_VERSION = 1
@@ -104,8 +114,54 @@ data class MachineState(
             coerceInputValues = true
         }
 
-        /** Reads saved state; missing or damaged text gives a fresh state (the first step starts a day). */
-        fun decode(text: String?): MachineState =
-            text?.let { runCatching { JSON.decodeFromString(serializer(), it) }.getOrNull() } ?: MachineState()
+        private val WRITER = Json(JSON) { explicitNulls = true }
+
+        /**
+         * Reads saved state; missing or unreadable text gives a fresh state (the first step starts a day). Readable
+         * JSON with a part this version cannot read (a run of a kind that no longer exists, a value from a newer app)
+         * keeps everything else: the unreadable fields fall back to their defaults and unreadable list items (runs)
+         * are left out, so stages, penalties and cooldowns are never lost to one bad value.
+         */
+        fun decode(text: String?): MachineState = read(text).let { state ->
+            // Saved before nulls were written out, a session out of the pool lost its null `inSince` and came back as
+            // in the pool since it started (counted twice). Out of the pool is the only state with a `leftAt`.
+            val session = state.pool.session?.takeIf { it.inSince != null && it.leftAt != null } ?: return@let state
+            state.copy(pool = state.pool.copy(session = session.copy(inSince = null)))
+        }
+
+        private fun read(text: String?): MachineState {
+            if (text == null) return MachineState()
+            runCatching { return JSON.decodeFromString(serializer(), text) }
+            val root = runCatching { JSON.parseToJsonElement(text) }.getOrNull() as? JsonObject ?: return MachineState()
+            return runCatching { JSON.decodeFromJsonElement(serializer(), salvage(root)) }.getOrDefault(MachineState())
+        }
+
+        /**
+         * [root] without what stops it from decoding. Every top-level field has a default, so each is tried on its own:
+         * a list keeps its readable items; an object keeps its readable fields (each on its own), or loses the one
+         * field without which it reads; anything else unreadable is left out.
+         */
+        private fun salvage(root: JsonObject): JsonObject {
+            fun fits(key: String, value: JsonElement) =
+                runCatching { JSON.decodeFromJsonElement(serializer(), JsonObject(mapOf(key to value))) }.isSuccess
+            val kept = LinkedHashMap<String, JsonElement>()
+            for ((key, value) in root) {
+                if (fits(key, value)) {
+                    kept[key] = value
+                    continue
+                }
+                val repaired = when (value) {
+                    is JsonArray -> JsonArray(value.filter { fits(key, JsonArray(listOf(it))) })
+                    is JsonObject -> {
+                        val alone = JsonObject(value.filter { (sub, v) -> fits(key, JsonObject(mapOf(sub to v))) })
+                        val oneOut = value.keys.firstOrNull { sub -> fits(key, JsonObject(value - sub)) }?.let { JsonObject(value - it) }
+                        listOfNotNull(alone, oneOut).firstOrNull { fits(key, it) }
+                    }
+                    else -> null
+                }
+                if (repaired != null && fits(key, repaired)) kept[key] = repaired
+            }
+            return JsonObject(kept)
+        }
     }
 }

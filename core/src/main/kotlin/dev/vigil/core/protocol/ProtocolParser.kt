@@ -436,6 +436,8 @@ object ProtocolParser {
             if (s.type == StepType.DONE) doneCount++
         }
         if (doneCount > 1) ctx.error(path, "has more than one done step.")
+        // Tapping done is what confirms a prayer: without it the steps would finish the run unconfirmed.
+        if (doneCount == 0 && p.kind == ProtocolKind.PRAYER) ctx.error(path, "a prayer needs a done step (tapping it confirms the prayer).")
     }
 
     private fun checkParams(p: Protocol, raw: JsonObject?, path: String, ctx: Ctx) {

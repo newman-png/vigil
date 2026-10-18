@@ -104,6 +104,15 @@ class PrayerTest {
         assertEquals(2, r.step)
         sim.at("2026-10-19T12:50")
         assertNull(sim.run(dhuhr))
+        // Noticed late (the phone dozed through the alarm): it still completed when the quiet time ran out.
+        val late = Sim()
+        late.at("2026-10-19T12:30", Input.Adhan(Prayer.DHUHR))
+        late.at("2026-10-19T12:40", Input.Confirm(late.runId(dhuhr)))
+        late.at("2026-10-19T14:00")
+        val done = late.lastOf(EntryType.COMPLETED)!!
+        assertEquals("2026-10-19T12:50:00+02:00", done.ts)
+        assertEquals(20, done.minutes)
+        assertEquals(rome("2026-10-19T12:50"), late.state.day!!.completed[dhuhr])
     }
 
     @Test
@@ -132,11 +141,81 @@ class PrayerTest {
         val sim = Sim()
         sim.at("2026-10-19T12:30", Input.Adhan(Prayer.DHUHR))
         val id = sim.runId(dhuhr)
+        sim.at("2026-10-19T12:38", Input.Confirm(id))
+        sim.at("2026-10-19T12:50")
+        assertNull(sim.run(dhuhr))
         sim.at("2026-10-19T12:59", Input.Adhan(Prayer.DHUHR))
         assertTrue(sim.last!!.entries.none { it.type == EntryType.ADHAN })
-        assertEquals(id, sim.runId(dhuhr))
+        assertNull(sim.run(dhuhr))
+        // From 30 minutes on it counts as an adhan again.
         sim.at("2026-10-19T13:00", Input.Adhan(Prayer.DHUHR))
         assertEquals(2, sim.of(EntryType.ADHAN).size)
+        assertNotNull(sim.run(dhuhr))
+    }
+
+    @Test
+    fun aLaterRepeatOfTheSamePrayerDoesNotMissItsOwnRun() {
+        val sim = Sim()
+        sim.at("2026-10-19T12:30", Input.Adhan(Prayer.DHUHR))
+        val id = sim.runId(dhuhr)
+        // The adhan app re-posts (or the user starts Dhuhr by hand) an hour later, the prayer still open.
+        sim.at("2026-10-19T13:30", Input.Adhan(Prayer.DHUHR))
+        sim.step(Input.Manual(dhuhr))
+        assertEquals(id, sim.runId(dhuhr))
+        assertEquals(1, sim.state.runs.size)
+        assertTrue(sim.of(EntryType.MISSED).isEmpty())
+        assertEquals(1, sim.of(EntryType.ADHAN).size)
+        assertEquals(rome("2026-10-19T12:30"), sim.state.prayers.lastAdhan[Prayer.DHUHR])
+        sim.step(Input.Confirm(id))
+        assertEquals("clean", sim.lastOf(EntryType.COMPLETED)!!.reason)
+    }
+
+    @Test
+    fun anEarlierPrayerStartedByHandDoesNotCloseALaterOne() {
+        val sim = Sim()
+        sim.at("2026-10-19T15:40", Input.Adhan(Prayer.ASR))
+        val asr = sim.runId("prayer-asr")
+        sim.at("2026-10-19T16:10", Input.Manual(dhuhr))
+        assertEquals(asr, sim.runId("prayer-asr"))
+        assertNotNull(sim.run(dhuhr))
+        assertTrue(sim.of(EntryType.MISSED).isEmpty())
+        // The next prayer's adhan closes both.
+        sim.at("2026-10-19T18:00", Input.Adhan(Prayer.MAGHRIB))
+        assertEquals(setOf(dhuhr, "prayer-asr"), sim.of(EntryType.MISSED).map { it.protocol }.toSet())
+    }
+
+    @Test
+    fun anIshaLeftOpenThroughTheNextDayDoesNotSwallowTheNextIsha() {
+        val sim = Sim()
+        sim.at("2026-10-19T22:30", Input.GoingToSleep)
+        // Isha comes after GOING TO SLEEP: it belongs to the 20th and stays open until that day ends.
+        sim.at("2026-10-19T22:45", Input.Adhan(Prayer.ISHA))
+        val first = sim.runId("prayer-isha")
+        assertEquals(rome("2026-10-21T06:00"), View(sim.state, sim.env).windowEnd(sim.run("prayer-isha")!!))
+        // A re-post 45 minutes later is the same prayer.
+        sim.at("2026-10-19T23:30", Input.Adhan(Prayer.ISHA))
+        assertEquals(1, sim.of(EntryType.ADHAN).size)
+        // No Fajr adhan arrived to close it; the next evening's Isha is a new prayer, not a repeat of the open one.
+        sim.at("2026-10-20T22:40", Input.Adhan(Prayer.ISHA))
+        val m = sim.lastOf(EntryType.MISSED)!!
+        assertEquals(first, m.run)
+        assertEquals("next_adhan", m.reason)
+        val second = sim.run("prayer-isha")!!
+        assertTrue(second.id != first)
+        assertEquals(RunPhase.ACTIVE, second.phase)
+        assertEquals(rome("2026-10-20T22:40"), sim.state.prayers.lastAdhan[Prayer.ISHA])
+    }
+
+    @Test
+    fun fajrClosesLastNightsIsha() {
+        val sim = Sim()
+        sim.at("2026-10-19T20:10", Input.Adhan(Prayer.ISHA))
+        // Still awake at Fajr: the day has not ended, Isha is still open.
+        sim.at("2026-10-20T05:40", Input.Adhan(Prayer.FAJR))
+        val m = sim.lastOf(EntryType.MISSED)!!
+        assertEquals("prayer-isha", m.protocol)
+        assertEquals("next_adhan", m.reason)
+        assertNotNull(sim.run("prayer-fajr"))
     }
 
     // ------------------------------------------------------------------ window
@@ -338,6 +417,28 @@ class PrayerTest {
         assertEquals("window_closed", sim.lastOf(EntryType.MISSED)!!.reason)
     }
 
+    @Test
+    fun stageThreeDuringAClassIsSilentToo() {
+        val sim = Sim("2026-10-20T08:00", times = classes)
+        sim.stage(dhuhr, 3)
+        sim.seed(Prayer.ASR to "2026-10-19T14:00")
+        sim.at("2026-10-20T13:10", Input.Adhan(Prayer.DHUHR))
+        val n = sim.lastEffects<Effect.Notify>().single()
+        assertEquals(NotifyKind.REMINDER, n.kind)
+        assertTrue(n.silent)
+        assertTrue(Machine.isSilent(sim.state, sim.run(dhuhr)!!))
+        // Its window warning, still in class, is silent as well.
+        sim.at("2026-10-20T13:45")
+        val w = sim.lastEffects<Effect.Notify>().single()
+        assertEquals(NotifyKind.WARNING, w.kind)
+        assertTrue(w.silent)
+        // Outside a class the stage-3 notification sounds (unless QUIET).
+        val free = Sim("2026-10-19T08:00", times = classes)
+        free.stage(dhuhr, 3)
+        free.at("2026-10-19T13:10", Input.Adhan(Prayer.DHUHR))
+        assertFalse(free.lastEffects<Effect.Notify>().single().silent)
+    }
+
     // ------------------------------------------------------------------ not okay, bail-out
 
     @Test
@@ -487,13 +588,15 @@ class PrayerTest {
         assertEquals(RunPhase.ACTIVE, r.phase)
         assertFalse(Machine.reasserts(r))
         assertNull(r.doneAfterAt)
+        // The pool is blocked while it runs.
+        assertEquals(BlockReason.RUN_LOCK, sim.blockReason())
         // No step min-timers: Done at once, and the quiet timer can be tapped through.
         sim.step(Input.StepDone(r.id, 0))
         sim.step(Input.StepDone(r.id, 1))
         assertTrue(sim.run(dhuhr)!!.confirmed)
         sim.step(Input.StepDone(r.id, 2))
         assertNull(sim.run(dhuhr))
-        // The pool was blocked while it ran.
+        assertTrue(sim.decision() !is PoolDecision.Blocked || sim.blockReason() != BlockReason.RUN_LOCK)
     }
 
     @Test
@@ -520,18 +623,17 @@ class PrayerTest {
     fun threeMissesInTheLastTenDemote() {
         val sim = Sim()
         sim.stage(dhuhr, 2)
-        var t = rome("2026-10-19T08:00")
-        repeat(3) {
-            sim.now = t
-            sim.step(Input.Adhan(Prayer.DHUHR))
-            t = t.plusSeconds(40 * 60)
+        // Three days of Dhuhr left unconfirmed until Asr's adhan closes its window.
+        for (day in listOf("2026-10-19", "2026-10-20", "2026-10-21")) {
+            sim.at("${day}T12:30", Input.Adhan(Prayer.DHUHR))
+            assertEquals(2, sim.run(dhuhr)!!.stage)
+            sim.at("${day}T15:40", Input.Adhan(Prayer.ASR))
         }
-        // The third adhan closed the second run; one more adhan closes the third.
-        sim.now = t
-        sim.step(Input.Adhan(Prayer.DHUHR))
+        assertEquals(3, sim.of(EntryType.MISSED).count { it.protocol == dhuhr })
         val down = sim.of(EntryType.STAGE_DOWN).single()
         assertEquals(1, down.stage)
-        assertEquals(1, sim.state.stages[dhuhr]!!.stage)
+        assertEquals(dhuhr, down.protocol)
+        assertEquals(StageMemory(1), sim.state.stages[dhuhr])
     }
 
     // ------------------------------------------------------------------ call, quiet, suspension, manual

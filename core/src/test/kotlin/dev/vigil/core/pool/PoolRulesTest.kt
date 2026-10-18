@@ -65,6 +65,23 @@ class PoolRulesTest {
     }
 
     @Test
+    fun aWaitThatWouldEndAfterTheWindowIsRefusedAtOnce() {
+        // The sixth open waits 6 minutes: from 11:54 it would end at 12:00 or later, when the morning window is closed.
+        val pool = PoolState(opens = 5)
+        assertEquals(PoolDecision.Wait(6), PoolRules.decide(cfg, pool, rome("2026-10-19T11:53"), windows, emptyList(), false))
+        val late = blocked(PoolRules.decide(cfg, pool, rome("2026-10-19T11:54"), windows, emptyList(), false))
+        assertEquals(BlockReason.OUTSIDE_WINDOW, late.reason)
+        assertEquals(evening.opensAt, late.until)
+        assertEquals("morning", late.blocks.single().detail)
+        // Another window still open when the wait ends is enough.
+        val overlapping = windows + WindowSpan("extra", rome("2026-10-19T11:00"), rome("2026-10-19T13:00"), 10)
+        assertEquals(PoolDecision.Wait(6), PoolRules.decide(cfg, pool, rome("2026-10-19T11:58"), overlapping, emptyList(), false))
+        // A live session is not affected.
+        val live = pool.copy(session = PoolSession(rome("2026-10-19T11:50"), "morning", "x.y"))
+        assertEquals(PoolDecision.Allowed, PoolRules.decide(cfg, live, rome("2026-10-19T11:58"), windows, emptyList(), false))
+    }
+
+    @Test
     fun windowNotToday() {
         val none = listOf(WindowSpan("evening", null, null, 30))
         assertEquals(BlockReason.OUTSIDE_WINDOW, blocked(PoolRules.decide(cfg, PoolState(), now, none, emptyList(), false)).reason)

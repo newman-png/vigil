@@ -281,14 +281,54 @@ class RunTest {
     }
 
     @Test
-    fun unconfirmedReminderIsDroppedAtDayEnd() {
+    fun unconfirmedReminderIsMissedAtDayEnd() {
         val sim = Sim(file = fileWith(a))
         sim.stage("alpha", 3)
         sim.step(Input.Manual("alpha"))
         sim.at("2026-10-19T23:00", Input.GoingToSleep)
-        val d = sim.lastOf(EntryType.DROPPED)!!
-        assertEquals("day_end", d.reason)
-        assertEquals(StageMemory(3), sim.state.stages["alpha"])
+        val m = sim.lastOf(EntryType.MISSED)!!
+        assertEquals("day_end", m.reason)
+        assertEquals("reminder not confirmed", m.detail)
+        assertEquals(StageMemory(3, 0, listOf("missed")), sim.state.stages["alpha"])
+        assertEquals(1, sim.state.missesInARow)
+    }
+
+    @Test
+    fun ignoredRemindersMoveAProtocolBackFromStageThree() {
+        val sim = Sim(file = fileWith(a))
+        sim.stage("alpha", 3)
+        for (day in listOf("2026-10-19", "2026-10-20", "2026-10-21")) {
+            sim.at("${day}T09:00", Input.Manual("alpha"))
+            assertEquals(RunPhase.REMINDER, sim.run("alpha")!!.phase)
+            sim.at("${day}T23:00", Input.GoingToSleep)
+        }
+        assertEquals(2, sim.of(EntryType.STAGE_DOWN).single().stage)
+        sim.at("2026-10-22T09:00", Input.Manual("alpha"))
+        assertEquals(RunPhase.ACTIVE, sim.run("alpha")!!.phase)
+    }
+
+    @Test
+    fun theNextStartReplacesARunLeftOpen() {
+        val meal = testProtocol("meal", trigger = "slot:meal", kind = ProtocolKind.MEAL, lock = Lock(LockType.POOL, 30, null))
+        val sim = Sim("2026-10-19T07:00", file = fileWith(meal))
+        sim.at("2026-10-19T07:30")
+        val breakfast = sim.run("meal")!!
+        assertEquals("breakfast", breakfast.slot!!.label)
+        sim.at("2026-10-19T08:00")
+        assertEquals(RunPhase.OPEN, sim.run("meal")!!.phase)
+        // Lunch is not skipped as "already running": breakfast, never finished, is a miss and lunch starts.
+        sim.at("2026-10-19T13:00")
+        val lunch = sim.run("meal")!!
+        assertEquals("lunch", lunch.slot!!.label)
+        assertEquals(RunPhase.ACTIVE, lunch.phase)
+        val m = sim.lastOf(EntryType.MISSED)!!
+        assertEquals(breakfast.id, m.run)
+        assertEquals("replaced", m.reason)
+        assertTrue(sim.of(EntryType.SKIPPED).isEmpty())
+        // A run still in its lock does hold the protocol.
+        sim.step(Input.Manual("meal"))
+        assertEquals("already_running", sim.lastOf(EntryType.SKIPPED)!!.reason)
+        assertEquals(lunch.id, sim.runId("meal"))
     }
 
     @Test
@@ -368,6 +408,39 @@ class RunTest {
         assertNotNull(sim.run("reset"))
         assertEquals("misses:2", sim.of(EntryType.FIRED).last().reason)
         assertEquals(0, sim.state.missesInARow)
+    }
+
+    @Test
+    fun nothingStartsWhileTheDayEnds() {
+        val reset = testProtocol("reset", trigger = "event:misses:2")
+        val sim = Sim(file = fileWith(a, reset))
+        sim.step(Input.Manual("alpha"))
+        sim.step(Input.BailOut(sim.runId("alpha")))
+        sim.at("2026-10-19T22:00", Input.Manual("alpha"))
+        // GOING TO SLEEP misses the open alpha: the second miss in a row, but no reset takeover at bedtime.
+        sim.at("2026-10-19T23:00", Input.GoingToSleep)
+        assertNull(sim.run("reset"))
+        val skipped = sim.lastOf(EntryType.SKIPPED)!!
+        assertEquals("reset", skipped.protocol)
+        assertEquals("day_end", skipped.reason)
+        assertEquals(0, sim.state.missesInARow)
+        assertTrue(sim.lastEffects<Effect.ShowTakeover>().isEmpty())
+        assertTrue(sim.state.runs.isEmpty())
+        // Nor an `event:after` protocol of a run that the day end completes (Isha confirmed, its quiet time running).
+        val next = testProtocol("after-isha", trigger = "event:after:prayer-isha", lock = Lock(LockType.NONE))
+        val isha = Sim(file = fileWith(next))
+        isha.at("2026-10-19T19:40", Input.Adhan(Prayer.ISHA))
+        val id = isha.runId("prayer-isha")
+        isha.step(Input.StepDone(id, 0))
+        isha.at("2026-10-19T19:48", Input.StepDone(id, 1))
+        isha.at("2026-10-19T19:50", Input.GoingToSleep)
+        assertEquals("prayer-isha", isha.lastOf(EntryType.COMPLETED)!!.protocol)
+        assertNull(isha.run("after-isha"))
+        assertEquals("day_end", isha.lastOf(EntryType.SKIPPED)!!.reason)
+        // The next day starts them as usual.
+        isha.at("2026-10-20T19:40", Input.Adhan(Prayer.ISHA))
+        isha.at("2026-10-20T20:00")
+        assertNotNull(isha.run("after-isha"))
     }
 
     @Test
@@ -505,6 +578,67 @@ class RunTest {
         assertEquals("alpha", sim.lastOf(EntryType.MISSED)!!.protocol)
         assertEquals("day_end", sim.lastOf(EntryType.MISSED)!!.reason)
         assertNotNull(sim.run("sleep"))
+    }
+
+    @Test
+    fun aSleepRunSurvivesOnlyTheDayEndAfterItStarted() {
+        val sleep = testProtocol("sleep", kind = ProtocolKind.SLEEP, lock = Lock(LockType.POOL, 30, null))
+        val sim = Sim(file = fileWith(sleep))
+        sim.at("2026-10-19T22:00", Input.Manual("sleep"))
+        sim.at("2026-10-19T23:30", Input.GoingToSleep)
+        assertNotNull("it lasts the night", sim.run("sleep"))
+        // Never finished: the next day end closes it like any other run instead of carrying it on for ever
+        // (an open run would keep every later sleep run from starting: already_running).
+        sim.at("2026-10-20T23:00", Input.GoingToSleep)
+        assertNull(sim.run("sleep"))
+        val m = sim.lastOf(EntryType.MISSED)!!
+        assertEquals("sleep", m.protocol)
+        assertEquals("day_end", m.reason)
+        sim.at("2026-10-21T22:00", Input.Manual("sleep"))
+        assertNotNull(sim.run("sleep"))
+        assertTrue(sim.of(EntryType.SKIPPED).none { it.protocol == "sleep" })
+    }
+
+    @Test
+    fun aCallThatNeverReportsItsEndStopsPausingAfterThreeHours() {
+        val p = testProtocol("x", lock = Lock(LockType.SCREEN, 20, null))
+        val sim = Sim(file = fileWith(p))
+        sim.step(Input.Manual("x"))
+        sim.after(5, Input.CallActive(true))
+        assertEquals(rome("2026-10-19T11:05"), Machine.nextWake(sim.state, sim.env))
+        sim.at("2026-10-19T11:04")
+        assertNotNull(sim.state.callSince)
+        assertEquals(RunPhase.ACTIVE, sim.run("x")!!.phase)
+        sim.at("2026-10-19T11:30")
+        assertNull(sim.state.callSince)
+        val resume = sim.lastOf(EntryType.CALL_RESUME)!!
+        assertEquals(180, resume.minutes)
+        assertEquals("2026-10-19T11:05:00+02:00", resume.ts)
+        assertTrue(resume.detail!!.contains("no call end reported"))
+        // The lock had 15 minutes left when the call began: it ended at 11:20.
+        assertEquals(RunPhase.OPEN, sim.run("x")!!.phase)
+        assertEquals("2026-10-19T11:20:00+02:00", sim.lastOf(EntryType.LOCK_ENDED)!!.ts)
+        // The late "call ended" report changes nothing.
+        sim.step(Input.CallActive(false))
+        assertEquals(1, sim.of(EntryType.CALL_RESUME).size)
+    }
+
+    @Test
+    fun aQueuedRunIsNotShownWhenTheDayEndsOrVigilIsSuspended() {
+        val sim = Sim(file = fileWith(a, b))
+        sim.step(Input.Manual("alpha"))
+        sim.step(Input.Manual("beta"))
+        sim.at("2026-10-19T23:00", Input.GoingToSleep)
+        assertEquals(setOf("alpha", "beta"), sim.of(EntryType.MISSED).map { it.protocol }.toSet())
+        assertTrue(sim.lastEffects<Effect.ShowTakeover>().isEmpty())
+        assertTrue(sim.state.runs.isEmpty())
+        val suspended = Sim(file = fileWith(a, b))
+        suspended.step(Input.Manual("alpha"))
+        suspended.step(Input.Manual("beta"))
+        suspended.step(Input.Suspend(60))
+        assertTrue(suspended.lastEffects<Effect.ShowTakeover>().isEmpty())
+        assertEquals(listOf("alpha", "beta"), suspended.of(EntryType.DROPPED).map { it.protocol })
+        assertTrue(suspended.state.day!!.started["beta"] == null)
     }
 
     @Test
