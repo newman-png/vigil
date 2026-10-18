@@ -22,13 +22,11 @@ dependencies {
     api(libs.kotlinx.serialization.json)
 
     testImplementation(libs.junit)
-    testImplementation(libs.json.schema.validator)
 }
 
 tasks.test {
-    // Spec files (schema.json, sample plans) live outside the module; tests read them from the repo.
+    // Tests may read files from the repo (spec/PROTOCOLS.md documents protocols.json), so edits there rerun them.
     systemProperty("vigil.repoRoot", rootDir.parentFile.absolutePath)
-    // Tests read spec/ (schema, samples, HANDOFF.md), so edits there must rerun them.
     inputs.dir(rootDir.resolve("../spec")).withPropertyName("spec").withPathSensitivity(PathSensitivity.RELATIVE)
     testLogging {
         events("failed")

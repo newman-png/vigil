@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- What VIGIL's FileProvider may share: only the export folder in the cache (data/ReportExporter.kt). -->
+<paths>
+    <cache-path name="export" path="export/" />
+</paths>

@@ -1,20 +1,16 @@
 package dev.vigil
 
 import android.content.Context
-import dev.vigil.core.engine.ActivePlanResolver
-import dev.vigil.core.engine.ActiveSet
-import dev.vigil.core.engine.BuiltinPlan
-import dev.vigil.core.engine.Env
-import dev.vigil.data.EventLog
-import dev.vigil.data.PlanRepository
+import dev.vigil.core.machine.MachineEnv
+import dev.vigil.core.protocol.BundledProtocols
+import dev.vigil.data.Journal
+import dev.vigil.data.MyTimesFile
 import dev.vigil.data.Settings
 import dev.vigil.data.StateStore
 import java.time.Instant
-import java.time.LocalDateTime
 import java.time.ZoneId
-import java.util.UUID
 
-/** Process-wide singletons. Initialised by [VigilApp]. */
+/** Process-wide singletons. Initialised by [VigilApp]. Screens use [dev.vigil.engine.Vigil] instead. */
 object Graph {
     lateinit var app: Context
         private set
@@ -24,23 +20,13 @@ object Graph {
     }
 
     val settings by lazy { Settings(app) }
-    val eventLog by lazy { EventLog(app) }
-    val plans by lazy { PlanRepository(app) }
-    val state by lazy { StateStore(app, eventLog) }
+    val journal by lazy { Journal(app) }
+    val myTimes by lazy { MyTimesFile(app) }
+    val state by lazy { StateStore(app, journal, myTimes) }
 
+    /** The phone's time zone, read each time (it changes when travelling). */
     val zone: ZoneId get() = ZoneId.systemDefault()
 
-    fun activeSet(now: Instant = Instant.now()): ActiveSet =
-        ActivePlanResolver.resolve(plans.plan, BuiltinPlan.plan, LocalDateTime.ofInstant(now, zone))
-
     /** Everything an engine step needs to know about the world right now. */
-    fun env(now: Instant = Instant.now()): Env = Env(
-        now = now,
-        zone = zone,
-        active = activeSet(now),
-        allowQuietOverride = settings.allowQuietOverride,
-        // The import time identifies the plan: a new import resets ratings, sampling and step-downs.
-        planKey = plans.snapshot.value.importedAtMs?.toString(),
-        newId = { UUID.randomUUID().toString().substring(0, 8) },
-    )
+    fun env(now: Instant = Instant.now()): MachineEnv = MachineEnv(now, zone, BundledProtocols.file)
 }

@@ -5,10 +5,15 @@ import android.app.KeyguardManager
 import android.app.usage.UsageEvents
 import android.app.usage.UsageStatsManager
 import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
 import android.media.AudioManager
+import android.net.Uri
 import android.os.PowerManager
 import android.os.Process
+import android.os.SystemClock
 import android.telecom.TelecomManager
+import android.telephony.TelephonyManager
 import android.util.Log
 
 /** Read-only facts about the phone right now, plus the one short wake lock VIGIL uses. */
@@ -18,6 +23,9 @@ object Device {
     /** The front app is looked up here first: usually the last app switch was minutes ago. */
     private const val RECENT_LOOKBACK_MS = 10 * 60_000L
 
+    /** The installed browsers are looked up again after this long (a browser installed meanwhile joins the pool). */
+    private const val BROWSERS_TTL_MS = 5 * 60_000L
+
     /**
      * Keys of other apps' call notifications (incoming or ongoing calls), kept up to date by the notification
      * listener. VoIP apps leave the audio mode alone while ringing, so this is the only way to see that.
@@ -25,13 +33,43 @@ object Device {
     @Volatile
     var callNotifications: Set<String> = emptySet()
 
+    /** Keys of other apps' call notifications that say the call is connected (CallStyle ongoing). */
+    @Volatile
+    var ongoingCallNotifications: Set<String> = emptySet()
+
+    /** The phone's call state from the TelephonyCallback ([TelephonyManager.CALL_STATE_IDLE] when unknown). */
+    @Volatile
+    var telephonyState: Int = TelephonyManager.CALL_STATE_IDLE
+
     private var wakeLock: PowerManager.WakeLock? = null
+
+    @Volatile
+    private var browsers: Set<String> = emptySet()
+
+    @Volatile
+    private var browsersAt = 0L
 
     /** In a phone or VoIP call, or ringing. Takeovers never appear then. */
     fun inCall(context: Context): Boolean {
-        if (callNotifications.isNotEmpty()) return true
+        if (callNotifications.isNotEmpty() || telephonyState != TelephonyManager.CALL_STATE_IDLE) return true
         val mode = context.getSystemService(AudioManager::class.java)?.mode ?: return false
         return mode != AudioManager.MODE_NORMAL && mode != AudioManager.MODE_INVALID && mode != AudioManager.MODE_CURRENT
+    }
+
+    /**
+     * A call is connected (or being dialled): a phone call (call state off-hook, or the audio in call mode), a VoIP
+     * call (the audio in communication mode, or another app's ongoing call notification). Ringing is not connected.
+     * Protocol timers and locks pause while this is true.
+     */
+    fun callConnected(context: Context): Boolean {
+        if (telephonyState == TelephonyManager.CALL_STATE_OFFHOOK || ongoingCallNotifications.isNotEmpty()) return true
+        return when (context.getSystemService(AudioManager::class.java)?.mode) {
+            AudioManager.MODE_IN_CALL,
+            AudioManager.MODE_IN_COMMUNICATION,
+            AudioManager.MODE_CALL_REDIRECT,
+            AudioManager.MODE_COMMUNICATION_REDIRECT -> true
+            else -> false
+        }
     }
 
     fun isInteractive(context: Context): Boolean =
@@ -75,11 +113,40 @@ object Device {
         null
     }
 
-    /** Phone, dialer and emergency apps: a takeover never pushes itself over these. */
+    /** Phone, dialer and emergency apps: a takeover never pushes itself over these, and they are always usable. */
     fun isCallApp(context: Context, packageName: String?): Boolean {
         if (packageName == null) return false
-        val dialer = context.getSystemService(TelecomManager::class.java)?.defaultDialerPackage
-        return packageName == dialer || packageName in CALL_PACKAGES
+        return packageName == defaultDialer(context) || packageName in CALL_PACKAGES
+    }
+
+    /** The default phone app, or null when there is none (or it cannot be read). */
+    fun defaultDialer(context: Context): String? = try {
+        context.getSystemService(TelecomManager::class.java)?.defaultDialerPackage
+    } catch (e: RuntimeException) {
+        null
+    }
+
+    /**
+     * Every installed browser: the apps that open a plain https link (design: the pool includes them all). Cached for
+     * a few minutes. VIGIL itself never counts.
+     */
+    fun browsers(context: Context): Set<String> {
+        val now = SystemClock.elapsedRealtime()
+        if (browsersAt != 0L && now - browsersAt < BROWSERS_TTL_MS) return browsers
+        val found = try {
+            val intent = Intent(Intent.ACTION_VIEW, Uri.parse("https://example.com/")).addCategory(Intent.CATEGORY_BROWSABLE)
+            context.packageManager
+                .queryIntentActivities(intent, PackageManager.ResolveInfoFlags.of(PackageManager.MATCH_ALL.toLong()))
+                .mapNotNull { it.activityInfo?.packageName }
+                .filter { it != context.packageName }
+                .toSet()
+        } catch (e: RuntimeException) {
+            Log.w(TAG, "Could not list the browsers: ${e.message}")
+            return browsers
+        }
+        browsers = found
+        browsersAt = now
+        return found
     }
 
     /**

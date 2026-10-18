@@ -11,8 +11,7 @@ import android.util.Log
 import dev.vigil.Graph
 import dev.vigil.core.engine.AdhanMatcher
 import dev.vigil.core.engine.Debouncer
-import dev.vigil.core.plan.Prayer
-import dev.vigil.core.plan.Trigger
+import dev.vigil.core.protocol.Prayer
 import dev.vigil.engine.Device
 import dev.vigil.engine.Vigil
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -21,11 +20,12 @@ import kotlinx.coroutines.flow.asStateFlow
 import java.lang.ref.WeakReference
 
 /**
- * The `adhan` trigger. VIGIL does not compute prayer times: it waits for the user's adhan app to post its
- * notification ("It's time for Isha"), reads the prayer name with [AdhanMatcher] and fires the plan's
- * directives for that prayer. Which app and which words count is configured in Settings.
+ * The adhan trigger (`event:adhan:<prayer>`). VIGIL does not compute prayer times: it waits for the user's adhan app
+ * to post its notification ("It's time for Isha"), reads the prayer name with [AdhanMatcher] and gives the engine its
+ * adhan input. Which app and which words count is configured in SETUP ([dev.vigil.data.Settings]).
  *
- * It also notices other apps' call notifications, so a takeover never covers a ringing or ongoing call.
+ * It also notices other apps' call notifications: a ringing or ongoing call keeps takeovers away, and a connected
+ * VoIP call pauses protocol timers and locks ([CallWatcher]).
  *
  * The system can drop a listener's binding (low memory, battery savers, an app update). It asks to be bound again
  * when that happens, and the service checks about once a minute ([ensureBound]).
@@ -34,12 +34,14 @@ class AdhanListener : NotificationListenerService() {
     override fun onListenerConnected() {
         instance = WeakReference(this)
         connected.value = true
-        Device.callNotifications = callKeys() ?: emptySet()
+        readCalls()
     }
 
     override fun onListenerDisconnected() {
         connected.value = false
         Device.callNotifications = emptySet()
+        Device.ongoingCallNotifications = emptySet()
+        CallWatcher.check(this)
         rebind(ComponentName(this, AdhanListener::class.java))
     }
 
@@ -52,11 +54,15 @@ class AdhanListener : NotificationListenerService() {
     }
 
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
-        if (sbn.key in Device.callNotifications) Device.callNotifications = Device.callNotifications - sbn.key
+        if (sbn.key in Device.callNotifications || sbn.key in Device.ongoingCallNotifications) {
+            Device.callNotifications = Device.callNotifications - sbn.key
+            Device.ongoingCallNotifications = Device.ongoingCallNotifications - sbn.key
+            CallWatcher.check(this)
+        }
     }
 
     override fun onNotificationPosted(sbn: StatusBarNotification) {
-        // Another app's odd notification (extras that fail to unparcel) or a storage error while firing must not
+        // Another app's odd notification (extras that fail to unparcel) or a storage error in the engine step must not
         // crash VIGIL's process.
         try {
             handle(sbn)
@@ -67,8 +73,13 @@ class AdhanListener : NotificationListenerService() {
 
     private fun handle(sbn: StatusBarNotification) {
         if (sbn.packageName == packageName) return
-        // Calls (including VoIP apps that are still ringing) keep takeovers away; see Device.inCall.
-        if (isCall(sbn)) Device.callNotifications = Device.callNotifications + sbn.key
+        // Calls (including VoIP apps that are still ringing) keep takeovers away; a connected one pauses protocols.
+        if (isCall(sbn)) {
+            Device.callNotifications = Device.callNotifications + sbn.key
+            Device.ongoingCallNotifications =
+                if (isOngoingCall(sbn)) Device.ongoingCallNotifications + sbn.key else Device.ongoingCallNotifications - sbn.key
+            CallWatcher.check(this)
+        }
         val n = sbn.notification ?: return
         if (n.flags and Notification.FLAG_GROUP_SUMMARY != 0) return
         val extras = n.extras ?: return
@@ -78,11 +89,16 @@ class AdhanListener : NotificationListenerService() {
         onNotification(sbn.packageName, title, text, System.currentTimeMillis(), test = false)
     }
 
-    /** Keys of the call notifications showing now, or null when the list cannot be read. */
-    private fun callKeys(): Set<String>? = try {
-        activeNotifications?.filter(::isCall)?.map { it.key }?.toSet()
-    } catch (e: RuntimeException) {
-        null
+    /** Re-reads the call notifications showing now (after connecting, and about once a minute). */
+    private fun readCalls() {
+        val calls = try {
+            activeNotifications?.filter(::isCall)
+        } catch (e: RuntimeException) {
+            null
+        } ?: return
+        Device.callNotifications = calls.map { it.key }.toSet()
+        Device.ongoingCallNotifications = calls.filter(::isOngoingCall).map { it.key }.toSet()
+        CallWatcher.check(this)
     }
 
     private fun isCall(sbn: StatusBarNotification): Boolean {
@@ -102,14 +118,23 @@ class AdhanListener : NotificationListenerService() {
         }
     }
 
-    /** One notification as seen by the listener, for the settings screen. */
+    /** A call notification that says the call is connected (CallStyle "ongoing"); ringing and screening are not. */
+    private fun isOngoingCall(sbn: StatusBarNotification): Boolean = try {
+        sbn.notification?.extras?.getInt(Notification.EXTRA_CALL_TYPE, 0) == Notification.CallStyle.CALL_TYPE_ONGOING
+    } catch (e: RuntimeException) {
+        false
+    }
+
+    /** One notification as seen by the listener, for the SETUP screen. */
     data class Seen(val packageName: String, val title: String?, val text: String?, val atMs: Long, val prayer: Prayer?)
 
     companion object {
         private const val TAG = "VigilAdhan"
         private const val RECENT_MAX = 30
-        /** Adhan apps often re-post or update the same notification; one prayer fires once per window. */
+
+        /** Adhan apps often re-post or update the same notification; the engine also ignores repeats within 30 min. */
         private const val DEBOUNCE_MS = 30 * 60_000L
+
         /** [ensureBound] asks for a rebind at most this often. */
         private const val REBIND_INTERVAL_MS = 30_000L
         private val CALL_STYLE: String = Notification.CallStyle::class.java.name
@@ -139,7 +164,7 @@ class AdhanListener : NotificationListenerService() {
             try {
                 val listener = instance?.get()
                 if (connected.value && listener != null) {
-                    listener.callKeys()?.let { Device.callNotifications = it }
+                    listener.readCalls()
                     return
                 }
                 val component = ComponentName(context, AdhanListener::class.java)
@@ -169,9 +194,9 @@ class AdhanListener : NotificationListenerService() {
         }
 
         /**
-         * Handles a notification. With [test] true (the settings test button) it skips the debounce and logs
-         * the trigger as "adhan_test", but otherwise goes through exactly the same path.
-         * Returns the prayer it matched, if any.
+         * Handles a notification and returns the prayer it matched, if any. A match gives the engine its adhan input
+         * (repeats within 30 minutes are ignored). With [test] true (the SETUP test button) it skips the debounce and
+         * starts a TEST preview of that prayer's protocol instead, which never touches the real prayer memory.
          */
         fun onNotification(packageName: String, title: String?, text: String?, atMs: Long, test: Boolean): Prayer? {
             val prayer = AdhanMatcher.match(Graph.settings.adhanConfig, packageName, title, text)
@@ -179,13 +204,21 @@ class AdhanListener : NotificationListenerService() {
                 _recent.value = (listOf(Seen(packageName, title, text, atMs, prayer)) + _recent.value).take(RECENT_MAX)
             }
             if (prayer == null) return null
-            if (!test && !debouncer.accept(prayer.json, atMs)) return prayer
-            Vigil.trigger(directivesFor(prayer), if (test) "adhan_test" else Trigger.Adhan.TYPE)
+            if (test) {
+                Vigil.file().prayerProtocol(prayer)?.let { Vigil.startManual(it.id, test = true) }
+                return prayer
+            }
+            val settings = Graph.settings
+            if (settings.lastAdhanPackage != packageName) settings.lastAdhanPackage = packageName
+            if (!debouncer.accept(prayer.json, atMs)) return prayer
+            Vigil.onAdhan(prayer)
             return prayer
         }
 
-        /** Active directives triggered by this prayer. */
-        fun directivesFor(prayer: Prayer): List<String> =
-            Graph.activeSet().directives.filter { (it.trigger as? Trigger.Adhan)?.prayer == prayer }.map { it.id }
+        /** The protocol ids this prayer's adhan starts (for the SETUP screen). */
+        fun protocolsFor(prayer: Prayer): List<String> = listOfNotNull(Vigil.file().prayerProtocol(prayer)?.id)
+
+        /** The v1 name of [protocolsFor], kept for the SETUP screen. */
+        fun directivesFor(prayer: Prayer): List<String> = protocolsFor(prayer)
     }
 }

@@ -1,6 +1,6 @@
 package dev.vigil.core.engine
 
-import dev.vigil.core.plan.Prayer
+import dev.vigil.core.protocol.Prayer
 import java.text.Normalizer
 
 /**

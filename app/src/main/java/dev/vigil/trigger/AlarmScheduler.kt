@@ -14,27 +14,36 @@ import java.time.Instant
 private const val TAG = "VigilAlarm"
 
 /**
- * One alarm at a time: the next moment the engine said it must wake (a directive's time, the plan's expiry or a
- * takeover's hard maximum), as an exact alarm that is allowed while idle, so it fires on the minute in Doze too.
- * Without exact alarms it falls back to an inexact one.
+ * One alarm at a time: the next moment the engine must wake ([dev.vigil.core.machine.Machine.nextWake]: a planned
+ * start, a lock or timer end, a prayer heads-up or window, the day's end ...), as an exact alarm that is allowed while
+ * idle, so it fires on the minute in Doze too. Without exact alarms it falls back to an inexact one. The planned
+ * moment travels with the alarm, so a late alarm is journaled (alarm_late).
  *
  * Not an alarm clock (setAlarmClock): the phone would show VIGIL as its next alarm, and a bedtime Do Not
- * Disturb schedule set to end at the next alarm would switch off at the next directive every night.
+ * Disturb schedule set to end at the next alarm would switch off at the next protocol every night.
  */
 object AlarmScheduler {
     private const val REQUEST_ALARM = 0
 
+    /** The planned moment (epoch ms) in the alarm's intent. */
+    const val EXTRA_AT = "at"
+
     /** After a failure while handling the clock, try again this much later. */
     private const val RETRY_AFTER_FAILURE_MS = 5 * 60_000L
 
+    /** When the alarm is set for, as far as this process knows (null after a restart: set it again). */
+    @Volatile
+    var scheduledAt: Instant? = null
+        private set
+
     /** Sets the alarm to [at], or cancels it when null. */
     fun schedule(context: Context, at: Instant?) {
+        scheduledAt = at
         val app = context.applicationContext
         val am = app.getSystemService(AlarmManager::class.java) ?: return
-        val pi = PendingIntent.getBroadcast(
-            app, REQUEST_ALARM, Intent(app, AlarmReceiver::class.java),
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-        )
+        val intent = Intent(app, AlarmReceiver::class.java)
+        if (at != null) intent.putExtra(EXTRA_AT, at.toEpochMilli())
+        val pi = PendingIntent.getBroadcast(app, REQUEST_ALARM, intent, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
         if (at == null) {
             am.cancel(pi)
             return
@@ -62,13 +71,14 @@ object AlarmScheduler {
     }
 }
 
-/** The scheduled alarm went off: process time triggers (the engine decides what is due). */
+/** The scheduled alarm went off: the engine applies everything due (and journals the alarm if it came late). */
 class AlarmReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         // An exact alarm lets VIGIL start its service from the background; the work itself is short and runs here.
         VigilService.start(context)
+        val at = intent.getLongExtra(AlarmScheduler.EXTRA_AT, 0L).takeIf { it > 0 }?.let { Instant.ofEpochMilli(it) }
         try {
-            Vigil.onClock(catchUp = true)
+            Vigil.onAlarm(at)
         } catch (e: Exception) {
             // A crash here would kill the process in the background, and no next alarm would be set.
             Log.e(TAG, "Handling the alarm failed", e)
@@ -78,22 +88,22 @@ class AlarmReceiver : BroadcastReceiver() {
 }
 
 /**
- * Reboot, app update, a clock/timezone change, or exact alarms allowed again: reschedule (and after a reboot,
- * catch up). Other actions are ignored (the receiver is exported so the system can reach it).
+ * Reboot, app update, a clock or time zone change, or exact alarms allowed again: the engine catches up and the alarm
+ * is set again. Other actions are ignored (the receiver is exported so the system can reach it).
  */
 class SystemEventReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        val catchUp = when (intent.action) {
+        when (intent.action) {
             Intent.ACTION_BOOT_COMPLETED,
             Intent.ACTION_MY_PACKAGE_REPLACED,
-            AlarmManager.ACTION_SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED -> true
-            // A manual clock change would otherwise replay (or skip) hours of directives.
-            Intent.ACTION_TIME_CHANGED, Intent.ACTION_TIMEZONE_CHANGED -> false
+            Intent.ACTION_TIME_CHANGED,
+            Intent.ACTION_TIMEZONE_CHANGED,
+            AlarmManager.ACTION_SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED -> Unit
             else -> return
         }
         VigilService.start(context)
         try {
-            Vigil.onClock(catchUp)
+            Vigil.onSystemEvent()
         } catch (e: Exception) {
             Log.e(TAG, "Handling ${intent.action} failed", e)
             AlarmScheduler.retrySoon(context)

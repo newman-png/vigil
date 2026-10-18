@@ -13,19 +13,34 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <!-- Usage access is granted by the user in system settings (Setup screen). -->
+    <!-- Call pause: the phone's call state (TelephonyCallback). Granted in SETUP; without it the audio mode is used. -->
+    <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <!-- Usage access is granted by the user in system settings (SETUP): the front app for a takeover coming back. -->
     <uses-permission
         android:name="android.permission.PACKAGE_USAGE_STATS"
         tools:ignore="ProtectedPermissions" />
     <!-- Nothing Glyph lights (ignored on other phones). -->
     <uses-permission android:name="com.nothing.ketchum.permission.ENABLE" />
 
-    <!-- Launcher apps: to show the label of the apps named in app_usage triggers.
+    <!-- Launcher apps: the APPS button's apps (labels, launch intents, "label_contains" matches).
+         SHOW_ALARMS and DIAL: the clock and phone apps of the APPS button.
+         VIEW https: every installed browser is in the pool.
          com.nothing.thirdparty: the Glyph service the Nothing Glyph SDK binds to. -->
     <queries>
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.SHOW_ALARMS" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.DIAL" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.VIEW" />
+            <category android:name="android.intent.category.BROWSABLE" />
+            <data android:scheme="https" />
         </intent>
         <package android:name="com.nothing.thirdparty" />
     </queries>
@@ -72,10 +87,10 @@
             android:foregroundServiceType="specialUse">
             <property
                 android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Personal commitment device: watches the user's own weekly plan triggers and shows its directives." />
+                android:value="Personal commitment device: runs the user's own daily protocols at their times and keeps the user's chosen distracting apps closed." />
         </service>
 
-        <!-- The plan's alarm and the TEST screen's alarm. Reached only through VIGIL's own PendingIntents. -->
+        <!-- The engine's alarm and the TEST screen's alarm. Reached only through VIGIL's own PendingIntents. -->
         <receiver
             android:name=".trigger.AlarmReceiver"
             android:exported="false" />
@@ -86,6 +101,11 @@
 
         <receiver
             android:name=".engine.QuietToggleReceiver"
+            android:exported="false" />
+
+        <!-- CONFIRM / DONE on the engine's notices (prayers, stage-3 reminders). -->
+        <receiver
+            android:name=".engine.NoticeActionReceiver"
             android:exported="false" />
 
         <!-- Exported so the system can reach it; every action here is a protected broadcast only the system sends,
@@ -102,7 +122,7 @@
             </intent-filter>
         </receiver>
 
-        <!-- The adhan trigger: reads the adhan app's prayer notification. -->
+        <!-- The adhan trigger: reads the adhan app's prayer notification (and other apps' call notifications). -->
         <service
             android:name=".trigger.AdhanListener"
             android:exported="true"
@@ -113,19 +133,16 @@
             </intent-filter>
         </service>
 
-        <!-- Optional instant app-switch detection for the app_usage trigger. -->
-        <service
-            android:name=".trigger.UsageAccessibilityService"
-            android:exported="true"
-            android:label="VIGIL app-usage trigger"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
-            <intent-filter>
-                <action android:name="android.accessibilityservice.AccessibilityService" />
-            </intent-filter>
+        <!-- EXPORT: the report and the journal CSV, shared from the cache through the share sheet. -->
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.files"
+            android:exported="false"
+            android:grantUriPermissions="true">
             <meta-data
-                android:name="android.accessibilityservice"
-                android:resource="@xml/usage_accessibility" />
-        </service>
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths" />
+        </provider>
 
         <!-- adb escape hatch: only the shell and the system hold DUMP. See README. -->
         <receiver

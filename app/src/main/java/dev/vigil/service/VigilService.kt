@@ -8,25 +8,25 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.ServiceInfo
-import android.os.Build
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
-import dev.vigil.Graph
 import dev.vigil.engine.Device
 import dev.vigil.engine.Notifications
 import dev.vigil.engine.Vigil
 import dev.vigil.trigger.AdhanListener
+import dev.vigil.trigger.CallWatcher
 
 /**
- * Keeps VIGIL's process alive so triggers are noticed and an unfinished takeover can come back.
- * It watches the screen turning on/off and runs a short periodic tick; all decisions stay in the engine.
+ * Keeps VIGIL's process alive so triggers are noticed and a takeover can come back. It turns screen on/off/unlock
+ * and calls into engine inputs and runs a short periodic tick (the engine's heartbeat); all decisions stay in the
+ * engine. It enters the foreground in onCreate and in every onStartCommand, and no failure inside escapes.
  */
 class VigilService : Service() {
     private val handler = Handler(Looper.getMainLooper())
 
-    /** Ticks since the service started, for the once-a-minute notification listener check. */
+    /** Ticks since the service started, for the slower checks. */
     private var ticks = 0L
 
     /** Awake and unlocked at the last tick or screen event. */
@@ -36,8 +36,7 @@ class VigilService : Service() {
 
     private val tick = object : Runnable {
         override fun run() {
-            // One failing tick must not stop the ones after it, or crash the process in the background
-            // (storage errors included, hence Exception).
+            // One failing tick must not stop the ones after it, or crash the process in the background.
             try {
                 onTick()
             } catch (e: Exception) {
@@ -51,13 +50,17 @@ class VigilService : Service() {
         override fun onReceive(context: Context, intent: Intent) {
             try {
                 when (intent.action) {
-                    Intent.ACTION_SCREEN_ON, Intent.ACTION_USER_PRESENT -> {
+                    Intent.ACTION_SCREEN_ON -> {
                         present = Device.isPresent(context)
-                        Vigil.onScreenOn(context)
+                        Vigil.onScreen(on = true, unlocked = present)
+                    }
+                    Intent.ACTION_USER_PRESENT -> {
+                        present = true
+                        Vigil.onScreen(on = true, unlocked = true)
                     }
                     Intent.ACTION_SCREEN_OFF -> {
                         present = false
-                        Vigil.onScreenOff(context)
+                        Vigil.onScreen(on = false, unlocked = false)
                     }
                 }
             } catch (e: Exception) {
@@ -69,7 +72,7 @@ class VigilService : Service() {
     override fun onCreate() {
         super.onCreate()
         // startForeground fails without its channel. The app creates the channels at start-up; this makes sure.
-        Notifications.createChannels(this)
+        guard("Channels") { Notifications.createChannels(this) }
         enterForeground()
     }
 
@@ -80,14 +83,14 @@ class VigilService : Service() {
         if (!running) {
             if (!foreground) {
                 // Refused (a sticky restart in the background without the battery exemption). startForeground was
-                // called, so stopping is safe; the next foreground moment (opening the app, an alarm, a takeover)
+                // tried, so stopping is safe; the next foreground moment (opening the app, an alarm, a takeover)
                 // starts the service again.
                 stopSelf(startId)
                 return START_NOT_STICKY
             }
-            begin()
+            guard("Start") { begin() }
         }
-        AdhanListener.ensureBound(this)
+        guard("Listener check") { AdhanListener.ensureBound(this) }
         return START_STICKY
     }
 
@@ -96,6 +99,7 @@ class VigilService : Service() {
         handler.removeCallbacks(tick)
         if (receiverRegistered) runCatching { unregisterReceiver(screenReceiver) }
         receiverRegistered = false
+        runCatching { CallWatcher.stop(this) }
         super.onDestroy()
     }
 
@@ -121,9 +125,15 @@ class VigilService : Service() {
             // The tick below still notices an unlocked phone, only a little later.
             Log.e(TAG, "Could not watch the screen", e)
         }
+        guard("Call watch") { CallWatcher.start(this) }
         // Not yet seen as present: when the service starts on a phone already in use (after a reboot, an update or a
-        // restart), the first tick handles it like an unlock, so a takeover that was waiting comes back.
+        // restart), the first tick handles it like an unlock, so a waiting takeover comes back. The engine learns the
+        // screen state now (it may have changed while VIGIL was not running).
         present = false
+        guard("Screen state") {
+            val on = Device.isInteractive(this)
+            if (on != Vigil.state.value.screenOn) Vigil.onScreen(on = on, unlocked = on && Device.isPresent(this))
+        }
         ticks = 0
         running = true
         handler.removeCallbacks(tick)
@@ -133,22 +143,19 @@ class VigilService : Service() {
     private fun onTick() {
         ticks++
         // Each part on its own, so one that keeps failing does not stop the others.
-        guard("Housekeeping") { Vigil.onServiceTick(this) }
-        if (ticks % BIND_CHECK_TICKS == 0L) AdhanListener.ensureBound(this)
+        if (ticks % ENGINE_TICKS == 1L) guard("Engine tick") { Vigil.onTick() }
+        guard("Call check") { CallWatcher.check(this) }
+        if (ticks % SLOW_TICKS == 0L) {
+            guard("Listener check") { AdhanListener.ensureBound(this) }
+            // READ_PHONE_STATE may have been granted since the service started.
+            guard("Call watch") { CallWatcher.start(this) }
+        }
         val nowPresent = Device.isPresent(this)
         val wasPresent = present
         present = nowPresent
-        guard("Presence check") {
-            if (nowPresent && !wasPresent) {
-                // The phone became usable without the unlock broadcast reaching VIGIL (some phones send it late or
-                // not at all): handle it like one. This also shows a due morning check-in.
-                Vigil.onScreenOn(this)
-            } else if (nowPresent) {
-                // The morning check-in becomes due at the day boundary, often while the phone is already in use.
-                val checkIn = Graph.state.current.checkIn
-                if (checkIn != null && !checkIn.fired) Vigil.onUserPresent()
-            }
-        }
+        // The phone became usable without the unlock broadcast reaching VIGIL (some phones send it late or not at
+        // all): handle it like one.
+        if (nowPresent && !wasPresent) guard("Presence check") { Vigil.onScreen(on = true, unlocked = true) }
     }
 
     private inline fun guard(what: String, block: () -> Unit) {
@@ -162,13 +169,10 @@ class VigilService : Service() {
     /** Enters (or stays in) the foreground with the current status. False when the system refuses. */
     private fun enterForeground(): Boolean {
         val text = runCatching { Vigil.statusLine() }.getOrDefault("Running.")
-        val notification = Notifications.service(this, text, Graph.state.current.quiet)
+        val quiet = runCatching { Vigil.state.value.toggles.quiet }.getOrDefault(false)
         return try {
-            if (Build.VERSION.SDK_INT >= 34) {
-                startForeground(Notifications.ID_SERVICE, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
-            } else {
-                startForeground(Notifications.ID_SERVICE, notification)
-            }
+            val notification = Notifications.service(this, text, quiet)
+            startForeground(Notifications.ID_SERVICE, notification, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
             true
         } catch (e: ForegroundServiceStartNotAllowedException) {
             Log.w(TAG, "Not allowed to enter the foreground now: ${e.message}")
@@ -179,6 +183,9 @@ class VigilService : Service() {
         } catch (e: SecurityException) {
             Log.w(TAG, "Could not enter the foreground: ${e.message}")
             false
+        } catch (e: RuntimeException) {
+            Log.e(TAG, "Could not enter the foreground", e)
+            false
         }
     }
 
@@ -186,8 +193,11 @@ class VigilService : Service() {
         private const val TAG = "VigilService"
         private const val TICK_MS = 5_000L
 
-        /** About once a minute: the notification listener is checked every this many ticks. */
-        private const val BIND_CHECK_TICKS = 12L
+        /** The engine's heartbeat runs every this many ticks (15 s); exact alarms cover the timed moments. */
+        private const val ENGINE_TICKS = 3L
+
+        /** About once a minute: the notification listener and the call watch are checked every this many ticks. */
+        private const val SLOW_TICKS = 12L
 
         @Volatile
         var running = false
@@ -210,11 +220,13 @@ class VigilService : Service() {
             }
         }
 
-        fun refreshNotification(context: Context) {
+        /** Puts [text] (default: the current status) on the always-on notification, when the service runs. */
+        fun refreshNotification(context: Context, text: String? = null) {
             if (!running) return
             val nm = context.getSystemService(NotificationManager::class.java) ?: return
             runCatching {
-                nm.notify(Notifications.ID_SERVICE, Notifications.service(context, Vigil.statusLine(), Graph.state.current.quiet))
+                val line = text ?: Vigil.statusLine()
+                nm.notify(Notifications.ID_SERVICE, Notifications.service(context, line, Vigil.state.value.toggles.quiet))
             }
         }
     }

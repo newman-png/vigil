@@ -1,6 +1,6 @@
 package dev.vigil.core.engine
 
-import dev.vigil.core.plan.Prayer
+import dev.vigil.core.protocol.Prayer
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
