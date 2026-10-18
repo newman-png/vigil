@@ -45,6 +45,14 @@
         <package android:name="com.nothing.thirdparty" />
     </queries>
 
+    <!-- The Guard: the home screen app, which is never closed (even if it also opens links like a browser). -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.HOME" />
+        </intent>
+    </queries>
+
     <application
         android:name=".VigilApp"
         android:allowBackup="false"
@@ -80,6 +88,17 @@
             android:theme="@style/Theme.Vigil"
             android:turnScreenOn="true"
             tools:ignore="DiscouragedApi,LockedOrientationActivity" />
+
+        <!-- The Guard's screens: the pool's wait and blocked screens, and the kill switch's 5-minute wait. Its own task,
+             so finishing it returns to the app it stood in front of. -->
+        <activity
+            android:name=".guard.BlockActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|navigation|uiMode|density|fontScale"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleTask"
+            android:taskAffinity="dev.vigil.guard"
+            android:theme="@style/Theme.Vigil" />
 
         <service
             android:name=".service.VigilService"
@@ -131,6 +150,21 @@
             <intent-filter>
                 <action android:name="android.service.notification.NotificationListenerService" />
             </intent-filter>
+        </service>
+
+        <!-- The Guard: keeps the user's pool apps closed at the times their rules say. An accessibility service that only
+             learns which app comes to the front; it cannot read the screen (res/xml/guard_service.xml). -->
+        <service
+            android:name=".guard.GuardService"
+            android:exported="true"
+            android:label="VIGIL Guard"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/guard_service" />
         </service>
 
         <!-- EXPORT: the report and the journal CSV, shared from the cache through the share sheet. -->
