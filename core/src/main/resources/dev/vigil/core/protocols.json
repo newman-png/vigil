@@ -1,0 +1,117 @@
+{
+  "_readme": "VIGIL v2 protocols. Every behaviour of the app is a fixed rule from this file plus the user's MY TIMES. Edit it only with Claude Code; spec/PROTOCOLS.md documents every field. The core unit test BundledProtocolsTest fails on any error, so a bad edit never ships.",
+  "version": 2,
+  "pool": {
+    "_note": "One shared counter for all of these apps. all_browsers adds every installed browser (apps that open https links).",
+    "apps": [
+      "com.zhiliaoapp.musically",
+      "com.ss.android.ugc.trill",
+      "com.facebook.katana",
+      "com.facebook.lite",
+      "com.google.android.youtube",
+      "com.instagram.android",
+      "com.pinterest",
+      "com.brave.browser"
+    ],
+    "all_browsers": true,
+    "wait_step_min": 1,
+    "wait_cap_min": 10,
+    "cooldown_factor": 2,
+    "cooldown_cap_min": 60,
+    "session_gap_s": 60,
+    "windows": [
+      { "id": "morning", "opens": "done:morning|wake+60", "closes": "next", "cap_min": 30 },
+      { "id": "evening", "opens": "done:dinner|meal:dinner+45", "closes": "start:sleep|bedtime-60", "cap_min": 30 }
+    ],
+    "heavy_use": { "continuous_min": 10, "opens": 3, "within_min": 30 },
+    "bail_out": { "extra_lock_min": 120, "daily_cap_min": 360 }
+  },
+  "apps_button": [
+    { "role": "dialer" },
+    { "role": "adhan" },
+    { "role": "clock" },
+    { "package": "com.google.android.apps.maps" },
+    { "package": "com.whatsapp" },
+    { "label_contains": "PoliTO" }
+  ],
+  "day": { "idle_end_min": 120, "fallback_end": "06:00", "night_edge": "05:00" },
+  "takeover": { "glyph_off_after_s": 30, "full_seconds": 30 },
+  "stages": { "promote_after_clean": 10, "demote_after_misses": 3, "window": 10 },
+  "protocols": [
+    {
+      "id": "prayer-fajr",
+      "kind": "prayer",
+      "title": "FAJR",
+      "trigger": "event:adhan:fajr",
+      "intensity": "full_then_subtle",
+      "lock": { "type": "screen", "minutes": 20, "done_after_min": 8 },
+      "steps": [
+        { "text": "Wudu, then pray.", "type": "check" },
+        { "text": "Done.", "type": "done" },
+        { "text": "Quiet time until the lock ends: dhikr or sit still. Then straight back to bed.", "type": "timer" }
+      ],
+      "params": { "heads_up_min": 10, "window_warn_min": 15 },
+      "stages": true
+    },
+    {
+      "id": "prayer-dhuhr",
+      "kind": "prayer",
+      "title": "DHUHR",
+      "trigger": "event:adhan:dhuhr",
+      "intensity": "full_then_subtle",
+      "lock": { "type": "screen", "minutes": 20, "done_after_min": 8 },
+      "steps": [
+        { "text": "Wudu, then pray.", "type": "check" },
+        { "text": "Done.", "type": "done" },
+        { "text": "Quiet time until the lock ends: dhikr or sit still.", "type": "timer" }
+      ],
+      "params": { "heads_up_min": 10, "window_warn_min": 15 },
+      "stages": true
+    },
+    {
+      "id": "prayer-asr",
+      "kind": "prayer",
+      "title": "ASR",
+      "trigger": "event:adhan:asr",
+      "intensity": "full_then_subtle",
+      "lock": { "type": "screen", "minutes": 20, "done_after_min": 8 },
+      "steps": [
+        { "text": "Wudu, then pray.", "type": "check" },
+        { "text": "Done.", "type": "done" },
+        { "text": "Quiet time until the lock ends: dhikr or sit still.", "type": "timer" }
+      ],
+      "params": { "heads_up_min": 10, "window_warn_min": 15 },
+      "stages": true
+    },
+    {
+      "id": "prayer-maghrib",
+      "kind": "prayer",
+      "title": "MAGHRIB",
+      "trigger": "event:adhan:maghrib",
+      "intensity": "full_then_subtle",
+      "lock": { "type": "screen", "minutes": 20, "done_after_min": 8 },
+      "steps": [
+        { "text": "Wudu, then pray.", "type": "check" },
+        { "text": "Done.", "type": "done" },
+        { "text": "Quiet time until the lock ends: dhikr or sit still.", "type": "timer" }
+      ],
+      "params": { "heads_up_min": 10, "window_warn_min": 15 },
+      "stages": true
+    },
+    {
+      "id": "prayer-isha",
+      "kind": "prayer",
+      "title": "ISHA",
+      "trigger": "event:adhan:isha",
+      "intensity": "full_then_subtle",
+      "lock": { "type": "screen", "minutes": 20, "done_after_min": 8 },
+      "steps": [
+        { "text": "Wudu, then pray.", "type": "check" },
+        { "text": "Done.", "type": "done" },
+        { "text": "Quiet time until the lock ends: dhikr or sit still.", "type": "timer" }
+      ],
+      "params": { "heads_up_min": 10, "window_warn_min": 15 },
+      "stages": true
+    }
+  ]
+}
