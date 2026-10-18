@@ -1,6 +1,7 @@
 package dev.vigil.takeover
 
 import android.app.KeyguardManager
+import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
@@ -8,6 +9,8 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
+import android.util.Log
 import android.view.WindowInsets
 import android.view.WindowInsetsController
 import android.view.WindowManager
@@ -26,20 +29,25 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import dev.vigil.Graph
-import dev.vigil.core.engine.Engine
-import dev.vigil.core.plan.CheckInAnswer
-import dev.vigil.core.plan.Rating
+import dev.vigil.core.journal.Entry
+import dev.vigil.core.machine.StepView
+import dev.vigil.core.protocol.Intensity
+import dev.vigil.core.run.Run
 import dev.vigil.engine.Vigil
+import dev.vigil.engine.WhitelistApp
+import dev.vigil.guard.GuardScreens
 import dev.vigil.ui.theme.Palette
 
 /**
- * The full-screen takeover. Shows over the lock screen, turns the screen on and ignores Back.
- * It renders whatever the engine says is active and reports taps back to it; it never decides anything.
+ * The full-screen takeover of the run that owns the screen ([Vigil.activeRun]). Shows over the lock screen, turns
+ * the screen on and ignores Back. It renders the run as the engine has it and reports taps back to it; it never
+ * decides anything. When no run owns the screen any more it finishes.
  */
 class TakeoverActivity : ComponentActivity() {
     /** True while a closing screen has handed over and the activity is finishing on purpose. */
@@ -48,12 +56,12 @@ class TakeoverActivity : ComponentActivity() {
     /** Sound, vibration and lights of the takeover on screen, paused whenever the activity is not visible. */
     private var fx: TakeoverFx? = null
 
-    /** The takeover this screen is playing (its ending may still run after the engine has moved on to the next one). */
-    private var onScreenId: String? = null
+    /** The takeover this screen is playing ([takeoverKey]); its ending may still run after the engine moved on. */
+    private var onScreenKey: String? = null
 
     private val handler = Handler(Looper.getMainLooper())
 
-    // An unattended takeover lets the display sleep after a while instead of keeping it lit for up to 90 minutes.
+    // An unattended takeover lets the display sleep after a while instead of keeping it lit for as long as it lasts.
     private val letScreenSleep = Runnable { window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -62,6 +70,7 @@ class TakeoverActivity : ComponentActivity() {
         setTurnScreenOn(true)
         keepScreenOn()
         enableEdgeToEdge(SystemBarStyle.dark(Color.TRANSPARENT), SystemBarStyle.dark(Color.TRANSPARENT))
+        resizeForKeyboard()
         hideSystemBars()
         TakeoverLauncher.register(this)
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
@@ -96,9 +105,9 @@ class TakeoverActivity : ComponentActivity() {
         val awake = getSystemService(PowerManager::class.java)?.isInteractive ?: true
         if (locked || !awake) moveTaskToBack(true)
         // Left while the previous takeover's ending was still playing: the next one has never been on screen, so it
-        // is still a new directive (it may wake the screen), not one the user walked away from.
-        val active = Graph.state.current.active?.takeoverId
-        if (active != null && active != onScreenId) TakeoverLauncher.ensureShowing(this) else TakeoverLauncher.onEscaped(this)
+        // is still a new one (it may wake the screen), not one the user walked away from.
+        val active = Vigil.activeRun()
+        if (active != null && takeoverKey(active) != onScreenKey) TakeoverLauncher.ensureShowing(this) else TakeoverLauncher.onEscaped(this)
     }
 
     override fun onUserInteraction() {
@@ -118,18 +127,20 @@ class TakeoverActivity : ComponentActivity() {
         handler.postDelayed(letScreenSleep, KEEP_SCREEN_ON_MS)
     }
 
-    /** The engine closed the takeover while it was behind other apps (timed out, kill switch, bad day elsewhere). */
+    /** No run owns the screen any more while the takeover is behind other apps (finished, lock over, kill switch). */
     fun finishIfHidden() {
         if (!TakeoverLauncher.visible) close()
     }
 
     @Composable
     private fun Root() {
-        val live by Graph.state.state.collectAsState()
-        val plans by Graph.plans.snapshot.collectAsState()
-        var shown by remember { mutableStateOf(Graph.state.current.active) }
+        // Every engine step recomposes: who owns the screen now, and what a bail-out would cost.
+        val state by Vigil.state.collectAsState()
+        var shown by remember { mutableStateOf(Vigil.activeRun()) }
+        // Bumped when the same run takes the screen again after its takeover ended (a fresh screen for it).
+        var generation by remember { mutableIntStateOf(0) }
         val ticket = shown
-        SideEffect { onScreenId = ticket?.takeoverId }
+        SideEffect { onScreenKey = ticket?.let { takeoverKey(it) } }
 
         Box(
             Modifier
@@ -141,16 +152,27 @@ class TakeoverActivity : ComponentActivity() {
                 LaunchedEffect(Unit) { close() }
                 return@Box
             }
-            // Re-read after an import, so the screen and the engine always agree on the steps.
-            val directive = remember(ticket.takeoverId, plans) { Engine.directiveFor(Graph.env(), ticket) }
-            if (directive == null) {
-                LaunchedEffect(ticket.takeoverId) { close() }
-                return@Box
-            }
-            key(ticket.takeoverId) {
+            val ticketKey = takeoverKey(ticket)
+            val owner = Vigil.activeRun()
+            val penaltyToday = state.pool.penaltyMinutesToday
+            key(ticketKey, generation) {
+                val live = owner?.takeIf { takeoverKey(it) == ticketKey }
+                val file = remember { Vigil.file() }
+                val protocol = remember { file.find(ticket.protocol) }
+                val intensity = protocol?.intensity ?: Intensity.FULL_THEN_SUBTLE
+                val silentAtStart = remember { Vigil.isSilent(live ?: ticket) }
+                val shownSince = remember { shownSince(ticketKey) }
+                val introSeen = remember { ticketKey in introsSeen }
                 val fx = remember {
                     val s = Graph.settings
-                    TakeoverFx(this@TakeoverActivity, directive.tier, ticket.silent, s.soundEnabled, s.vibrationEnabled, s.glyphEnabled)
+                    // Subtle: a quiet screen, no sound and no Glyph from the start (light haptics only).
+                    val subtle = intensity == Intensity.SUBTLE
+                    TakeoverFx(
+                        this@TakeoverActivity, tierFor(intensity), silentAtStart,
+                        soundEnabled = s.soundEnabled && !subtle,
+                        vibrationEnabled = s.vibrationEnabled,
+                        glyphEnabled = s.glyphEnabled && !subtle,
+                    )
                 }
                 DisposableEffect(Unit) {
                     this@TakeoverActivity.fx = fx
@@ -160,46 +182,69 @@ class TakeoverActivity : ComponentActivity() {
                         fx.release()
                     }
                 }
-                val liveTicket = live.active?.takeIf { it.takeoverId == ticket.takeoverId }
-                // Quiet mode switched on while this takeover shows: the engine marks it silent.
-                LaunchedEffect(liveTicket?.silent) {
-                    if (liveTicket?.silent == true && !ticket.silent) fx.mute()
+                // QUIET switched on while this takeover shows: silent from now on.
+                val silentNow = live?.let { Vigil.isSilent(it) } ?: silentAtStart
+                LaunchedEffect(silentNow) {
+                    if (silentNow && !silentAtStart) fx.mute()
                 }
                 // The screen keeps its text clear of cutouts itself, so its flashes and effects cover the whole display.
                 TakeoverScreen(
                     initial = ticket,
-                    live = liveTicket,
-                    directive = directive,
+                    live = live,
+                    protocol = protocol,
+                    steps = live?.let { Vigil.steps(it) } ?: emptyList(),
+                    penaltyToday = penaltyToday,
+                    bailOut = file.pool.bailOut,
+                    takeover = file.takeover,
+                    shownSinceMs = shownSince,
+                    introSeen = introSeen,
                     fx = fx,
-                    callbacks = callbacks(onFinished = {
-                        val next = Graph.state.current.active
-                        if (next != null && next.takeoverId != ticket.takeoverId) shown = next else close()
-                    }),
+                    callbacks = callbacks(
+                        onIntroSeen = { rememberIntroSeen(ticketKey) },
+                        onFinished = {
+                            val next = Vigil.activeRun()
+                            if (next == null) {
+                                close()
+                            } else {
+                                // The same run owning the screen again after its takeover ended gets a fresh one.
+                                if (takeoverKey(next) == ticketKey) generation++
+                                shown = next
+                            }
+                        },
+                    ),
                 )
             }
         }
     }
 
-    private fun callbacks(onFinished: () -> Unit) = object : TakeoverCallbacks {
-        override fun stepShown(takeoverId: String) = Vigil.stepShown(takeoverId)
-        override fun stepDone(takeoverId: String, index: Int) = Vigil.stepDone(takeoverId, index)
-        override fun dismiss(takeoverId: String) = Vigil.dismiss(takeoverId)
-        override fun notOkay(takeoverId: String) = Vigil.notOkay(takeoverId)
+    private fun callbacks(onIntroSeen: () -> Unit, onFinished: () -> Unit) = object : TakeoverCallbacks {
+        override fun stepView(runId: String): StepView? = Vigil.stepView(runId)
+        override fun run(runId: String): Run? = Vigil.state.value.runs.firstOrNull { it.id == runId }
+        override fun ending(runId: String): Entry? =
+            Vigil.recentEntries(ENDING_LOOKBACK).lastOrNull { it.run == runId && it.type in RUN_ENDINGS }
+        override fun stepDone(runId: String, index: Int, text: String?) = Vigil.stepDone(runId, index, text)
+        override fun confirm(runId: String) = Vigil.confirm(runId)
+        override fun notOkay(runId: String) = Vigil.notOkay(runId)
+        override fun bailOut(runId: String) = Vigil.bailOut(runId)
+        override fun tick() = Vigil.onTick()
         override fun call() {
             fx?.pause()
             openDialer()
         }
-        override fun suspend(minutes: Long) = TakeoverLauncher.suspend(minutes)
-        override fun pendingRatingFor(takeoverId: String) = Vigil.pendingRatingFor(takeoverId)
-        override fun rate(takeoverId: String, rating: Rating?) = Vigil.rate(takeoverId, rating)
-        override fun answerCheckIn(takeoverId: String, answer: CheckInAnswer) = Vigil.answerCheckIn(takeoverId, answer)
+        override fun apps(): List<WhitelistApp> = Vigil.whitelistApps()
+        override fun openApp(app: WhitelistApp) = this@TakeoverActivity.openApp(app)
+        override fun killSwitch() {
+            GuardScreens.killSwitch(this@TakeoverActivity)
+        }
+        override fun typing() = keepScreenOn()
+        override fun introSeen() = onIntroSeen()
         override fun finished() = onFinished()
     }
 
     private fun close() {
         if (closing) return
         closing = true
-        if (Graph.state.current.active == null) TakeoverLauncher.onClosed(this)
+        if (Vigil.activeRun() == null) TakeoverLauncher.onClosed(this)
         finish()
     }
 
@@ -218,6 +263,38 @@ class TakeoverActivity : ComponentActivity() {
         if (!opened || locked) moveTaskToBack(true)
     }
 
+    /**
+     * APPS: leaves the takeover for a whitelisted app, which stays usable during every lock (the launcher does not
+     * bring the takeover back over it). On a locked phone the user unlocks first; cancelling stays here.
+     */
+    private fun openApp(app: WhitelistApp) {
+        val keyguard = getSystemService(KeyguardManager::class.java)
+        if (keyguard?.isKeyguardLocked == true) {
+            keyguard.requestDismissKeyguard(this, object : KeyguardManager.KeyguardDismissCallback() {
+                override fun onDismissSucceeded() = launch(app)
+            })
+        } else {
+            launch(app)
+        }
+    }
+
+    private fun launch(app: WhitelistApp) {
+        try {
+            startActivity(app.launch)
+        } catch (e: RuntimeException) {
+            Log.w(TAG, "Could not open ${app.packageName}: ${e.message}")
+        }
+    }
+
+    /**
+     * A text step's keyboard: the screen gets the keyboard's insets and makes room itself (the eye gives way)
+     * instead of the window being panned. With edge-to-edge this is how the insets reach the screen.
+     */
+    @Suppress("DEPRECATION")
+    private fun resizeForKeyboard() {
+        window.setSoftInputMode(WindowManager.LayoutParams.SOFT_INPUT_ADJUST_RESIZE)
+    }
+
     private fun hideSystemBars() {
         window.insetsController?.let {
             it.hide(WindowInsets.Type.systemBars())
@@ -226,13 +303,41 @@ class TakeoverActivity : ComponentActivity() {
     }
 
     companion object {
+        private const val TAG = "VigilTakeover"
+
         /** The phone app's emergency dialer, the same screen the lock screen's "Emergency call" opens. */
         private const val EMERGENCY_DIAL_ACTION = "com.android.phone.EmergencyDialer.DIAL"
 
         /** How long the display stays on after the takeover appears or is last touched. */
         private const val KEEP_SCREEN_ON_MS = 10 * 60_000L
 
-        fun intent(context: android.content.Context): Intent =
+        /** Takeovers remembered for [shownSince] and [introsSeen]. */
+        private const val SHOWN_MAX = 32
+
+        /** Journal entries searched for how a run ended (it ended a moment ago, so it is among the last few). */
+        private const val ENDING_LOOKBACK = 40
+
+        /** When each takeover ([takeoverKey]) first appeared (elapsed realtime), for its intro and intensity. */
+        private val shownAt = LinkedHashMap<String, Long>()
+
+        /** Takeovers ([takeoverKey]) whose intro played to the open eye in this process: they come back without it. */
+        private val introsSeen = LinkedHashSet<String>()
+
+        private fun rememberIntroSeen(key: String) {
+            introsSeen += key
+            while (introsSeen.size > SHOWN_MAX) introsSeen.remove(introsSeen.first())
+        }
+
+        /** When the takeover [key] first appeared in this process (now, the first time it is asked for). */
+        private fun shownSince(key: String): Long {
+            shownAt[key]?.let { return it }
+            val now = SystemClock.elapsedRealtime()
+            shownAt[key] = now
+            while (shownAt.size > SHOWN_MAX) shownAt.remove(shownAt.keys.first())
+            return now
+        }
+
+        fun intent(context: Context): Intent =
             Intent(context, TakeoverActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_USER_ACTION)
     }

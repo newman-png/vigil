@@ -20,20 +20,29 @@ internal object TakeoverType {
     val Dim = Palette.White.copy(alpha = 0.45f)
     val Faint = Palette.White.copy(alpha = 0.3f)
 
-    /** The directive's title and the check-in's lines. */
+    /** The protocol's title. */
     val Title = style(fontSize = 26, lineHeight = 36, tracking = 0.18)
 
     /** The current step. */
     val Step = style(fontSize = 22, lineHeight = 32, tracking = 0.14)
 
-    /** The directive's why, under its title. */
+    /** Small dim lines: the title over the step, the version that runs. */
     val Small = style(fontSize = 13, lineHeight = 21, tracking = 0.2, color = Dim)
 
-    /** One-tap choices: EASY / OK / HARD, BETTER / SAME / WORSE. */
+    /** One-tap words: the APPS sheet's apps, SAVE. */
     val Choice = style(fontSize = 18, lineHeight = 24, tracking = 0.22)
 
     /** The safety strip and the small notes above it. */
     val Strip = style(fontSize = 12, lineHeight = 18, tracking = 0.25, color = Faint)
+
+    /** A timer step counting itself down. */
+    val Timer = style(fontSize = 44, lineHeight = 52, tracking = 0.12)
+
+    /** One row of the stage-2 checklist. */
+    val Item = style(fontSize = 16, lineHeight = 24, tracking = 0.12).copy(textAlign = TextAlign.Start)
+
+    /** What is typed into a text step (kept as typed, not uppercased). */
+    val Field = style(fontSize = 16, lineHeight = 24, tracking = 0.06).copy(textAlign = TextAlign.Start)
 
     private fun style(fontSize: Int, lineHeight: Int, tracking: Double, color: Color = Palette.White) = TextStyle(
         color = color,

@@ -1,15 +1,13 @@
 package dev.vigil.takeover
 
 import android.os.SystemClock
-import androidx.compose.foundation.clickable
+import androidx.activity.compose.BackHandler
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxHeight
@@ -22,6 +20,7 @@ import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -29,63 +28,82 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.integerResource
 import androidx.compose.ui.unit.dp
 import dev.vigil.R
-import dev.vigil.core.engine.Engine
-import dev.vigil.core.engine.Ticket
-import dev.vigil.core.plan.CheckInAnswer
-import dev.vigil.core.plan.Directive
-import dev.vigil.core.plan.Rating
+import dev.vigil.core.common.WallClock
+import dev.vigil.core.journal.Entry
+import dev.vigil.core.journal.EntryType
+import dev.vigil.core.machine.StepView
+import dev.vigil.core.protocol.BailOutConfig
+import dev.vigil.core.protocol.Intensity
+import dev.vigil.core.protocol.Protocol
+import dev.vigil.core.protocol.Step
+import dev.vigil.core.protocol.StepType
+import dev.vigil.core.protocol.TakeoverConfig
+import dev.vigil.core.run.Run
+import dev.vigil.core.run.RunPhase
+import dev.vigil.engine.WhitelistApp
 import dev.vigil.ui.theme.Palette
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.withContext
+import java.time.Instant
+import java.time.ZoneId
 
-/** How a step tap was received by the engine. */
-enum class StepResult { NEXT, COMPLETED, IGNORED }
+/** What the takeover screen reads and reports. Each call goes straight to the engine; the screen decides nothing. */
+internal interface TakeoverCallbacks {
+    /** The current step of run [runId] with its locks and timers (read again often: locks run out with time). */
+    fun stepView(runId: String): StepView?
 
-/** What the user did with "I'm not okay today" while this takeover was showing. */
-enum class BadDayResult {
-    BYPASSED,
-    KEPT,
+    /** Run [runId] as the engine has it now, owning the screen or not; null once it is over. */
+    fun run(runId: String): Run?
 
-    /** A TEST preview: nothing was switched on. */
-    PREVIEW,
-}
+    /**
+     * How run [runId] ended once it is over: its last [RUN_ENDINGS] journal entry, or null when none is found (yet).
+     * Blocking: reads the journal, so it is called off the main thread.
+     */
+    fun ending(runId: String): Entry?
 
-/** What the takeover screen reports. Each call goes straight to the engine; the screen decides nothing. */
-interface TakeoverCallbacks {
-    /** The current step appeared on screen: its min_seconds lock starts now. */
-    fun stepShown(takeoverId: String)
+    /** Step [index] of run [runId] was finished ([text] for a text step). The engine ignores a locked or stale one. */
+    fun stepDone(runId: String, index: Int, text: String?)
 
-    /** The current step was held to the end. */
-    fun stepDone(takeoverId: String, index: Int): StepResult
+    /** A prayer's done step was held: it was prayed. */
+    fun confirm(runId: String)
 
-    /** LEAVE was held to the end. */
-    fun dismiss(takeoverId: String)
+    /** NOT OKAY was held to the end: one rung down the ladder (a prayer's lock shortens). */
+    fun notOkay(runId: String)
 
-    /** NOT OKAY was held to the end. */
-    fun notOkay(takeoverId: String): BadDayResult
+    /** LEAVE was held to the end: the run is left early (logged, the pool penalty follows). */
+    fun bailOut(runId: String)
+
+    /** A timer or the lock ran out on the clock: bring the engine up to date (its alarm does too). */
+    fun tick()
 
     /** CALL was tapped: the takeover steps aside and the dialer opens. Never blocked. */
     fun call()
 
-    /** The hidden developer kill switch (seven taps on the eye). */
-    fun suspend(minutes: Long)
+    /** The APPS button's apps, resolved on this phone. Blocking: called off the main thread. */
+    fun apps(): List<WhitelistApp>
 
-    /** True when the engine wants EASY / OK / HARD for this just-completed takeover. */
-    fun pendingRatingFor(takeoverId: String): Boolean
+    /** An app of the APPS sheet was picked: the takeover leaves for it. */
+    fun openApp(app: WhitelistApp)
 
-    /** The difficulty report after a completion; null = skipped. */
-    fun rate(takeoverId: String, rating: Rating?)
+    /** Seven taps on the eye: the hidden kill switch (a 5-minute wait, then VIGIL suspends for an hour). */
+    fun killSwitch()
 
-    /** The morning check-in was answered. */
-    fun answerCheckIn(takeoverId: String, answer: CheckInAnswer)
+    /** A text step is being typed: the display stays on (the keyboard's keys never reach the activity). */
+    fun typing()
+
+    /** This takeover's intro has played to the open eye: coming back to it later skips the intro. */
+    fun introSeen()
 
     /** The takeover has left the screen; show the next one or close. */
     fun finished()
@@ -99,7 +117,7 @@ private enum class Phase {
     /** The red slit appears with each heartbeat. */
     BEAT,
 
-    /** Tiers 2-3: the slit held still under the swell. */
+    /** Full intensity: the slit held still under the swell. */
     SWELL,
 
     /** The opening frames. */
@@ -108,26 +126,23 @@ private enum class Phase {
     /** The open eye in silence. */
     HOLD,
 
-    /** The directive line (title and why), or the check-in's "YESTERDAY WAS HARD.". */
+    /** The protocol's title. */
     LINE,
 
-    /** The current step, or the check-in's question. */
+    /** The steps: one at a time (stage 1) or as a checklist (stage 2). */
     STEP,
 
-    /** Completed or answered: a still moment, the eye closes slowly, then black. */
+    /** Finished: a still moment, the eye filled and closing slowly, then black. */
     CLOSING,
 
-    /** EASY / OK / HARD on black. */
-    RATING,
-
-    /** A short closing text on black (left, or a lighter day). */
+    /** A short closing text on black (left early, or the lock ended first). */
     FAREWELL,
 
     /** Handed over: nothing more happens here. */
     DONE,
 }
 
-/** The intro's timing per tier. */
+/** The intro's timing per tier (intensity). */
 private class Timing(val black: Long, val beats: Int, val swell: Long, val hold: Long)
 
 private fun timingFor(tier: Int): Timing = when {
@@ -137,57 +152,96 @@ private fun timingFor(tier: Int): Timing = when {
 }
 
 /**
- * One takeover, a genjutsu: one element at a time. Black, the red slit with the heartbeat, the eye opens, then
- * below it one text slot shows the directive line and then, replacing it, the current step. A step is confirmed
- * by holding anywhere above the safety strip; the pupil contracts while it is held. Hard cuts, long holds, no
- * checkboxes, progress bars or counters.
+ * The takeover of one protocol run, a genjutsu: black, the red slit with the heartbeat, the eye opens, the
+ * protocol's title, then its steps. Stage 1 shows one step at a time by its type (a check or done step is held for
+ * 1.5 s anywhere above the strip once its lock is over; a timer counts itself down and ends by itself; a text step
+ * is typed and saved); stage 2 shows the steps as a plain checklist without timers. The eye fills with red as the run
+ * goes on, late and in coarse steps. At the bottom: CALL, APPS, NOT OKAY and LEAVE. Hard cuts, long holds.
  *
- * [initial] is the ticket as it was when the takeover appeared; [live] is the same ticket as the engine
- * currently has it (steps done, lock start), or null once the engine has closed it. A takeover that was already
- * under way (the activity was recreated, or it comes back after being left) starts at the open eye and its
- * current step.
+ * Intensity: full plays the whole intro with sound, vibration and Glyph lights (the Glyph off after
+ * [TakeoverConfig.glyphOffAfterS]); subtle is a quiet screen (a short intro, no sound, no Glyph, no screen effects);
+ * full then subtle turns subtle after [TakeoverConfig.fullSeconds]. Both count from [shownSinceMs] (elapsed realtime),
+ * when this takeover first appeared. Silence (QUIET) is the activity's business: it builds [fx] silent or mutes it.
+ *
+ * [initial] is the run as it was when this takeover appeared; [live] is the same run as the engine has it now while
+ * it owns the screen, or null once it does not. [steps] are [live]'s steps (its version on its weekday). A takeover
+ * that was already under way (its intro was seen ([introSeen]), its run has moved on, or it first appeared a while
+ * ago) starts at the open eye and its current step. When the run stops owning the screen the takeover ends as the
+ * engine ended it: the filled eye closes for a finished run; a lock that ran out, a missed window or a run left from
+ * elsewhere says so in a line; then [TakeoverCallbacks.finished].
  */
 @Composable
-fun TakeoverScreen(
-    initial: Ticket,
-    live: Ticket?,
-    directive: Directive,
+internal fun TakeoverScreen(
+    initial: Run,
+    live: Run?,
+    protocol: Protocol?,
+    steps: List<Step>,
+    penaltyToday: Int,
+    bailOut: BailOutConfig,
+    takeover: TakeoverConfig,
+    shownSinceMs: Long,
+    introSeen: Boolean,
     fx: TakeoverFx,
     callbacks: TakeoverCallbacks,
 ) {
-    val id = initial.takeoverId
-    val checkIn = directive.id == Engine.CHECK_IN_ID
-    val timing = remember(directive.tier) { timingFor(directive.tier) }
+    val id = initial.id
+    val intensity = protocol?.intensity ?: Intensity.FULL_THEN_SUBTLE
+    val tier = tierFor(intensity)
+    val timing = remember(tier) { timingFor(tier) }
     val openFrames = integerResource(R.integer.eye_open_frames)
     val cb by rememberUpdatedState(callbacks)
     val currentLive by rememberUpdatedState(live)
-    val currentDirective by rememberUpdatedState(directive)
+    // The run as last seen while it owned the screen: its ending still shows its title and lines.
+    val last = remember { arrayOf(initial) }
+    if (live != null) last[0] = live
+    val run = live ?: last[0]
+    val title = protocol?.title ?: initial.protocol
+    val checklist = run.stage >= 2
+
+    fun sinceShown(): Long = SystemClock.elapsedRealtime() - shownSinceMs
 
     // Survives the activity being recreated: the intro is not played twice.
-    var introSeen by rememberSaveable { mutableStateOf(false) }
-    val resume = remember { introSeen || initial.stepsDone > 0 || initial.stepShownAtMs != null }
+    var introPlayed by rememberSaveable { mutableStateOf(false) }
+    val resume = remember {
+        // A returned prayer takeover is a new takeover of a run that has moved on: it plays its intro.
+        val movedOn = initial.phase == RunPhase.ACTIVE && (initial.step > 0 || initial.steppedDown || initial.shortened)
+        introPlayed || introSeen || movedOn || sinceShown() > RESUME_AFTER_MS
+    }
 
     var phase by remember { mutableStateOf(if (resume) Phase.STEP else Phase.BLACK) }
     var eyeMode by remember { mutableStateOf(if (resume) EyeMode.OPEN else EyeMode.HIDDEN) }
     var eyeModeAt by remember { mutableLongStateOf(SystemClock.uptimeMillis()) }
-    // When the vignette and the tears started; 0 = off.
+    // When the vignette and the tears started; 0 = off. They show only while the takeover is at full intensity.
     var effectsAt by remember { mutableLongStateOf(if (resume) SystemClock.uptimeMillis() else 0L) }
-    var stepIndex by remember { mutableIntStateOf(initial.stepsDone) }
+    var quietScreen by remember {
+        mutableStateOf(
+            intensity == Intensity.SUBTLE ||
+                (intensity == Intensity.FULL_THEN_SUBTLE && sinceShown() >= takeover.fullSeconds * 1000L),
+        )
+    }
+    // The current step as the engine has it, read again every POLL_MS; and the clock the countdowns read.
+    var view by remember { mutableStateOf(callbacks.stepView(id)) }
+    var nowSec by remember { mutableLongStateOf(System.currentTimeMillis() / 1000) }
     var stepVisible by remember { mutableStateOf(false) }
-    var stepReady by remember { mutableStateOf(false) }
     // The first step after a resume appears at once; every other one after a moment of nothing.
     var gapless by remember { mutableStateOf(resume) }
     // When the current hold-to-confirm began; 0 = not held.
     var holdStartedAt by remember { mutableLongStateOf(0L) }
-    // True once this screen is closing the takeover itself (completed, answered, left, lighter day).
+    // True once this screen is closing the takeover (finished, left, or the lock ended).
     var ended by remember { mutableStateOf(false) }
+    // The eye's red fill (late and coarse; -1 = not set yet), and full once the run is done.
+    var fillLevel by remember { mutableFloatStateOf(-1f) }
+    var filledUp by remember { mutableStateOf(false) }
     var eyeTaps by remember { mutableIntStateOf(0) }
+    var lastTapAt by remember { mutableLongStateOf(0L) }
     var farewell by remember { mutableStateOf("") }
     var farewellMs by remember { mutableLongStateOf(0L) }
     var note by remember { mutableStateOf<String?>(null) }
+    var leaveHeld by remember { mutableStateOf(false) }
+    var appsOpen by remember { mutableStateOf(false) }
 
     val clock = rememberTakeoverClock()
-    val tear = rememberTear(running = effectsAt != 0L)
+    val tear = rememberTear(running = effectsAt != 0L && !quietScreen)
 
     fun setEye(mode: EyeMode) {
         eyeMode = mode
@@ -201,82 +255,67 @@ fun TakeoverScreen(
     fun closeWith(text: String, holdMs: Long) {
         effectsOff()
         holdStartedAt = 0L
+        appsOpen = false
         setEye(EyeMode.HIDDEN)
         farewell = text
         farewellMs = holdMs
         phase = Phase.FAREWELL
     }
 
-    fun confirmStep() {
-        val index = stepIndex
-        fx.confirmStep()
-        when (cb.stepDone(id, index)) {
-            StepResult.NEXT -> {
-                setEye(EyeMode.OPEN)
-                stepVisible = false
-                stepReady = false
-                stepIndex = index + 1
-            }
-            StepResult.COMPLETED -> {
-                ended = true
-                fx.completed()
-                effectsOff()
-                stepVisible = false
-                // The pupil stays at its pinpoint for the still moment before the eye closes.
-                phase = Phase.CLOSING
-            }
-            // The engine did not take it (its lock had not quite run out there): let go and hold again.
-            StepResult.IGNORED -> setEye(EyeMode.OPEN)
+    /** Ends without words: the eye closes (filled, for a finished run), then black. */
+    fun closeQuietly() {
+        effectsOff()
+        holdStartedAt = 0L
+        appsOpen = false
+        stepVisible = false
+        if (eyeMode == EyeMode.HIDDEN) {
+            phase = Phase.DONE
+            cb.finished()
+        } else {
+            // The pupil stays at its pinpoint for the still moment before the eye closes.
+            phase = Phase.CLOSING
         }
     }
 
-    fun answer(answer: CheckInAnswer) {
-        if (ended || phase != Phase.STEP) return
-        ended = true
-        cb.answerCheckIn(id, answer)
-        fx.completed()
-        effectsOff()
-        stepVisible = false
-        phase = Phase.CLOSING
-    }
-
-    fun rate(rating: Rating?) {
-        if (phase != Phase.RATING) return
-        phase = Phase.DONE
-        // The question may have run out (30 min) while the screen was away; then there is nothing to record.
-        if (cb.pendingRatingFor(id)) cb.rate(id, rating)
-        cb.finished()
-    }
-
-    fun leave() {
+    /** Step [index] is finished: a prayer's done step confirms the prayer, everything else is a step done. */
+    fun finishStep(index: Int, type: StepType, text: String?) {
+        val r = currentLive ?: return
         if (ended) return
-        ended = true
-        cb.dismiss(id)
-        fx.dismissed()
-        closeWith(if (checkIn) "NOT ANSWERED. LOGGED." else "ABANDONED. LOGGED.", FAREWELL_LEFT_MS)
+        fx.confirmStep()
+        if (type == StepType.DONE && r.prayer != null) cb.confirm(r.id) else cb.stepDone(r.id, index, text)
+        view = cb.stepView(r.id)
+    }
+
+    fun confirmHeld() {
+        setEye(EyeMode.OPEN)
+        val v = view ?: return
+        finishStep(v.index, v.step.type, null)
     }
 
     fun notOkay() {
+        val r = currentLive ?: return
         if (ended) return
-        ended = true
-        when (cb.notOkay(id)) {
-            BadDayResult.BYPASSED -> {
-                fx.stop()
-                closeWith("OKAY. TODAY IS LIGHTER.\nTHIS IS NOT A FAILURE.", FAREWELL_LIGHTER_MS)
-            }
-            BadDayResult.KEPT -> {
-                ended = false
-                note = "THIS ONE IS ON YOUR ESSENTIALS LIST. IT STAYS."
-            }
-            BadDayResult.PREVIEW -> {
-                ended = false
-                note = "PREVIEW: NOTHING CHANGED."
-            }
-        }
+        cb.notOkay(r.id)
+        view = cb.stepView(r.id)
     }
 
-    val canHold by rememberUpdatedState(phase == Phase.STEP && stepVisible && stepReady && !checkIn && !ended)
-    val onConfirm by rememberUpdatedState({ confirmStep() })
+    fun leave() {
+        val r = currentLive ?: return
+        if (ended) return
+        ended = true
+        leaveHeld = false
+        val text = leftText(r, protocol, bailOut, penaltyToday, Instant.now())
+        cb.bailOut(r.id)
+        fx.dismissed()
+        closeWith(text, FAREWELL_MS)
+    }
+
+    val current = view
+    val holdable = current != null && current.canTap && current.step.type != StepType.TEXT
+    val canHold by rememberUpdatedState(
+        phase == Phase.STEP && stepVisible && holdable && !checklist && !ended && !appsOpen && live != null,
+    )
+    val onConfirm by rememberUpdatedState({ confirmHeld() })
 
     // The sequence: each phase holds for its time, then cuts to the next.
     LaunchedEffect(phase) {
@@ -318,7 +357,8 @@ fun TakeoverScreen(
                 fx.eyeOpen()
                 delay(openFrames * EYE_OPEN_FRAME_MS)
                 setEye(EyeMode.OPEN)
-                introSeen = true
+                introPlayed = true
+                cb.introSeen()
                 phase = Phase.HOLD
             }
             Phase.HOLD -> {
@@ -328,8 +368,7 @@ fun TakeoverScreen(
                 phase = Phase.LINE
             }
             Phase.LINE -> {
-                val chars = directive.title.length + directive.why.length
-                delay(if (checkIn) CHECK_IN_LINE_MS else LINE_MS + LINE_PER_CHAR_MS * chars)
+                delay(LINE_MS + LINE_PER_CHAR_MS * title.length)
                 phase = Phase.STEP
             }
             Phase.CLOSING -> {
@@ -338,22 +377,8 @@ fun TakeoverScreen(
                 delay(openFrames * EYE_CLOSE_FRAME_MS)
                 setEye(EyeMode.HIDDEN)
                 delay(BLACK_AFTER_MS)
-                if (!checkIn && cb.pendingRatingFor(id)) {
-                    phase = Phase.RATING
-                } else {
-                    phase = Phase.DONE
-                    cb.finished()
-                }
-            }
-            Phase.RATING -> {
-                // Asked while the screen was away and since expired: never show a question that no longer counts.
-                if (!cb.pendingRatingFor(id)) {
-                    phase = Phase.DONE
-                    cb.finished()
-                    return@LaunchedEffect
-                }
-                delay(RATING_TIMEOUT_MS)
-                rate(null)
+                phase = Phase.DONE
+                cb.finished()
             }
             Phase.FAREWELL -> {
                 delay(farewellMs)
@@ -364,53 +389,94 @@ fun TakeoverScreen(
         }
     }
 
-    // Picked up mid-way: straight to the open eye with the drone under it.
+    // Full then subtle: subtle once the full seconds are over (the drone fades, the Glyph and the effects go).
     LaunchedEffect(Unit) {
-        if (resume) fx.droneIn()
+        if (intensity != Intensity.FULL_THEN_SUBTLE) return@LaunchedEffect
+        val left = takeover.fullSeconds * 1000L - sinceShown()
+        if (left > 0) delay(left)
+        quietScreen = true
+        fx.subtle()
     }
 
-    // Each step (and the check-in's question) cuts in after a moment of nothing; its lock starts when it shows.
-    LaunchedEffect(phase, stepIndex) {
+    // Full: the Glyph lights go off a while after the takeover first appeared; sound and vibration go on.
+    LaunchedEffect(Unit) {
+        if (intensity == Intensity.SUBTLE) return@LaunchedEffect
+        val left = takeover.glyphOffAfterS * 1000L - sinceShown()
+        if (left > 0) delay(left)
+        fx.glyphOff()
+    }
+
+    // Picked up mid-way: straight to the open eye, with the drone under it while the takeover is still full.
+    LaunchedEffect(Unit) {
+        if (resume && !quietScreen) fx.droneIn()
+    }
+
+    // The engine's view of the current step, read again and again (locks run out with time), and the clock. A timer
+    // that ends itself and the lock's end are the engine's to apply; when one is due, the engine is brought up to
+    // date (its alarm does the same), and the next step or the end of the run follows from its new state.
+    LaunchedEffect(Unit) {
+        val ticked = HashSet<Instant>()
+        while (true) {
+            val v = cb.stepView(id)
+            if (v != view) view = v
+            val now = Instant.now()
+            if (now.epochSecond != nowSec) nowSec = now.epochSecond
+            if (currentLive != null && !ended && v != null) {
+                val timerEnd = v.timerEndsAt?.takeIf { v.step.type == StepType.TIMER && !v.canTap }
+                val due = listOfNotNull(timerEnd, v.lockEndsAt).firstOrNull { !now.isBefore(it) && it !in ticked }
+                if (due != null) {
+                    ticked += due
+                    cb.tick()
+                }
+            }
+            delay(POLL_MS)
+        }
+    }
+
+    // The eye fills as the run goes on: late (one coarse step at a time, FILL_LAG_MS apart) and never quite full.
+    LaunchedEffect(Unit) {
+        while (true) {
+            val r = currentLive
+            if (r != null) {
+                val target = coarse(runProgress(r, view, Instant.now()))
+                fillLevel = when {
+                    fillLevel < 0f -> (target - FILL_STEP).coerceAtLeast(0f)
+                    target > fillLevel + FILL_EPSILON -> minOf(target, fillLevel + FILL_STEP)
+                    else -> fillLevel
+                }
+            }
+            delay(FILL_LAG_MS)
+        }
+    }
+
+    // Each step cuts in after a moment of nothing (a new version starts again at its first step). The checklist
+    // has no such gap.
+    val stepKey = current?.let { "${run.version.label}:${it.index}" }
+    LaunchedEffect(phase, stepKey) {
         if (phase != Phase.STEP) return@LaunchedEffect
         stepVisible = false
-        stepReady = false
-        if (gapless) gapless = false else delay(GAP_MS)
+        if (gapless || checklist) gapless = false else delay(GAP_MS)
         stepVisible = true
-        if (currentLive != null) cb.stepShown(id)
         fx.waiting()
     }
 
-    // While the step's lock runs its text is dim and holding does nothing; then it turns white with one tick.
-    LaunchedEffect(phase, stepIndex, stepVisible) {
-        if (phase != Phase.STEP || !stepVisible || checkIn) return@LaunchedEffect
-        val index = stepIndex
-        var wasLocked = false
-        while (true) {
-            val ticket = currentLive
-            // Null until the engine's ticket shows this step (the screen can be a frame ahead of it).
-            val left = if (ticket != null && ticket.stepsDone == index && ticket.stepShownAtMs != null) {
-                Engine.lockRemainingSeconds(ticket, currentDirective, System.currentTimeMillis())
-            } else {
-                null
-            }
-            if (left != null && left > 0) wasLocked = true
-            if (left == 0L) {
-                stepReady = true
-                if (wasLocked) fx.stepReady()
-                break
-            }
-            delay(LOCK_POLL_MS)
+    // A step that was locked turns white with one soft tick the moment it can be held.
+    val canTapNow = current?.canTap == true
+    val wasLocked = remember(stepKey) { booleanArrayOf(false) }
+    LaunchedEffect(stepKey, canTapNow) {
+        if (!canTapNow) {
+            wasLocked[0] = true
+        } else if (wasLocked[0]) {
+            wasLocked[0] = false
+            if (!checklist) fx.stepReady()
         }
     }
 
-    // The engine closed this takeover for another reason (timed out, kill switch, quiet mode, a bad day from elsewhere).
-    LaunchedEffect(live == null) {
-        if (live == null && !ended) {
-            ended = true
-            fx.stop()
-            phase = Phase.DONE
-            cb.finished()
-        }
+    // "I'M NOT OKAY" took effect: the version line under the step says what runs now; the note says what it cost.
+    val ladder = run.version to run.shortened
+    val firstLadder = remember { ladder }
+    LaunchedEffect(ladder) {
+        if (ladder != firstLadder) note = STEP_DOWN_NOTE
     }
 
     LaunchedEffect(note) {
@@ -420,6 +486,54 @@ fun TakeoverScreen(
         }
     }
 
+    // The run no longer owns the screen and this screen did not close it itself (by LEAVE). Still open: its lock ran
+    // out first (or it was left from elsewhere). Over: the journal says how (finished by the last step, the
+    // confirmation or a timer; missed when its window closed; dropped by the kill switch). Watched with snapshotFlow,
+    // so nothing cancels the ending half-way.
+    LaunchedEffect(Unit) {
+        snapshotFlow { currentLive == null }.first { it }
+        if (ended) return@LaunchedEffect
+        ended = true
+        holdStartedAt = 0L
+        appsOpen = false
+        leaveHeld = false
+        if (eyeMode == EyeMode.CONTRACTING) setEye(EyeMode.OPEN)
+        val open = cb.run(id)
+        if (open != null) {
+            fx.stop()
+            if (open.phase == RunPhase.OPEN) closeWith(lockOverText(open), FAREWELL_MS) else closeQuietly()
+            return@LaunchedEffect
+        }
+        val journal = cb
+        var ending: Entry? = null
+        var tries = 0
+        while (ending == null && tries < ENDING_TRIES) {
+            // The journal line follows the state change by a moment.
+            if (tries++ > 0) delay(ENDING_RETRY_MS)
+            ending = withContext(Dispatchers.IO) { runCatching { journal.ending(id) }.getOrNull() }
+        }
+        val text = ending?.let { endText(it) }
+        when {
+            ending?.type == EntryType.COMPLETED -> {
+                fx.completed()
+                filledUp = true
+                closeQuietly()
+            }
+            text != null -> {
+                fx.stop()
+                closeWith(text, FAREWELL_MS)
+            }
+            else -> {
+                fx.stop()
+                closeQuietly()
+            }
+        }
+    }
+
+    BackHandler(enabled = appsOpen) { appsOpen = false }
+
+    val holds = (phase == Phase.LINE || phase == Phase.STEP) && !ended && live != null
+
     Box(
         Modifier
             .fillMaxSize()
@@ -427,7 +541,7 @@ fun TakeoverScreen(
             .drawBehind { if (eyeNegative(eyeMode, clock.longValue - eyeModeAt)) drawRect(Palette.White) }
             .genjutsu(
                 tear = { tear.value },
-                vignette = { if (effectsAt != 0L) vignetteAlpha(clock.longValue - effectsAt) else 0f },
+                vignette = { if (effectsAt != 0L && !quietScreen) vignetteAlpha(clock.longValue - effectsAt) else 0f },
             ),
     ) {
         Column(Modifier.fillMaxSize().safeDrawingPadding()) {
@@ -455,18 +569,11 @@ fun TakeoverScreen(
                 horizontalAlignment = Alignment.CenterHorizontally,
             ) {
                 when (phase) {
-                    Phase.RATING -> Centered {
-                        Choices(listOf("EASY" to Rating.EASY, "OK" to Rating.OK, "HARD" to Rating.HARD)) { rate(it) }
-                        Spacer(Modifier.height(48.dp))
-                        TakeoverText(
-                            "SKIP",
-                            TakeoverType.Strip,
-                            Modifier
-                                .clickable(remember { MutableInteractionSource() }, indication = null) { rate(null) }
-                                .padding(horizontal = 24.dp, vertical = 14.dp),
-                        )
-                    }
-                    Phase.FAREWELL -> Centered {
+                    Phase.FAREWELL -> Column(
+                        Modifier.fillMaxSize(),
+                        verticalArrangement = Arrangement.Center,
+                        horizontalAlignment = Alignment.CenterHorizontally,
+                    ) {
                         TakeoverText(farewell, TakeoverType.Step, Modifier.padding(horizontal = 24.dp))
                     }
                     Phase.DONE -> Unit
@@ -475,7 +582,8 @@ fun TakeoverScreen(
                         Spacer(Modifier.fillMaxHeight(EYE_TOP_SHARE))
                         Box(
                             Modifier
-                                // Square where there is room; on a short screen the eye gives way to the text under it.
+                                // Square where there is room; on a short screen (or with the keyboard up) the eye
+                                // gives way to the text under it.
                                 .weight(1f, fill = false)
                                 .fillMaxWidth()
                                 .aspectRatio(1f)
@@ -484,14 +592,22 @@ fun TakeoverScreen(
                                     awaitEachGesture {
                                         val down = awaitFirstDown(requireUnconsumed = false)
                                         val up = waitForUpOrCancellation()
-                                        if (up != null && up.uptimeMillis - down.uptimeMillis < EYE_TAP_MS) eyeTaps++
+                                        if (up != null && up.uptimeMillis - down.uptimeMillis < EYE_TAP_MS) {
+                                            if (up.uptimeMillis - lastTapAt > EYE_TAP_GAP_MS) eyeTaps = 0
+                                            lastTapAt = up.uptimeMillis
+                                            eyeTaps++
+                                            if (eyeTaps >= KILL_SWITCH_TAPS) {
+                                                eyeTaps = 0
+                                                cb.killSwitch()
+                                            }
+                                        }
                                     }
                                 },
                         ) {
                             Eye(
                                 mode = eyeMode,
                                 modeStartedAt = eyeModeAt,
-                                tier = directive.tier,
+                                tier = tier,
                                 clock = clock,
                                 modifier = Modifier.fillMaxSize(),
                                 contract = {
@@ -501,9 +617,10 @@ fun TakeoverScreen(
                                         else -> ((clock.longValue - holdStartedAt).toFloat() / CONFIRM_HOLD_MS).coerceIn(0f, 1f)
                                     }
                                 },
+                                fill = { if (filledUp) 1f else fillLevel.coerceAtLeast(0f) },
                             )
                         }
-                        // The one text slot under the eye. Its room is kept first, so a long step is never cut off.
+                        // The text slot under the eye. Its room is kept first, so a long step is never cut off.
                         Box(
                             Modifier
                                 .fillMaxWidth()
@@ -511,197 +628,119 @@ fun TakeoverScreen(
                                 .padding(start = 24.dp, end = 24.dp, top = 8.dp),
                             contentAlignment = Alignment.TopCenter,
                         ) {
-                            Slot(
-                                phase = phase,
-                                checkIn = checkIn,
-                                directive = directive,
-                                stepIndex = stepIndex,
-                                stepVisible = stepVisible,
-                                stepReady = stepReady,
-                                onAnswer = { answer(it) },
-                            )
+                            when {
+                                phase == Phase.LINE -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                    TakeoverText(title, TakeoverType.Title)
+                                    val below = lineBelowTitle(run)
+                                    if (below != null) {
+                                        Spacer(Modifier.height(16.dp))
+                                        TakeoverText(below, TakeoverType.Small)
+                                    }
+                                }
+                                phase != Phase.STEP || !stepVisible -> Unit
+                                else -> Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+                                    TakeoverText(if (run.test) "$title · TEST" else title, TakeoverType.Small)
+                                    Spacer(Modifier.height(20.dp))
+                                    if (checklist) {
+                                        Checklist(
+                                            steps = steps,
+                                            current = current?.index ?: run.step,
+                                            onTap = { index, type -> finishStep(index, type, null) },
+                                            onTyping = { cb.typing() },
+                                            onSave = { index, text -> finishStep(index, StepType.TEXT, text) },
+                                        )
+                                    } else if (current != null) {
+                                        SingleStep(
+                                            view = current,
+                                            nowSec = { nowSec },
+                                            onTyping = { cb.typing() },
+                                            onSave = { text -> finishStep(current.index, StepType.TEXT, text) },
+                                        )
+                                    }
+                                    val version = versionLine(run, protocol)
+                                    if (version != null) {
+                                        Spacer(Modifier.height(20.dp))
+                                        TakeoverText(version, TakeoverType.Small)
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
 
-            if (eyeTaps >= KILL_SWITCH_TAPS) {
-                // The developer kill switch, reachable even while a takeover holds the screen.
+            // While LEAVE is held: what leaving costs. Otherwise a short note (the version NOT OKAY switched to).
+            val honest = if (leaveHeld && holds) leaveLine(run, protocol, bailOut, penaltyToday, Instant.now()) else null
+            val line = honest ?: note
+            if (line != null) {
                 TakeoverText(
-                    "SUSPEND 1 HOUR",
+                    line,
                     TakeoverType.Strip,
-                    Modifier
-                        .fillMaxWidth()
-                        .clickable(remember { MutableInteractionSource() }, indication = null) { cb.suspend(60) }
-                        .padding(vertical = 12.dp),
-                    color = Palette.White,
+                    Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp),
+                    color = if (honest != null) Palette.White else TakeoverType.Dim,
                 )
             }
-            note?.let {
-                TakeoverText(it, TakeoverType.Strip, Modifier.fillMaxWidth().padding(horizontal = 24.dp, vertical = 8.dp), color = TakeoverType.Dim)
-            }
             SafetyStrip(
-                holds = (phase == Phase.LINE || phase == Phase.STEP) && !ended,
+                holds = holds,
+                stepDown = canStepDown(run, protocol),
+                apps = !ended,
                 onCall = { cb.call() },
+                onApps = { appsOpen = true },
                 onNotOkay = { notOkay() },
                 onLeave = { leave() },
+                onLeaveHeld = { leaveHeld = it },
+            )
+        }
+
+        if (appsOpen) {
+            AppsSheet(
+                load = { cb.apps() },
+                onOpen = { app ->
+                    appsOpen = false
+                    cb.openApp(app)
+                },
+                onClose = { appsOpen = false },
             )
         }
     }
 }
 
-/** What the one text slot under the eye shows: nothing, the directive line, or the current step. */
-@Composable
-private fun Slot(
-    phase: Phase,
-    checkIn: Boolean,
-    directive: Directive,
-    stepIndex: Int,
-    stepVisible: Boolean,
-    stepReady: Boolean,
-    onAnswer: (CheckInAnswer) -> Unit,
-) {
-    when {
-        phase == Phase.LINE && checkIn -> TakeoverText(CHECK_IN_LINE, TakeoverType.Title)
-        phase == Phase.LINE -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            TakeoverText(directive.title, TakeoverType.Title)
-            if (directive.why.isNotBlank()) {
-                Spacer(Modifier.height(16.dp))
-                TakeoverText(directive.why, TakeoverType.Small)
-            }
-        }
-        phase != Phase.STEP || !stepVisible -> Unit
-        checkIn -> Column(horizontalAlignment = Alignment.CenterHorizontally) {
-            TakeoverText(directive.steps.firstOrNull()?.text ?: CHECK_IN_QUESTION, TakeoverType.Title)
-            Spacer(Modifier.height(36.dp))
-            Choices(listOf("BETTER" to CheckInAnswer.BETTER, "SAME" to CheckInAnswer.SAME, "WORSE" to CheckInAnswer.WORSE), onAnswer)
-        }
-        else -> {
-            val text = directive.steps.getOrNull(stepIndex)?.text ?: return
-            TakeoverText(text, TakeoverType.Step, color = if (stepReady) Palette.White else TakeoverType.Dim)
-        }
-    }
+/** The small line under the title, when there is something to say before the steps. */
+private fun lineBelowTitle(run: Run): String? = when {
+    run.test -> "TEST RUN: NOTHING COUNTS"
+    run.phase == RunPhase.RETURNED -> run.windowEndsAt
+        ?.let { "NOT CONFIRMED. THE WINDOW CLOSES AT ${WallClock.hhmm(it, ZoneId.systemDefault())}" }
+        ?: "NOT CONFIRMED YET"
+    run.stage >= 2 -> "GUIDED"
+    else -> null
 }
-
-/** A row of one-tap words. */
-@Composable
-private fun <T> Choices(choices: List<Pair<String, T>>, onPick: (T) -> Unit) {
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
-        for ((label, value) in choices) {
-            TakeoverText(
-                label,
-                TakeoverType.Choice,
-                Modifier
-                    .clickable(remember { MutableInteractionSource() }, indication = null) { onPick(value) }
-                    .padding(horizontal = 10.dp, vertical = 14.dp),
-            )
-        }
-    }
-}
-
-@Composable
-private fun Centered(content: @Composable () -> Unit) {
-    Column(
-        Modifier.fillMaxSize(),
-        verticalArrangement = Arrangement.Center,
-        horizontalAlignment = Alignment.CenterHorizontally,
-    ) {
-        content()
-    }
-}
-
-/**
- * Always at the bottom, faint and small: CALL (a tap, always), NOT OKAY (3 s hold) and LEAVE (10 s hold), the
- * last two only when [holds]. A held word turns into a number counting down.
- */
-@Composable
-private fun SafetyStrip(holds: Boolean, onCall: () -> Unit, onNotOkay: () -> Unit, onLeave: () -> Unit) {
-    Row(Modifier.fillMaxWidth().padding(horizontal = 8.dp, vertical = 6.dp)) {
-        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterStart) {
-            TakeoverText(
-                "CALL",
-                TakeoverType.Strip,
-                Modifier
-                    .clickable(remember { MutableInteractionSource() }, indication = null, onClick = onCall)
-                    .padding(horizontal = 16.dp, vertical = 14.dp),
-            )
-        }
-        Box(Modifier.weight(1f), contentAlignment = Alignment.Center) {
-            if (holds) HoldWord("NOT OKAY", NOT_OKAY_HOLD_MS, onNotOkay)
-        }
-        Box(Modifier.weight(1f), contentAlignment = Alignment.CenterEnd) {
-            if (holds) HoldWord("LEAVE", LEAVE_HOLD_MS, onLeave)
-        }
-    }
-}
-
-/** A word that must be held for [holdMs]; while held it shows only the seconds left. Releasing early resets it. */
-@Composable
-private fun HoldWord(label: String, holdMs: Long, onComplete: () -> Unit) {
-    val complete by rememberUpdatedState(onComplete)
-    var heldSince by remember { mutableLongStateOf(0L) }
-    var secondsLeft by remember { mutableIntStateOf(0) }
-
-    LaunchedEffect(heldSince) {
-        // This hold's start, read once: after an early release the state is already 0 before this loop is cancelled.
-        val since = heldSince
-        if (since == 0L) return@LaunchedEffect
-        while (heldSince == since) {
-            val remaining = holdMs - (SystemClock.uptimeMillis() - since)
-            if (remaining <= 0) {
-                heldSince = 0L
-                complete()
-                break
-            }
-            secondsLeft = ((remaining + 999) / 1000).toInt()
-            delay(HOLD_POLL_MS)
-        }
-    }
-
-    val held = heldSince != 0L
-    // The label always takes its space (invisible while held), so the target never shrinks under the finger
-    // when the countdown replaces it; a press that slid off a shrinking target would cancel itself.
-    Box(
-        Modifier
-            .pointerInput(Unit) {
-                awaitEachGesture {
-                    awaitFirstDown()
-                    secondsLeft = ((holdMs + 999) / 1000).toInt()
-                    heldSince = SystemClock.uptimeMillis()
-                    waitForUpOrCancellation()
-                    heldSince = 0L
-                }
-            }
-            .padding(horizontal = 16.dp, vertical = 14.dp),
-        contentAlignment = Alignment.Center,
-    ) {
-        TakeoverText(label, TakeoverType.Strip, color = if (held) Color.Transparent else TakeoverType.Faint)
-        if (held) TakeoverText(secondsLeft.toString(), TakeoverType.Strip, color = Palette.White)
-    }
-}
-
-private const val CHECK_IN_LINE = "YESTERDAY WAS HARD."
-private const val CHECK_IN_QUESTION = "HOW IS TODAY?"
 
 private const val BEAT_MS = 900L
 private const val SLIT_FLASH_MS = 350L
 private const val TIER1_SLIT_MS = 700L
-private const val LINE_MS = 3_000L
-private const val LINE_PER_CHAR_MS = 30L
-private const val CHECK_IN_LINE_MS = 2_000L
+private const val LINE_MS = 2_400L
+private const val LINE_PER_CHAR_MS = 40L
 private const val GAP_MS = 400L
-private const val LOCK_POLL_MS = 100L
+private const val POLL_MS = 250L
 private const val CONFIRM_HOLD_MS = 1_500L
 private const val STILL_MS = 600L
 private const val BLACK_AFTER_MS = 1_200L
-private const val RATING_TIMEOUT_MS = 30_000L
-private const val FAREWELL_LEFT_MS = 2_600L
-private const val FAREWELL_LIGHTER_MS = 4_500L
+private const val FAREWELL_MS = 3_200L
 private const val NOTE_MS = 6_000L
-private const val NOT_OKAY_HOLD_MS = 3_000L
-private const val LEAVE_HOLD_MS = 10_000L
-private const val HOLD_POLL_MS = 50L
 private const val EYE_TAP_MS = 400L
+private const val EYE_TAP_GAP_MS = 1_500L
 private const val KILL_SWITCH_TAPS = 7
 private val TEXT_SLOT_MIN = 200.dp
 private const val EYE_TOP_SHARE = 0.07f
+
+/** A takeover first shown longer ago than this starts at its current step, without the intro. */
+private const val RESUME_AFTER_MS = 90_000L
+
+/** How often, and how far apart, the journal is read for how a run ended. */
+private const val ENDING_TRIES = 4
+private const val ENDING_RETRY_MS = 250L
+
+/** One coarse step of the eye's fill, and how long it waits before the next one. */
+private const val FILL_STEP = 1f / FILL_STEPS
+private const val FILL_LAG_MS = 15_000L
+private const val FILL_EPSILON = 0.001f

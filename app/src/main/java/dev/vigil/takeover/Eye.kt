@@ -6,11 +6,14 @@ import androidx.compose.runtime.LongState
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.FilterQuality
 import androidx.compose.ui.graphics.ImageBitmap
+import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.res.imageResource
 import androidx.compose.ui.res.integerResource
@@ -57,8 +60,9 @@ enum class EyeMode {
  * res/values/eye_sheet.xml, so it can be replaced without touching code.
  *
  * [modeStartedAt] is when [mode] began, on the [clock]'s time base ([android.os.SystemClock.uptimeMillis]).
- * [contract] is the hold progress (0..1) shown while [mode] is [EyeMode.CONTRACTING]. Both lambdas and the clock
- * are read while drawing only.
+ * [contract] is the hold progress (0..1) shown while [mode] is [EyeMode.CONTRACTING]. [fill] (0..1) fills the open
+ * eye with red from the bottom up, in whole sprite rows (the takeover's vague progress); 0 = none. The lambdas and
+ * the clock are read while drawing only.
  */
 @Composable
 fun Eye(
@@ -68,6 +72,7 @@ fun Eye(
     clock: LongState,
     modifier: Modifier = Modifier,
     contract: () -> Float = { 0f },
+    fill: () -> Float = { 0f },
 ) {
     val sheet = ImageBitmap.imageResource(R.drawable.eye_sheet)
     val frameSize = integerResource(R.integer.eye_frame_size)
@@ -78,6 +83,8 @@ fun Eye(
     // When the eye first stood open: the tier-3 pips fuse into the triangle once, from then on.
     val openedAt = remember { longArrayOf(0L) }
     if (openedAt[0] == 0L && (mode == EyeMode.OPEN || mode == EyeMode.CONTRACTING)) openedAt[0] = modeStartedAt
+    // The rows the open eye covers on its frame: the fill rises between them.
+    val rows = remember(sheet, frameSize, openFrames) { eyeRows(sheet, frameSize, openFrames) }
 
     Canvas(modifier) {
         val now = clock.longValue
@@ -101,15 +108,67 @@ fun Eye(
         if (mode == EyeMode.OPEN || mode == EyeMode.CONTRACTING) {
             drawTierMarks(tier, now, now - openedAt[0], originX, originY, scale, frameSize, eyeWidth)
         }
-        drawImage(
-            image = sheet,
-            srcOffset = IntOffset(frame * frameSize, 0),
-            srcSize = IntSize(frameSize, frameSize),
-            dstOffset = IntOffset(originX, originY),
-            dstSize = IntSize(frameSize * scale, frameSize * scale),
-            colorFilter = if (eyeNegative(mode, elapsed)) NEGATIVE else null,
-            filterQuality = FilterQuality.None,
+        val srcOffset = IntOffset(frame * frameSize, 0)
+        val srcSize = IntSize(frameSize, frameSize)
+        val dstOffset = IntOffset(originX, originY)
+        val dstSize = IntSize(frameSize * scale, frameSize * scale)
+        val filling = mode == EyeMode.OPEN || mode == EyeMode.CONTRACTING || mode == EyeMode.CLOSING
+        val filledRows = if (filling) (fill().coerceIn(0f, 1f) * rows.count()).roundToInt() else 0
+        if (filledRows <= 0) {
+            drawImage(
+                image = sheet,
+                srcOffset = srcOffset,
+                srcSize = srcSize,
+                dstOffset = dstOffset,
+                dstSize = dstSize,
+                colorFilter = if (eyeNegative(mode, elapsed)) NEGATIVE else null,
+                filterQuality = FilterQuality.None,
+            )
+            return@Canvas
+        }
+        // The fill, in a layer of its own: the eye, then red lightening its dark pixels from the bottom up (white and
+        // red stay as they are), then everything outside the eye's own pixels cut away again.
+        val top = originY + (rows.last + 1 - filledRows.coerceAtMost(rows.count())) * scale
+        val bottom = originY + (rows.last + 1) * scale
+        drawContext.canvas.saveLayer(
+            Rect(originX.toFloat(), originY.toFloat(), (originX + dstSize.width).toFloat(), (originY + dstSize.height).toFloat()),
+            Paint(),
         )
+        drawImage(sheet, srcOffset, srcSize, dstOffset, dstSize, filterQuality = FilterQuality.None)
+        drawRect(
+            Palette.Red.copy(alpha = FILL_ALPHA),
+            topLeft = Offset(originX.toFloat(), top.toFloat()),
+            size = Size(dstSize.width.toFloat(), (bottom - top).toFloat()),
+            blendMode = BlendMode.Lighten,
+        )
+        drawImage(sheet, srcOffset, srcSize, dstOffset, dstSize, blendMode = BlendMode.DstIn, filterQuality = FilterQuality.None)
+        drawContext.canvas.restore()
+    }
+}
+
+/**
+ * The rows of the fully open eye (the last opening frame) that hold any pixel: the fill rises between them. Read
+ * once from the sheet; a sheet that cannot be read falls back to the middle half of the frame.
+ */
+private fun eyeRows(sheet: ImageBitmap, frameSize: Int, openFrames: Int): IntRange {
+    val fallback = (frameSize / 4) until (frameSize * 3 / 4)
+    return try {
+        val frame = (openFrames - 1).coerceAtLeast(0)
+        if (frameSize <= 0 || (frame + 1) * frameSize > sheet.width || frameSize > sheet.height) return fallback
+        val pixels = IntArray(frameSize * frameSize)
+        sheet.readPixels(pixels, startX = frame * frameSize, startY = 0, width = frameSize, height = frameSize)
+        var top = -1
+        var bottom = -1
+        for (y in 0 until frameSize) {
+            val used = (0 until frameSize).any { x -> (pixels[y * frameSize + x] ushr 24) != 0 }
+            if (used) {
+                if (top < 0) top = y
+                bottom = y
+            }
+        }
+        if (top < 0) fallback else top..bottom
+    } catch (e: RuntimeException) {
+        fallback
     }
 }
 
@@ -235,6 +294,9 @@ private const val EYE_SPAN = 0.9f
 
 /** The share of a frame's height the eye needs to fit inside the canvas. */
 private const val EYE_HEIGHT_SHARE = 0.6f
+
+/** The fill's red: dimmed, so the iris and the white outline still read through it. */
+private const val FILL_ALPHA = 0.55f
 
 private val NEGATIVE_FRAMES = setOf(0, 1, 3)
 private const val GLINT_PERIOD_MS = 5_200L

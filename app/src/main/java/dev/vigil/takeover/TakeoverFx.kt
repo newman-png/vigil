@@ -17,13 +17,17 @@ import dev.vigil.glyph.GlyphLights
  * Sound, vibration and Glyph lights for one takeover. Silent takeovers (quiet mode) and the app's
  * sound/vibration/glyph settings switch the matching outputs off; nothing else is decided here.
  *
+ * [tier] follows the protocol's intensity (see [tierFor]): 3 = full, 2 = full then subtle, 1 = subtle. A subtle
+ * takeover is built without sound and Glyph; a full one switches its Glyph off after a while ([glyphOff]); full
+ * then subtle turns subtle after its full seconds ([subtle]): the drone fades out and only light haptics remain.
+ *
  * The takeover is serious, not a game: heartbeats, a reversed swell under a thin high tone, total silence
  * the moment the eye opens, then a slow sub-bass drone, and a dry thud for each confirmed step. There are
  * no chimes, bleeps or UI clicks. The sounds are res/raw/drone, heartbeat, swell, tone and thud; a file
  * replaced under the same name swaps the sound.
  *
- * Tier 3 uses the alarm audio stream and alarm vibrations, so a Fajr or sleep directive is heard even
- * when the ringer is on vibrate; tiers 1-2 follow the ringer like a notification.
+ * Tier 3 (full) uses the alarm audio stream and alarm vibrations, so it is heard even when the ringer is on
+ * vibrate; tiers 1-2 follow the ringer like a notification.
  *
  * Everything goes quiet while the takeover is not visible ([pause]): leaving it, a call, or the screen
  * turning off never leaves a drone, a vibration or a light running behind other apps. After [completed],
@@ -92,6 +96,12 @@ class TakeoverFx(
     private var ended = false
     private var released = false
 
+    /** The Glyph may light up, until [glyphOff]. */
+    private var glyphAllowed = true
+
+    /** Subtle from now on ([subtle]): no sound and no Glyph, only light haptics. */
+    private var subtleNow = false
+
     private val vibrator: Vibrator? =
         if (vibrationEnabled && !silent) context.getSystemService(VibratorManager::class.java)?.defaultVibrator else null
     private val vibrationAttributes = VibrationAttributes.createForUsage(
@@ -103,7 +113,7 @@ class TakeoverFx(
     // The SDK's long animations cannot be cancelled, so the breathing light is one short cycle repeated from here.
     private val breath = object : Runnable {
         override fun run() {
-            if (!breathingWanted || paused || released) return
+            if (!breathingWanted || !glyphAllowed || paused || released) return
             glyph.breathe()
             handler.postDelayed(this, BREATH_MS)
         }
@@ -119,23 +129,37 @@ class TakeoverFx(
         }
     }
 
+    // Turning subtle: the drone goes down in small steps, then stops.
+    private val droneFadeOut = object : Runnable {
+        override fun run() {
+            if (paused || released || droneStream == 0) return
+            droneLevel = (droneLevel - FADE_STEP_MS.toFloat() / DRONE_FADE_OUT_MS).coerceAtLeast(0f)
+            if (droneLevel <= 0f) {
+                droneStream = stopStream(droneStream)
+                return
+            }
+            applyDroneVolume()
+            handler.postDelayed(this, FADE_STEP_MS)
+        }
+    }
+
     /** Connects the Glyph lights. Call when the takeover becomes visible. */
     fun start() = glyph.start()
 
-    /** One heartbeat: the low "lub-dub" sound, a matching vibration and a Glyph pulse. */
+    /** One heartbeat: the low "lub-dub" sound, a matching vibration and a Glyph pulse. Not when subtle. */
     fun heartbeat() {
-        if (quietNow()) return
+        if (quietNow() || subtleNow) return
         heartbeatStream = play(heartbeatSound, HEARTBEAT_VOLUME)
         // The second pulse lands with the sound's "dub", 240 ms after the "lub".
         vibrate(VibrationEffect.createWaveform(longArrayOf(0, 60, 180, 70), intArrayOf(0, 255, 0, 160), -1))
-        glyph.heartbeat(tier)
+        if (glyphAllowed) glyph.heartbeat(tier)
     }
 
-    /** Tier 1's single beat: one soft vibration and a Glyph pulse, no sound. */
+    /** Tier 1's single beat: one soft vibration and a Glyph pulse (while it may light up), no sound. */
     fun tick() {
         if (quietNow()) return
         vibrate(VibrationEffect.createOneShot(40, 110))
-        glyph.heartbeat(1)
+        if (glyphAllowed && !subtleNow) glyph.heartbeat(1)
     }
 
     /**
@@ -143,7 +167,7 @@ class TakeoverFx(
      * abruptly by itself, and [eyeOpen] cuts it if it is still rising.
      */
     fun swellStart() {
-        if (muted || ended || released) return
+        if (muted || ended || released || subtleNow) return
         swellStream = stopStream(swellStream)
         swellStream = play(swellSound, SWELL_VOLUME)
         // Wanted even while paused, so [resume] brings the tone back until the eye opens.
@@ -165,7 +189,7 @@ class TakeoverFx(
      * volume on tier 3 and about half on tier 2. Tier 1 has no drone. Calling it again does nothing.
      */
     fun droneIn() {
-        if (tier < 2 || muted || ended || released || droneWanted) return
+        if (tier < 2 || muted || ended || released || subtleNow || droneWanted) return
         droneWanted = true
         playDrone()
         handler.removeCallbacks(droneFade)
@@ -178,23 +202,23 @@ class TakeoverFx(
         vibrate(VibrationEffect.createPredefined(VibrationEffect.EFFECT_TICK))
     }
 
-    /** A step was confirmed (held to the end): a dry low thud and a short low vibration. */
+    /** A step was confirmed (held to the end): a dry low thud (not when subtle) and a short low vibration. */
     fun confirmStep() {
         if (quietNow()) return
         thudStream = play(thudSound, THUD_VOLUME)
         vibrate(VibrationEffect.createOneShot(50, 200))
     }
 
-    /** A step is waiting for the user: the Glyph breathes slowly until the takeover ends. */
+    /** A step is waiting for the user: the Glyph breathes slowly until the takeover ends (or [glyphOff]). */
     fun waiting() {
-        if (muted || ended || released) return
+        if (muted || ended || released || subtleNow || !glyphAllowed) return
         breathingWanted = true
         handler.removeCallbacks(breath)
         handler.post(breath)
     }
 
     /**
-     * The directive is done: instant silence. The drone and everything else stop and nothing new plays.
+     * The run is done: instant silence. The drone and everything else stop and nothing new plays.
      * Only the last step's confirmation (the thud, which has no tail, and its 50 ms vibration) is left to
      * finish, so the last step feels like every other one.
      */
@@ -203,7 +227,7 @@ class TakeoverFx(
         silence(keepConfirmation = true)
     }
 
-    /** The directive was abandoned: instant silence, no sound. */
+    /** The run was left: instant silence, no sound. */
     fun dismissed() {
         ended = true
         silence()
@@ -221,12 +245,45 @@ class TakeoverFx(
         silence()
     }
 
+    /**
+     * Full intensity: the Glyph lights go off for the rest of this takeover (`glyph_off_after_s` after it started).
+     * Sound and vibration go on.
+     */
+    fun glyphOff() {
+        if (released || !glyphAllowed) return
+        glyphAllowed = false
+        breathingWanted = false
+        handler.removeCallbacks(breath)
+        glyph.off()
+    }
+
+    /**
+     * Full then subtle: from now on the takeover is subtle. The tone and the swell stop, the drone fades out over a
+     * few seconds, the Glyph goes off; only the light haptics of the steps remain (no sound).
+     */
+    fun subtle() {
+        if (released || subtleNow) return
+        subtleNow = true
+        toneWanted = false
+        toneStream = stopStream(toneStream)
+        swellStream = stopStream(swellStream)
+        heartbeatStream = stopStream(heartbeatStream)
+        glyphOff()
+        if (droneWanted) {
+            droneWanted = false
+            handler.removeCallbacks(droneFade)
+            handler.removeCallbacks(droneFadeOut)
+            if (droneStream != 0) handler.post(droneFadeOut)
+        }
+    }
+
     /** The takeover left the screen: silence everything until [resume]. */
     fun pause() {
         if (released) return
         paused = true
         handler.removeCallbacks(breath)
         handler.removeCallbacks(droneFade)
+        handler.removeCallbacks(droneFadeOut)
         stopSounds()
         vibrator?.cancel()
         glyph.off()
@@ -270,6 +327,7 @@ class TakeoverFx(
         breathingWanted = false
         handler.removeCallbacks(breath)
         handler.removeCallbacks(droneFade)
+        handler.removeCallbacks(droneFadeOut)
         stopSounds(keepThud = keepConfirmation)
         if (!keepConfirmation) vibrator?.cancel()
         glyph.off()
@@ -290,7 +348,7 @@ class TakeoverFx(
     }
 
     private fun playDrone() {
-        if (!droneWanted || quietNow() || droneStream != 0) return
+        if (!droneWanted || quietNow() || subtleNow || droneStream != 0) return
         val volume = currentDroneVolume()
         droneStream = pool?.play(droneSound, volume, volume, LOOP_PRIORITY, -1, 1f) ?: 0
     }
@@ -305,7 +363,7 @@ class TakeoverFx(
     private fun currentDroneVolume() = droneVolume * droneLevel * droneLevel
 
     private fun playTone() {
-        if (!toneWanted || quietNow() || toneStream != 0) return
+        if (!toneWanted || quietNow() || subtleNow || toneStream != 0) return
         toneStream = pool?.play(toneSound, TONE_VOLUME, TONE_VOLUME, LOOP_PRIORITY, -1, 1f) ?: 0
     }
 
@@ -314,9 +372,9 @@ class TakeoverFx(
         if (sampleId == toneSound) playTone()
     }
 
-    /** Plays a sound once; returns its stream id, or 0 when nothing plays. */
+    /** Plays a sound once; returns its stream id, or 0 when nothing plays (also when subtle). */
     private fun play(sound: Int, volume: Float): Int {
-        if (sound == 0 || quietNow()) return 0
+        if (sound == 0 || quietNow() || subtleNow) return 0
         return pool?.play(sound, volume, volume, SHOT_PRIORITY, 0, 1f) ?: 0
     }
 
@@ -327,6 +385,7 @@ class TakeoverFx(
     private companion object {
         const val BREATH_MS = 3_600L
         const val DRONE_FADE_MS = 6_000L
+        const val DRONE_FADE_OUT_MS = 4_000L
         const val FADE_STEP_MS = 100L
 
         // Playback volumes, 0..1, on top of the files' own level (the generated ones all peak at -3 dBFS).
