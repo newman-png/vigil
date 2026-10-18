@@ -34,9 +34,9 @@ data class Slot(
 data class MyTimes(
     /** Wake time per weekday code (default 07:00 every day). */
     val wake: Map<String, String> = WallClock.DAY_CODES.keys.associateWith { DEFAULT_WAKE },
-    /** Where sleep shifting aims (and, until M2, tonight's bedtime). */
+    /** Where sleep shifting aims: tonight's target moves earlier each night until it reaches this. */
     @SerialName("bedtime_goal") val bedtimeGoal: String = "23:00",
-    /** Where sleep shifting starts (M2). */
+    /** Where sleep shifting starts (the first night's target); the target is never later than this. */
     @SerialName("bedtime_start") val bedtimeStart: String = "00:30",
     val classes: List<Slot> = emptyList(),
     /** label breakfast, lunch or dinner; dinner anchors the evening free window. */
@@ -57,7 +57,12 @@ data class MyTimes(
         val out = mutableListOf<String>()
         for ((code, time) in wake) {
             if (code !in WallClock.DAY_CODES) out += "Wake: \"$code\" is not a day (use mon to sun)."
-            if (WallClock.parseTime(time) == null) out += "Wake ${code.uppercase()}: \"$time\" is not a time (HH:MM)."
+            val t = WallClock.parseTime(time)
+            if (t == null) {
+                out += "Wake ${code.uppercase()}: \"$time\" is not a time (HH:MM)."
+            } else if (t < EARLIEST_WAKE || t > LATEST_WAKE) {
+                out += "Wake ${code.uppercase()}: $time is outside $EARLIEST_WAKE to $LATEST_WAKE (the wake alarm rings at this time)."
+            }
         }
         if (WallClock.parseTime(bedtimeGoal) == null) out += "Bedtime goal: \"$bedtimeGoal\" is not a time (HH:MM)."
         if (WallClock.parseTime(bedtimeStart) == null) out += "Bedtime start: \"$bedtimeStart\" is not a time (HH:MM)."
@@ -88,6 +93,10 @@ data class MyTimes(
 
     companion object {
         const val DEFAULT_WAKE = "07:00"
+
+        /** The wake times MY TIMES accepts (the wake alarm rings at them). */
+        val EARLIEST_WAKE: LocalTime = LocalTime.of(4, 0)
+        val LATEST_WAKE: LocalTime = LocalTime.of(11, 0)
         const val DEFAULT_CALL_DEADLINE = "16:00"
         const val DEFAULT_CALL_WRAP_UP_MIN = 20
 
@@ -156,13 +165,16 @@ data class ResolvedSlot(
 /**
  * MY TIMES resolved for one day key [date] (design 2.2): per-weekday values and the time expressions of the data file.
  * `HH:MM` values earlier than [nightEdge] belong to the night after the day (a 00:30 bedtime is after midnight);
- * `wake` always lies on the day itself. Every instant is DST-safe ([WallClock.at]).
+ * `wake` always lies on the day itself. Every instant is DST-safe ([WallClock.at]). [bedtimeTarget] is tonight's target
+ * from sleep shifting (null = bedtime_goal); [woke] is when the wake alarm was dismissed that day (null = not yet).
  */
 class DayTimes(
     val date: LocalDate,
     val zone: ZoneId,
     val nightEdge: LocalTime,
     val times: MyTimes,
+    val bedtimeTarget: LocalTime? = null,
+    val woke: Instant? = null,
 ) {
     /** The weekday code of the day ("mon".."sun"). */
     val dayCode: String = WallClock.dayCode(date)
@@ -176,8 +188,8 @@ class DayTimes(
     /** MY TIMES wake for this weekday (07:00 when unset or broken). */
     val wake: Instant = at(WallClock.parseTime(times.wake[dayCode]) ?: LocalTime.of(7, 0), nightRule = false)
 
-    /** Tonight's target bedtime. Until M2 (sleep shifting) it is bedtime_goal. */
-    val bedtime: Instant = at(WallClock.parseTime(times.bedtimeGoal) ?: LocalTime.of(23, 0))
+    /** Tonight's target bedtime: [bedtimeTarget], else bedtime_goal. */
+    val bedtime: Instant = at(bedtimeTarget ?: WallClock.parseTime(times.bedtimeGoal) ?: LocalTime.of(23, 0))
 
     /** Every class today, by start. */
     val classes: List<ResolvedSlot> = resolve(SlotList.CLASS, times.classes)
@@ -227,6 +239,7 @@ class DayTimes(
     fun resolve(expr: TimeExpr): Instant? {
         val base = when (val b = expr.base) {
             TimeBase.Wake -> wake
+            TimeBase.Woke -> woke ?: wake
             TimeBase.Bedtime -> bedtime
             is TimeBase.Meal -> meal(b.label)
             TimeBase.ClassStart -> classStart

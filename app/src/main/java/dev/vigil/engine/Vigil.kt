@@ -10,7 +10,11 @@ import android.util.Log
 import dev.vigil.BuildConfig
 import dev.vigil.Graph
 import dev.vigil.core.common.WallClock
+import dev.vigil.alarm.WakeAlarmClock
+import dev.vigil.alarm.WakeAlarmService
+import dev.vigil.alarm.WhiteNoiseService
 import dev.vigil.core.journal.Entry
+import dev.vigil.core.journal.EntryType
 import dev.vigil.core.journal.Report
 import dev.vigil.core.journal.ReportMeta
 import dev.vigil.core.machine.Effect
@@ -21,17 +25,21 @@ import dev.vigil.core.machine.MachineEnv
 import dev.vigil.core.machine.MachineState
 import dev.vigil.core.machine.Outcome
 import dev.vigil.core.machine.StepView
+import dev.vigil.core.machine.Todo
 import dev.vigil.core.pool.BlockReason
 import dev.vigil.core.pool.PoolDecision
 import dev.vigil.core.protocol.Prayer
 import dev.vigil.core.protocol.ProtocolFile
+import dev.vigil.core.protocol.ProtocolKind
 import dev.vigil.core.protocol.Step
 import dev.vigil.core.protocol.ToggleName
 import dev.vigil.core.run.Run
+import dev.vigil.core.run.RunPhase
 import dev.vigil.core.timeline.TimelineItem
 import dev.vigil.core.times.MyTimes
 import dev.vigil.core.times.MyTimesStore
 import dev.vigil.service.VigilService
+import dev.vigil.takeover.TakeoverActivity
 import dev.vigil.takeover.TakeoverLauncher
 import dev.vigil.trigger.AlarmScheduler
 import kotlinx.coroutines.flow.StateFlow
@@ -183,9 +191,45 @@ object Vigil {
 
     // ------------------------------------------------------------------ home
 
-    /** GOING TO SLEEP: the day ends now. */
-    fun goingToSleep() {
-        exec(Input.GoingToSleep)
+    /**
+     * GOING TO SLEEP (home, or the wind-down's last step): the wind-down completes, the day ends and the night lock
+     * starts. [ishaPrayed]: the user answered yes to CONFIRM ISHA ([HomeStatus.ishaToConfirm]); it counts.
+     */
+    fun goingToSleep(ishaPrayed: Boolean = false) {
+        exec(Input.GoingToSleep(ishaPrayed))
+    }
+
+    /** Today's to-do [index] ticked off ([done]) or unticked. */
+    fun todoDone(index: Int, done: Boolean) {
+        exec(Input.TodoDone(index, done))
+    }
+
+    /** Today's to-dos (written in last night's wind-down). */
+    fun todos(): List<Todo> = Machine.todos(state.value, Graph.env())
+
+    /** TEST > RING WAKE ALARM NOW: the alarm rings now as a TEST (dismissing it previews the morning). */
+    fun testWakeAlarm() {
+        exec(Input.RingWakeAlarmTest)
+    }
+
+    /**
+     * The wake alarm was dismissed ([test]: a TEST ring). Returns the morning run that started, whose takeover the alarm
+     * screen opens (it has only a pool lock, so it would not show by itself), or null.
+     */
+    fun wakeAlarmDismissed(test: Boolean): String? = morningStarted(exec(Input.WakeAlarm(test)))
+
+    /** When VIGIL's wake alarm rings next (null while it rings, or when VIGIL rings none). */
+    fun wakeAlarmAt(): Instant? = Machine.wakeAlarmAt(state.value, Graph.env())
+
+    /** The morning run [outcome] started (on waking), if it is running. */
+    private fun morningStarted(outcome: Outcome): String? {
+        val fired = outcome.entries.filter { it.type == EntryType.FIRED }.mapNotNull { it.run }
+        return outcome.state.runs.firstOrNull { it.id in fired && it.kind == ProtocolKind.MORNING && it.phase == RunPhase.ACTIVE }?.id
+    }
+
+    /** The alarm rang for its whole time unanswered and stopped: the engine rings it again later (or gives up). */
+    fun wakeAlarmUnanswered(test: Boolean) {
+        exec(Input.WakeAlarmUnanswered(test))
     }
 
     /** QUIET mode: every takeover silent. */
@@ -203,8 +247,10 @@ object Vigil {
      * test, no stages, memory, penalties or report counts. [test] false is a real manual start (a prayer then counts
      * as its adhan).
      */
-    fun startManual(protocolId: String, test: Boolean = true) {
-        exec(Input.Manual(protocolId, test))
+    fun startManual(protocolId: String, test: Boolean = true): Run? {
+        val outcome = exec(Input.Manual(protocolId, test))
+        val id = outcome.entries.lastOrNull { it.type == EntryType.FIRED && it.protocol == protocolId }?.run ?: return null
+        return outcome.state.runs.firstOrNull { it.id == id }
     }
 
     /** Today's planned starts with what happened to them and when each protocol last fired. */
@@ -268,8 +314,20 @@ object Vigil {
 
     /** The screen turned on ([unlocked] when the phone is usable) or off. */
     fun onScreen(on: Boolean, unlocked: Boolean) {
-        exec(Input.Screen(on, unlocked))
+        val outcome = exec(Input.Screen(on, unlocked))
         if (on && Machine.activeRun(state.value, Graph.env()) != null) TakeoverLauncher.onScreenOn(Graph.app)
+        // The first unlock after a wake alarm nobody answered starts the morning: its takeover opens, as on dismissal.
+        morningStarted(outcome)?.let { openTakeover(Graph.app, it) }
+    }
+
+    /** Opens the takeover of [runId], a run without a screen lock (the morning). Never over a call. */
+    fun openTakeover(context: Context, runId: String) {
+        if (Device.inCall(context)) return
+        try {
+            context.startActivity(TakeoverActivity.intent(context, runId))
+        } catch (e: RuntimeException) {
+            Log.w(TAG, "Could not open the takeover of $runId: ${e.message}")
+        }
     }
 
     /** A call connected ([active]) or ended: protocol timers and locks pause for its length. */
@@ -288,7 +346,13 @@ object Vigil {
         val env = Graph.env()
         s.suspendedUntil?.takeIf { it.isAfter(env.now) }?.let { return "Suspended until ${WallClock.hhmm(it, env.zone)} (kill switch)." }
         val parts = mutableListOf<String>()
-        Machine.activeRun(s, env)?.let { r -> parts += "${env.protocols.find(r.protocol)?.title ?: r.protocol} RUNNING" }
+        Machine.activeRun(s, env)?.let { r ->
+            parts += if (r.phase == RunPhase.NIGHT) {
+                "NIGHT LOCK" + (Machine.wakeAlarmAt(s, env)?.let { " · WAKE ${WallClock.hhmm(it, env.zone)}" } ?: "")
+            } else {
+                "${env.protocols.find(r.protocol)?.title ?: r.protocol} RUNNING"
+            }
+        }
         parts += Machine.poolStatus(s, env)
         Machine.status(s, env).nextStart?.let { parts += "NEXT ${it.start.title} ${WallClock.hhmm(it.start.at, env.zone)}" }
         return parts.joinToString(" · ")
@@ -320,6 +384,7 @@ object Vigil {
             if (owner == null && (shown || Machine.activeRun(before, env) != null)) TakeoverLauncher.onClosed(app)
         }
         guard("Alarm") { scheduleAlarm(outcome.state, env) }
+        guard("Wake alarm") { WakeAlarmClock.sync(app, Machine.wakeAlarmAt(outcome.state, env)) }
         guard("Status") {
             // Also when only the clock moved it on (minutes left, a wait that grew), not just the state.
             val line = statusLine()
@@ -339,9 +404,18 @@ object Vigil {
             // The Guard asks for the decision itself whenever a pool app comes to the front.
             is Effect.PoolGate -> Unit
             is Effect.Kick -> kick(context, effect)
-            Effect.RingWakeAlarm -> Log.i(TAG, "The wake alarm is not part of this version (M3)")
+            is Effect.RingWakeAlarm -> {
+                // The alarm, not white noise.
+                WhiteNoiseService.stop(context)
+                WakeAlarmService.ring(context, effect.stopAt, effect.test)
+            }
+            Effect.StopWakeAlarm -> WakeAlarmService.stop(context)
             is Effect.SetDnd -> Log.i(TAG, "Do Not Disturb is not part of this version (M4): ${effect.on}")
-            is Effect.Audio -> Log.i(TAG, "Audio is not part of this version (M8): ${effect.action} ${effect.sound}")
+            is Effect.Audio -> when {
+                effect.sound != Effect.Audio.WHITE_NOISE -> Log.i(TAG, "Only white noise is part of this version (M8): ${effect.action} ${effect.sound}")
+                effect.action == Effect.Audio.PLAY -> WhiteNoiseService.start(context)
+                else -> WhiteNoiseService.stop(context)
+            }
         }
     }
 

@@ -38,16 +38,21 @@ import dev.vigil.Graph
 import dev.vigil.core.journal.Entry
 import dev.vigil.core.machine.StepView
 import dev.vigil.core.protocol.Intensity
+import dev.vigil.core.protocol.LockType
+import dev.vigil.core.protocol.ProtocolKind
 import dev.vigil.core.run.Run
+import dev.vigil.core.run.RunPhase
 import dev.vigil.engine.Vigil
 import dev.vigil.engine.WhitelistApp
 import dev.vigil.guard.GuardScreens
 import dev.vigil.ui.theme.Palette
 
 /**
- * The full-screen takeover of the run that owns the screen ([Vigil.activeRun]). Shows over the lock screen, turns
- * the screen on and ignores Back. It renders the run as the engine has it and reports taps back to it; it never
- * decides anything. When no run owns the screen any more it finishes.
+ * The full-screen takeover of the run that owns the screen ([Vigil.activeRun]), or, when none does, of a run without a
+ * screen lock that was asked for ([EXTRA_RUN]: the morning, from its notification or the wake alarm). Shows over the
+ * lock screen, turns the screen on and ignores Back. It renders the run as the engine has it and reports taps back to
+ * it; it never decides anything. When nothing is left to show it finishes. The night lock gets its own dark, silent,
+ * dim screen ([NightScreen]) that never turns the screen on and lets it sleep.
  */
 class TakeoverActivity : ComponentActivity() {
     /** True while a closing screen has handed over and the activity is finishing on purpose. */
@@ -61,6 +66,12 @@ class TakeoverActivity : ComponentActivity() {
 
     private val handler = Handler(Looper.getMainLooper())
 
+    /** The run asked for by [EXTRA_RUN] (shown while it is active and nothing owns the screen). */
+    private var requested by mutableStateOf<String?>(null)
+
+    /** True while the night lock is on screen: dim, and the display may sleep. */
+    private var night = false
+
     // An unattended takeover lets the display sleep after a while instead of keeping it lit for as long as it lasts.
     private val letScreenSleep = Runnable { window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) }
 
@@ -73,10 +84,17 @@ class TakeoverActivity : ComponentActivity() {
         resizeForKeyboard()
         hideSystemBars()
         TakeoverLauncher.register(this)
+        requested = intent.getStringExtra(EXTRA_RUN)
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() = Unit
         })
         setContent { Root() }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        intent.getStringExtra(EXTRA_RUN)?.let { requested = it }
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -98,6 +116,9 @@ class TakeoverActivity : ComponentActivity() {
         handler.removeCallbacks(letScreenSleep)
         // Nothing keeps sounding, vibrating or glowing behind other apps, a call or a dark screen.
         fx?.pause()
+        // The night lock only comes back on a phone in use; whatever brings this screen back next (a prayer at night)
+        // may turn the screen on again.
+        if (night) setTurnScreenOn(true)
         if (closing || isChangingConfigurations) return
         // Left on a locked or dark phone: step back, so the next screen-on shows the plain lock screen (and its
         // emergency button). An unfinished takeover comes back after unlock, as the launcher's rules say.
@@ -120,11 +141,35 @@ class TakeoverActivity : ComponentActivity() {
         super.onDestroy()
     }
 
-    /** Keeps the display on for [KEEP_SCREEN_ON_MS] after the takeover appears or is touched. */
+    /** Keeps the display on for [KEEP_SCREEN_ON_MS] after the takeover appears or is touched (never for the night lock). */
     private fun keepScreenOn() {
+        if (night) return
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         handler.removeCallbacks(letScreenSleep)
         handler.postDelayed(letScreenSleep, KEEP_SCREEN_ON_MS)
+    }
+
+    /**
+     * The night lock is on screen ([on]) or not: very dim, the display sleeps when it would, and the activity never
+     * turns the screen on for it.
+     */
+    private fun nightMode(on: Boolean) {
+        night = on
+        setTurnScreenOn(!on)
+        window.attributes = window.attributes.apply {
+            screenBrightness = if (on) NIGHT_BRIGHTNESS else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        }
+        if (on) {
+            handler.removeCallbacks(letScreenSleep)
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            keepScreenOn()
+        }
+    }
+
+    /** What this screen shows now: the run owning the screen, else the run asked for while it is active. */
+    private fun current(): Run? = Vigil.activeRun() ?: requested?.let { id ->
+        Vigil.state.value.runs.firstOrNull { it.id == id && it.phase == RunPhase.ACTIVE && it.lock != LockType.SCREEN }
     }
 
     /** No run owns the screen any more while the takeover is behind other apps (finished, lock over, kill switch). */
@@ -136,7 +181,7 @@ class TakeoverActivity : ComponentActivity() {
     private fun Root() {
         // Every engine step recomposes: who owns the screen now, and what a bail-out would cost.
         val state by Vigil.state.collectAsState()
-        var shown by remember { mutableStateOf(Vigil.activeRun()) }
+        var shown by remember { mutableStateOf(current()) }
         // Bumped when the same run takes the screen again after its takeover ended (a fresh screen for it).
         var generation by remember { mutableIntStateOf(0) }
         val ticket = shown
@@ -153,8 +198,44 @@ class TakeoverActivity : ComponentActivity() {
                 return@Box
             }
             val ticketKey = takeoverKey(ticket)
-            val owner = Vigil.activeRun()
+            val owner = current()
             val penaltyToday = state.pool.penaltyMinutesToday
+            val onFinished: () -> Unit = {
+                val next = current()
+                if (next == null) {
+                    close()
+                } else {
+                    // The same run owning the screen again after its takeover ended gets a fresh one.
+                    if (takeoverKey(next) == ticketKey) generation++
+                    shown = next
+                }
+            }
+            if (ticket.phase == RunPhase.NIGHT) {
+                key(ticketKey, generation) {
+                    DisposableEffect(Unit) {
+                        nightMode(true)
+                        onDispose { nightMode(false) }
+                    }
+                    val file = remember { Vigil.file() }
+                    NightScreen(
+                        initial = ticket,
+                        live = owner?.takeIf { takeoverKey(it) == ticketKey },
+                        protocol = remember { file.find(ticket.protocol) },
+                        alarmAt = Vigil.wakeAlarmAt(),
+                        firstTodo = Vigil.todos().firstOrNull { !it.done }?.text,
+                        zone = Graph.zone,
+                        bailOut = file.pool.bailOut,
+                        penaltyToday = penaltyToday,
+                        onCall = { openDialer() },
+                        loadApps = { Vigil.whitelistApps() },
+                        onOpenApp = { openApp(it) },
+                        onKillSwitch = { GuardScreens.killSwitch(this@TakeoverActivity) },
+                        onLeave = { Vigil.bailOut(it) },
+                        onFinished = onFinished,
+                    )
+                }
+                return@Box
+            }
             key(ticketKey, generation) {
                 val live = owner?.takeIf { takeoverKey(it) == ticketKey }
                 val file = remember { Vigil.file() }
@@ -193,6 +274,8 @@ class TakeoverActivity : ComponentActivity() {
                     live = live,
                     protocol = protocol,
                     steps = live?.let { Vigil.steps(it) } ?: emptyList(),
+                    // The morning shows today's first open to-do (written in last night's wind-down).
+                    todo = if (protocol?.kind == ProtocolKind.MORNING) todoLine(Vigil.todos().filter { !it.done }.map { it.text }) else null,
                     penaltyToday = penaltyToday,
                     bailOut = file.pool.bailOut,
                     takeover = file.takeover,
@@ -201,16 +284,7 @@ class TakeoverActivity : ComponentActivity() {
                     fx = fx,
                     callbacks = callbacks(
                         onIntroSeen = { rememberIntroSeen(ticketKey) },
-                        onFinished = {
-                            val next = Vigil.activeRun()
-                            if (next == null) {
-                                close()
-                            } else {
-                                // The same run owning the screen again after its takeover ended gets a fresh one.
-                                if (takeoverKey(next) == ticketKey) generation++
-                                shown = next
-                            }
-                        },
+                        onFinished = onFinished,
                     ),
                 )
             }
@@ -226,6 +300,7 @@ class TakeoverActivity : ComponentActivity() {
         override fun confirm(runId: String) = Vigil.confirm(runId)
         override fun notOkay(runId: String) = Vigil.notOkay(runId)
         override fun bailOut(runId: String) = Vigil.bailOut(runId)
+        override fun goingToSleep(ishaPrayed: Boolean) = Vigil.goingToSleep(ishaPrayed)
         override fun tick() = Vigil.onTick()
         override fun call() {
             fx?.pause()
@@ -308,6 +383,12 @@ class TakeoverActivity : ComponentActivity() {
         /** The phone app's emergency dialer, the same screen the lock screen's "Emergency call" opens. */
         private const val EMERGENCY_DIAL_ACTION = "com.android.phone.EmergencyDialer.DIAL"
 
+        /** Which run to show when no run owns the screen (a run without a screen lock: the morning). */
+        private const val EXTRA_RUN = "run"
+
+        /** The night lock's screen brightness (0..1): as dim as it gets while still readable. */
+        private const val NIGHT_BRIGHTNESS = 0.02f
+
         /** How long the display stays on after the takeover appears or is last touched. */
         private const val KEEP_SCREEN_ON_MS = 10 * 60_000L
 
@@ -340,5 +421,13 @@ class TakeoverActivity : ComponentActivity() {
         fun intent(context: Context): Intent =
             Intent(context, TakeoverActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_USER_ACTION)
+
+        /** Opens the takeover of run [runId], a run without a screen lock (the morning), unless another owns the screen. */
+        fun intent(context: Context, runId: String): Intent = intent(context).putExtra(EXTRA_RUN, runId)
+
+        /** One line for the morning: the first open to-do, and how many more there are. */
+        private fun todoLine(open: List<String>): String? = open.firstOrNull()?.let { first ->
+            if (open.size > 1) "TODAY: $first (+${open.size - 1} MORE)" else "TODAY: $first"
+        }
     }
 }

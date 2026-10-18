@@ -1,5 +1,6 @@
 package dev.vigil.core.timeline
 
+import dev.vigil.core.common.WallClock
 import dev.vigil.core.protocol.Prayer
 import dev.vigil.core.protocol.ProtocolFile
 import dev.vigil.core.protocol.Trigger
@@ -68,7 +69,9 @@ data class TimelineItem(
 object Timeline {
     /**
      * The starts in [from, until), by time. [lastAdhan] is the most recent adhan per prayer; [adhanToday] the adhans
-     * that came during this day.
+     * that came during this day. [next] is the next day's times: its early `time:` and `slot:` starts (on its own date
+     * before this day's latest end, e.g. `time:05:30` or `time:wake` at 05:30 before a 06:00 fallback end) happen while
+     * this day still runs, so they are this day's.
      */
     fun plan(
         file: ProtocolFile,
@@ -77,12 +80,20 @@ object Timeline {
         adhanToday: Map<Prayer, Instant>,
         from: Instant,
         until: Instant,
+        next: DayTimes? = null,
     ): List<PlannedStart> {
         val out = mutableListOf<PlannedStart>()
         for (p in file.protocols) {
             when (val t = p.parsedTrigger) {
-                is Trigger.Time -> times.resolve(t.expr)?.let { out += PlannedStart(p.id, p.title, it, StartSource.TIME) }
-                is Trigger.Slot -> times.slots(t.type).forEach { out += PlannedStart(p.id, p.title, it.start, StartSource.SLOT, slot = it) }
+                is Trigger.Time -> {
+                    times.resolve(t.expr)?.let { out += PlannedStart(p.id, p.title, it, StartSource.TIME) }
+                    next?.resolve(t.expr)?.let { if (early(it, next)) out += PlannedStart(p.id, p.title, it, StartSource.TIME) }
+                }
+                is Trigger.Slot -> {
+                    times.slots(t.type).forEach { out += PlannedStart(p.id, p.title, it.start, StartSource.SLOT, slot = it) }
+                    next?.slots(t.type)?.filter { early(it.start, next) }
+                        ?.forEach { out += PlannedStart(p.id, p.title, it.start, StartSource.SLOT, slot = it) }
+                }
                 is Trigger.Adhan -> {
                     val actual = adhanToday[t.prayer]
                     val at = actual ?: lastAdhan[t.prayer]?.let { estimate(it, from) }
@@ -91,8 +102,13 @@ object Timeline {
                 else -> Unit
             }
         }
-        return out.filter { !it.at.isBefore(from) && it.at.isBefore(until) }.sortedWith(compareBy({ it.at }, { it.protocolId }))
+        return out.filter { !it.at.isBefore(from) && it.at.isBefore(until) }
+            .distinctBy { it.key }
+            .sortedWith(compareBy({ it.at }, { it.protocolId }))
     }
+
+    /** A start on [next]'s own date (its morning; the [until] filter keeps those this day can still reach). */
+    private fun early(at: Instant, next: DayTimes): Boolean = WallClock.date(at, next.zone) == next.date
 
     /** The first moment at or after [from] that is [last] plus a whole number of 24-hour periods. */
     fun estimate(last: Instant, from: Instant): Instant {

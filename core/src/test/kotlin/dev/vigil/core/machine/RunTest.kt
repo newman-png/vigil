@@ -70,14 +70,23 @@ class RunTest {
     }
 
     @Test
-    fun prayersJumpTheQueue() {
+    fun prayersTakeTheScreenAndThePausedRunGoesOnFirst() {
         val sim = Sim(file = fileWith(a, b))
         sim.step(Input.Manual("alpha"))
         sim.step(Input.Manual("beta"))
         sim.after(1, Input.Adhan(Prayer.FAJR))
-        assertEquals(RunPhase.QUEUED, sim.run("prayer-fajr")!!.phase)
-        sim.finish("alpha")
+        // The adhan never waits: alpha pauses, Fajr owns the screen, beta still waits.
         assertEquals(RunPhase.ACTIVE, sim.run("prayer-fajr")!!.phase)
+        assertEquals(RunPhase.PAUSED, sim.run("alpha")!!.phase)
+        assertEquals(RunPhase.QUEUED, sim.run("beta")!!.phase)
+        assertEquals("prayer-fajr", Machine.activeRun(sim.state, sim.env)!!.protocol)
+        // After the prayer's lock (confirmed), alpha goes on before beta starts.
+        val fajr = sim.runId("prayer-fajr")
+        sim.step(Input.StepDone(fajr, 0))
+        sim.after(8, Input.StepDone(fajr, 1))
+        sim.after(12)
+        assertNull(sim.run("prayer-fajr"))
+        assertEquals(RunPhase.ACTIVE, sim.run("alpha")!!.phase)
         assertEquals(RunPhase.QUEUED, sim.run("beta")!!.phase)
     }
 
@@ -285,7 +294,7 @@ class RunTest {
         val sim = Sim(file = fileWith(a))
         sim.stage("alpha", 3)
         sim.step(Input.Manual("alpha"))
-        sim.at("2026-10-19T23:00", Input.GoingToSleep)
+        sim.at("2026-10-19T23:00", Input.GoingToSleep())
         val m = sim.lastOf(EntryType.MISSED)!!
         assertEquals("day_end", m.reason)
         assertEquals("reminder not confirmed", m.detail)
@@ -300,7 +309,7 @@ class RunTest {
         for (day in listOf("2026-10-19", "2026-10-20", "2026-10-21")) {
             sim.at("${day}T09:00", Input.Manual("alpha"))
             assertEquals(RunPhase.REMINDER, sim.run("alpha")!!.phase)
-            sim.at("${day}T23:00", Input.GoingToSleep)
+            sim.at("${day}T23:00", Input.GoingToSleep())
         }
         assertEquals(2, sim.of(EntryType.STAGE_DOWN).single().stage)
         sim.at("2026-10-22T09:00", Input.Manual("alpha"))
@@ -413,12 +422,12 @@ class RunTest {
     @Test
     fun nothingStartsWhileTheDayEnds() {
         val reset = testProtocol("reset", trigger = "event:misses:2")
-        val sim = Sim(file = fileWith(a, reset))
+        val sim = Sim(file = fileWith(a, reset, base = PRAYERS_ONLY))
         sim.step(Input.Manual("alpha"))
         sim.step(Input.BailOut(sim.runId("alpha")))
         sim.at("2026-10-19T22:00", Input.Manual("alpha"))
         // GOING TO SLEEP misses the open alpha: the second miss in a row, but no reset takeover at bedtime.
-        sim.at("2026-10-19T23:00", Input.GoingToSleep)
+        sim.at("2026-10-19T23:00", Input.GoingToSleep())
         assertNull(sim.run("reset"))
         val skipped = sim.lastOf(EntryType.SKIPPED)!!
         assertEquals("reset", skipped.protocol)
@@ -428,12 +437,12 @@ class RunTest {
         assertTrue(sim.state.runs.isEmpty())
         // Nor an `event:after` protocol of a run that the day end completes (Isha confirmed, its quiet time running).
         val next = testProtocol("after-isha", trigger = "event:after:prayer-isha", lock = Lock(LockType.NONE))
-        val isha = Sim(file = fileWith(next))
+        val isha = Sim(file = fileWith(next, base = PRAYERS_ONLY))
         isha.at("2026-10-19T19:40", Input.Adhan(Prayer.ISHA))
         val id = isha.runId("prayer-isha")
         isha.step(Input.StepDone(id, 0))
         isha.at("2026-10-19T19:48", Input.StepDone(id, 1))
-        isha.at("2026-10-19T19:50", Input.GoingToSleep)
+        isha.at("2026-10-19T19:50", Input.GoingToSleep())
         assertEquals("prayer-isha", isha.lastOf(EntryType.COMPLETED)!!.protocol)
         assertNull(isha.run("after-isha"))
         assertEquals("day_end", isha.lastOf(EntryType.SKIPPED)!!.reason)
@@ -557,8 +566,8 @@ class RunTest {
     fun wakeAlarmAndToggleTriggers() {
         val morning = testProtocol("morning", trigger = "event:wake_alarm", kind = ProtocolKind.MORNING)
         val walk = testProtocol("walk", trigger = "toggle:walking", kind = ProtocolKind.WALK, lock = Lock(LockType.POOL))
-        val sim = Sim(file = fileWith(morning, walk))
-        sim.step(Input.WakeAlarm)
+        val sim = Sim(file = fileWith(morning, walk, base = PRAYERS_ONLY))
+        sim.at("2026-10-20T07:00", Input.WakeAlarm())
         assertEquals("wake_alarm", sim.lastOf(EntryType.FIRED)!!.reason)
         sim.step(Input.Toggle(ToggleName.WALKING, true))
         assertEquals("toggle:walking", sim.lastOf(EntryType.FIRED)!!.reason)
@@ -569,34 +578,17 @@ class RunTest {
     }
 
     @Test
-    fun openRunsAreMissedAtDayEndExceptSleep() {
-        val sleep = testProtocol("sleep", kind = ProtocolKind.SLEEP, lock = Lock(LockType.POOL))
-        val sim = Sim(file = fileWith(a, sleep))
+    fun openRunsAreMissedAtDayEndTheWindDownCompletes() {
+        val pool = testProtocol("alpha", lock = Lock(LockType.POOL))
+        val sim = Sim(file = fileWith(pool))
         sim.step(Input.Manual("alpha"))
         sim.at("2026-10-19T22:00", Input.Manual("sleep"))
-        sim.at("2026-10-19T23:30", Input.GoingToSleep)
+        sim.at("2026-10-19T23:30", Input.GoingToSleep())
         assertEquals("alpha", sim.lastOf(EntryType.MISSED)!!.protocol)
         assertEquals("day_end", sim.lastOf(EntryType.MISSED)!!.reason)
-        assertNotNull(sim.run("sleep"))
-    }
-
-    @Test
-    fun aSleepRunSurvivesOnlyTheDayEndAfterItStarted() {
-        val sleep = testProtocol("sleep", kind = ProtocolKind.SLEEP, lock = Lock(LockType.POOL, 30, null))
-        val sim = Sim(file = fileWith(sleep))
-        sim.at("2026-10-19T22:00", Input.Manual("sleep"))
-        sim.at("2026-10-19T23:30", Input.GoingToSleep)
-        assertNotNull("it lasts the night", sim.run("sleep"))
-        // Never finished: the next day end closes it like any other run instead of carrying it on for ever
-        // (an open run would keep every later sleep run from starting: already_running).
-        sim.at("2026-10-20T23:00", Input.GoingToSleep)
-        assertNull(sim.run("sleep"))
-        val m = sim.lastOf(EntryType.MISSED)!!
-        assertEquals("sleep", m.protocol)
-        assertEquals("day_end", m.reason)
-        sim.at("2026-10-21T22:00", Input.Manual("sleep"))
-        assertNotNull(sim.run("sleep"))
-        assertTrue(sim.of(EntryType.SKIPPED).none { it.protocol == "sleep" })
+        // GOING TO SLEEP completes the wind-down; what stays is the night lock, which counts for no day.
+        assertEquals("sleep", sim.lastOf(EntryType.COMPLETED)!!.protocol)
+        assertEquals(listOf(RunPhase.NIGHT), sim.state.runs.map { it.phase })
     }
 
     @Test
@@ -625,10 +617,10 @@ class RunTest {
 
     @Test
     fun aQueuedRunIsNotShownWhenTheDayEndsOrVigilIsSuspended() {
-        val sim = Sim(file = fileWith(a, b))
+        val sim = Sim(file = fileWith(a, b, base = PRAYERS_ONLY))
         sim.step(Input.Manual("alpha"))
         sim.step(Input.Manual("beta"))
-        sim.at("2026-10-19T23:00", Input.GoingToSleep)
+        sim.at("2026-10-19T23:00", Input.GoingToSleep())
         assertEquals(setOf("alpha", "beta"), sim.of(EntryType.MISSED).map { it.protocol }.toSet())
         assertTrue(sim.lastEffects<Effect.ShowTakeover>().isEmpty())
         assertTrue(sim.state.runs.isEmpty())

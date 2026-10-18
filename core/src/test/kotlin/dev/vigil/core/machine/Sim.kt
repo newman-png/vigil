@@ -116,3 +116,9 @@ fun fileWith(vararg extra: Protocol, base: ProtocolFile = BundledProtocols.file)
 
 /** The bundled file without its prayers, plus [extra]. */
 fun fileWithOnly(vararg extra: Protocol): ProtocolFile = BundledProtocols.file.copy(protocols = extra.toList())
+
+/**
+ * The bundled file with only its prayers (no wind-down, night lock, wake alarm or morning): for tests of the M1 rules
+ * on their own (wind-down = bedtime_goal - 60 without a sleep protocol).
+ */
+val PRAYERS_ONLY: ProtocolFile = BundledProtocols.file.copy(protocols = BundledProtocols.file.protocols.filter { it.kind == ProtocolKind.PRAYER })

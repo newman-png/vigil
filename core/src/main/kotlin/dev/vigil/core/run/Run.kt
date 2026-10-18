@@ -33,6 +33,19 @@ enum class RunPhase {
 
     /** Stage 3: one notification only, no lock. A prayer still needs confirming within its window. */
     @SerialName("reminder") REMINDER,
+
+    /**
+     * A prayer took the screen from this run: its timers and lock are frozen since [Run.pausedAt], and it goes on where
+     * it was once the screen is free again.
+     */
+    @SerialName("paused") PAUSED,
+
+    /**
+     * The sleep protocol's night lock: a subtle screen lock and the pool blocked, from GOING TO SLEEP (or the idle or
+     * fallback day end after wind-down) until the wake alarm is answered, [Run.lockEndsAt] at the latest. No steps, and
+     * it counts for no day.
+     */
+    @SerialName("night") NIGHT,
 }
 
 /** The MY TIMES slot a `slot:` trigger started a run for. */
@@ -107,6 +120,10 @@ data class Run(
     val bailed: Boolean = false,
     /** `event:after:` triggers already fired for this run. */
     val afterFired: Boolean = false,
+    /** Paused for a prayer since then (see [RunPhase.PAUSED]). */
+    val pausedAt: Instant? = null,
+    /** It fired on a day with a MY TIMES class or commute: steps marked `skip_on_class_days` are left out. */
+    val classDay: Boolean = false,
 ) {
     /** The single-step version, shown marked "minimum". */
     val isMinimum: Boolean get() = version == Version.SINGLE

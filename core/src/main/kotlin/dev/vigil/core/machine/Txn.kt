@@ -15,6 +15,7 @@ import dev.vigil.core.pool.PoolWait
 import dev.vigil.core.pool.UseMark
 import dev.vigil.core.protocol.LockType
 import dev.vigil.core.protocol.Prayer
+import dev.vigil.core.protocol.SlotType
 import dev.vigil.core.protocol.Protocol
 import dev.vigil.core.protocol.ProtocolKind
 import dev.vigil.core.protocol.Step
@@ -33,6 +34,8 @@ import dev.vigil.core.timeline.Timeline
 import dev.vigil.core.times.ResolvedSlot
 import java.time.Duration
 import java.time.Instant
+import java.time.LocalDate
+import java.time.LocalTime
 
 /**
  * One reducer step in progress. Mutates only its own copy of the state ([s]) and collects journal entries and
@@ -137,7 +140,11 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         expireCall()
         settleToggles()
         settleRuns()
+        // The wake alarm before the day boundary too: one due while the old day still ran (a 05:50 wake before the
+        // 06:00 fallback, noticed at 06:05) rings for it instead of being lost with that day.
+        settleAlarm()
         settleDay()
+        settleAlarm()
         prunePool()
         settlePool()
         settleHeadsUps()
@@ -170,11 +177,19 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         endCall(limit, "no call end reported within ${Machine.MAX_CALL_PAUSE.toHours()} h: timers and locks run again")
     }
 
-    /** "I'm with friends" turns itself off at its cap (spec: "Ends when you switch it off, or after the 4-hour cap"). */
+    /**
+     * "I'm with friends" turns itself off at its cap (spec: "Ends when you switch it off, or after the 4-hour cap");
+     * "I'm walking" after [Machine.MAX_WALKING], until step detection can tell that a walk is over.
+     */
     private fun settleToggles() {
-        val end = friendsEnd() ?: return
-        if (now.isBefore(end)) return
-        setToggle(ToggleName.FRIENDS, false, at = end, detail = "off (the ${friendsCapMin()}-minute cap)")
+        friendsEnd()?.let { end ->
+            if (!now.isBefore(end)) setToggle(ToggleName.FRIENDS, false, at = end, detail = "off (the ${friendsCapMin()}-minute cap)")
+        }
+        walkingEnd()?.let { end ->
+            if (!now.isBefore(end)) {
+                setToggle(ToggleName.WALKING, false, at = end, detail = "off (by itself after ${Machine.MAX_WALKING.toHours()} hours)")
+            }
+        }
     }
 
     private fun ensureDay() {
@@ -182,6 +197,7 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         val key = DayRules.firstKey(now, zone, file.day).toString()
         s = s.copy(day = DayState(key, now, Machine.FIRST_START), times = s.times.atDayStart())
         log(EntryType.DAY_START, day = key, reason = Machine.FIRST_START)
+        sleepTarget()?.let { setTarget(it, 0, "start", 0) }
     }
 
     private fun expireSuspension() {
@@ -199,14 +215,21 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         }
     }
 
-    /** Ends the current day at [at]: self-check, runs that close with the day, counters reset, and the next day starts. */
+    /**
+     * Ends the current day at [at]: self-check, the night's verdict for sleep shifting, runs that close with the day,
+     * counters reset, the next day starts (with its target bedtime), and the night lock begins after GOING TO SLEEP (or
+     * an idle or fallback end once wind-down had started).
+     */
     fun endDay(reason: DayEndReason, at: Instant) {
         val d = day
+        val sleep = sleepProtocol
+        val windDownStarted = sleep != null && startedToday(sleep.id) != null
         selfCheck(d, at)
+        val goodNight = judgeNight(d, reason, at)
         // Closing the day's runs starts nothing: no `event:misses` reset offer and no `event:after` protocol at GOING TO
         // SLEEP (or in the night the day ended in). Those triggers are skipped; the miss count starts again.
         dayEnding = true
-        closeRunsAtDayEnd(at, d.startedAt)
+        closeRunsAtDayEnd(at)
         dayEnding = false
         endSessionAtDayEnd(at)
         log(
@@ -215,11 +238,23 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         )
         val key = DayRules.keyAfter(at, zone, d.date).toString()
         val applied = s.times.pending != null
-        s = s.copy(day = DayState(key, at, reason.json), times = s.times.atDayStart(), pool = s.pool.newDay())
+        s = s.copy(
+            day = DayState(key, at, reason.json), times = s.times.atDayStart(), pool = s.pool.newDay(),
+            // Unticked to-dos expire with their day; the ones written tonight for the new day stay.
+            todos = s.todos.filterKeys { it > d.key },
+        )
         log(
             EntryType.DAY_START, at = at, day = key, reason = reason.json,
             detail = if (applied) "the MY TIMES changes apply from today" else null,
         )
+        if (sleep != null) shiftTarget(goodNight)
+        expireAlarm(key)
+        val night = when (reason) {
+            DayEndReason.SLEEP_TAP -> true
+            DayEndReason.IDLE, DayEndReason.FALLBACK -> windDownStarted
+            DayEndReason.WAKE_ALARM -> false
+        }
+        if (night) startNight(reason, at)
     }
 
     /** Daily self-check: every planned start of the day that never fired, and every expected adhan that never came. */
@@ -241,6 +276,20 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
                 )
             }
         }
+        // The next wake alarm, due while the day ran, that never rang (the phone was off, VIGIL was stopped): this
+        // day's own, or tomorrow's when it falls before this day's end (a 05:30 wake before the 06:00 fallback).
+        if (alarmOn) {
+            val key = alarmKey().toString()
+            val due = alarmAt(alarmKey())
+            val a = s.wakeAlarm
+            if (due.isBefore(at) && a.ringingFor != key && a.handledFor != key) {
+                s = s.copy(wakeAlarm = a.copy(handledFor = key))
+                log(
+                    EntryType.NOT_FIRED, at = at, protocol = morningProtocol?.id, scheduled = due, reason = "wake_alarm",
+                    detail = "the wake alarm (${hhmm(due)}) never rang",
+                )
+            }
+        }
     }
 
     /**
@@ -257,7 +306,7 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         }
     }
 
-    private fun closeRunsAtDayEnd(at: Instant, dayStart: Instant) {
+    private fun closeRunsAtDayEnd(at: Instant) {
         for (id in s.runs.map { it.id }) {
             // Fresh each time: closing one run can start a queued one.
             val r = run(id) ?: continue
@@ -267,10 +316,9 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
                     logRun(EntryType.DROPPED, r, at = at, reason = "day_end", detail = "test run")
                     cancelRunNotices(r)
                 }
+                r.phase == RunPhase.NIGHT -> endNight(r, "day_end", at)
                 r.prayer == Prayer.ISHA -> if (r.confirmed) complete(r) else missPrayer(r, "day_end", at)
                 r.prayer != null -> Unit
-                // Tonight's sleep run lasts the night; one left over from an earlier day would block every later one.
-                r.kind.survivesDayEnd && !r.firedAt.isBefore(dayStart) -> Unit
                 // An unconfirmed stage-3 reminder is a miss like any other: without it a protocol at stage 3 could
                 // never move back a stage, however often it was ignored.
                 r.phase == RunPhase.REMINDER -> missRun(r, "day_end", at, detail = "reminder not confirmed")
@@ -310,6 +358,8 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         when (r.phase) {
             RunPhase.CARD -> r.classEndsAt?.let { if (!now.isBefore(it)) classOver(r) }
             RunPhase.ACTIVE -> if (s.callSince == null) settleActive(r, p)
+            // Never answered: the night lock ends by itself at wake + night_lock_grace_min.
+            RunPhase.NIGHT -> r.lockEndsAt?.let { if (!now.isBefore(it)) endNight(r, "timeout", it) }
             else -> Unit
         }
     }
@@ -341,6 +391,7 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
     private fun stepDone(r: Run, steps: List<Step>, text: String? = null, auto: Boolean = false, at: Instant = now): Run? {
         val st = steps[r.step]
         logRun(EntryType.STEP_DONE, r, at = at, step = r.step, detail = st.text, text = text, reason = if (auto) "timer" else null)
+        if (st.todos && text != null && r.kind == ProtocolKind.SLEEP && !r.test) setTodos(r, st, text)
         var next = r.copy(
             step = r.step + 1,
             stepStartedAt = at,
@@ -362,7 +413,14 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
             return null
         }
         put(next)
+        // Without a screen lock its notification shows the current step (the morning card).
+        if (next.lock != LockType.SCREEN && next.phase == RunPhase.ACTIVE) notifyRun(next)
         return next
+    }
+
+    private fun notifyRun(r: Run) {
+        val p = protocol(r) ?: return
+        effects += Effect.Notify(runNotice(r), p.title, currentStepText(r), silent = true, NotifyKind.RUN, r.id)
     }
 
     private fun logConfirmed(r: Run) {
@@ -470,10 +528,12 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
     private fun newRun(p: Protocol, stage: Int, reason: String, planned: Instant?, slot: SlotInfo?, test: Boolean): Run {
         val id = "run-${s.nextRun}"
         s = s.copy(nextRun = s.nextRun + 1)
+        val dt = dayTimes()
         return Run(
             id = id, protocol = p.id, kind = p.kind, stage = stage, phase = RunPhase.QUEUED, firedAt = now, reason = reason,
             weekday = WallClock.dayCode(day.date), lock = if (stage >= 3) LockType.NONE else p.lock.type,
             planned = planned, slot = slot, test = test,
+            classDay = dt.classes.isNotEmpty() || dt.slots(SlotType.COMMUTE).isNotEmpty(),
         )
     }
 
@@ -494,7 +554,7 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
                 missRun(old, "replaced", detail = "the next start of this protocol came before it was finished")
             }
         }
-        if (!test && s.runs.any { it.protocol == p.id && !it.test }) {
+        if (!test && s.runs.any { it.protocol == p.id && !it.test && it.phase != RunPhase.NIGHT }) {
             log(EntryType.SKIPPED, protocol = p.id, reason = "already_running", scheduled = planned)
             return null
         }
@@ -503,10 +563,14 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         return r
     }
 
-    /** Puts a new run into play: stage 3 = one notification; a screen run waits while another owns the screen. */
+    /**
+     * Puts a new run into play: stage 3 = one notification; a screen run waits while another owns the screen, except a
+     * prayer: a protocol holding the screen pauses for it, and the night lock yields to it.
+     */
     private fun place(r: Run, p: Protocol) {
         if (!r.test) s = s.copy(lastFired = s.lastFired + (p.id to now))
         val owner = screenOwner()
+        val prayerFirst = r.prayer != null && !r.test && owner != null && owner.prayer == null
         when {
             r.stage >= 3 -> {
                 add(r.copy(phase = RunPhase.REMINDER))
@@ -517,16 +581,42 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
                 val id = r.prayer?.let { prayerNotice(it) } ?: runNotice(r)
                 effects += Effect.Notify(id, p.title, text, silent = s.toggles.quiet || r.silent, NotifyKind.REMINDER, r.id)
             }
-            r.lock == LockType.SCREEN && owner != null -> {
+            r.lock == LockType.SCREEN && owner != null && !prayerFirst -> {
                 add(r.copy(phase = RunPhase.QUEUED))
                 logRun(EntryType.FIRED, r, reason = r.reason, scheduled = r.planned, detail = "waits behind ${title(owner)}")
             }
             else -> {
+                val taken = if (r.lock == LockType.SCREEN && prayerFirst && owner != null) {
+                    yieldScreenToPrayer()
+                    if (owner.phase == RunPhase.NIGHT) "takes the screen from the night lock" else "${title(owner)} pauses for it"
+                } else {
+                    null
+                }
                 add(r)
-                logRun(EntryType.FIRED, r, reason = r.reason, scheduled = r.planned)
+                logRun(EntryType.FIRED, r, reason = r.reason, scheduled = r.planned, detail = taken)
                 activate(r.id)
             }
         }
+    }
+
+    /** A prayer takes the screen: a non-prayer protocol holding it pauses, its timers frozen like in a call. */
+    private fun yieldScreenToPrayer() {
+        val owner = s.runs.firstOrNull { it.lock == LockType.SCREEN && lockActive(it) && it.prayer == null } ?: return
+        put(owner.copy(phase = RunPhase.PAUSED, pausedAt = runNow))
+        logRun(EntryType.PAUSED, owner, detail = "a prayer took the screen; it goes on after the prayer's lock")
+    }
+
+    /** A paused run goes on where it was: its lock, done lock and current step move on by the pause. */
+    private fun resume(id: String) {
+        val r = run(id) ?: return
+        val shift = Duration.between(r.pausedAt ?: runNow, runNow).takeIf { !it.isNegative } ?: Duration.ZERO
+        val back = r.copy(
+            phase = RunPhase.ACTIVE, pausedAt = null, lockEndsAt = r.lockEndsAt?.plus(shift),
+            doneAfterAt = r.doneAfterAt?.plus(shift), stepStartedAt = r.stepStartedAt?.plus(shift),
+        )
+        put(back)
+        logRun(EntryType.RESUMED, back, minutes = WallClock.minutesCeil(shift.seconds))
+        if (back.lock == LockType.SCREEN) effects += Effect.ShowTakeover(back.id)
     }
 
     /** The run becomes active now: its lock, done lock and first step start. */
@@ -560,14 +650,15 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         if (prev == null || (!prev.isAfter(wake) && now.isAfter(wake))) updateDay { it.copy(started = it.started + (id to now)) }
     }
 
-    /** While nothing owns the screen, the next queued run (prayers first) starts. */
+    /** While nothing owns the screen, the next queued prayer starts, else a paused run goes on, else the next queued run. */
     private fun promoteQueue() {
         if (suspended) return
         var guard = 0
         while (screenOwner() == null && guard++ < 50) {
             val queued = s.runs.filter { it.phase == RunPhase.QUEUED }
-            val next = queued.firstOrNull { it.prayer != null } ?: queued.firstOrNull() ?: return
-            activate(next.id)
+            val paused = s.runs.firstOrNull { it.phase == RunPhase.PAUSED }
+            val next = queued.firstOrNull { it.prayer != null } ?: paused ?: queued.firstOrNull() ?: return
+            if (next.phase == RunPhase.PAUSED) resume(next.id) else activate(next.id)
         }
     }
 
@@ -639,6 +730,7 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         logRun(EntryType.WINDOW_WARNING, r, until = end, detail = "the window closes at ${end?.let { hhmm(it) }} and the prayer is not confirmed")
         val inClass = dayTimes().classAt(now) != null
         if (r.stage <= 2 && !suspended) {
+            if (!r.test) yieldScreenToPrayer()
             put(r.copy(warned = true, returned = true, phase = RunPhase.RETURNED, classEndsAt = null, silent = inClass))
             effects += Effect.CancelNotify(prayerNotice(r.prayer!!))
             if (screenOwner()?.id == r.id) effects += Effect.ShowTakeover(r.id)
@@ -656,7 +748,12 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         logRun(EntryType.CLASS_CARD, r, detail = "class over: the takeover starts")
         effects += Effect.CancelNotify(prayerNotice(r.prayer!!))
         put(r.copy(classEndsAt = null, silent = false, phase = RunPhase.QUEUED))
-        if (screenOwner() == null) activate(r.id)
+        val owner = screenOwner()
+        // Like at the adhan: a protocol holding the screen pauses for the prayer, the night lock yields.
+        if (owner == null || (owner.prayer == null && !r.test)) {
+            yieldScreenToPrayer()
+            activate(r.id)
+        }
     }
 
     private fun notifyConfirm(r: Run, p: Protocol) {
@@ -888,10 +985,24 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
                 }
             }
             is Input.Adhan -> onAdhan(input.prayer, manual = false)
-            Input.WakeAlarm -> {
-                if (DayRules.wakeAlarmEndsDay(day.date, now, zone)) endDay(DayEndReason.WAKE_ALARM, now)
-                file.protocols.filter { it.parsedTrigger == Trigger.WakeAlarm }.forEach { fire(it, "wake_alarm") }
+            is Input.WakeAlarm -> when {
+                input.test -> wakeTest()
+                // A dismissal with no alarm ringing or waiting (a stale alarm screen) changes nothing: it must not
+                // count as tomorrow's alarm.
+                s.wakeAlarm.ringingFor == null && s.wakeAlarm.morningAtUnlock == null -> log(
+                    EntryType.SKIPPED, protocol = morningProtocol?.id, reason = "wake_alarm", detail = "no wake alarm was ringing",
+                )
+                else -> wakeUp("dismissed")
             }
+            is Input.WakeAlarmUnanswered -> when {
+                input.test -> log(EntryType.WAKE_ALARM_UNANSWERED, protocol = morningProtocol?.id, detail = "TEST ring", test = true)
+                s.wakeAlarm.ringingSince != null -> unanswered(now)
+            }
+            Input.RingWakeAlarmTest -> {
+                log(EntryType.WAKE_ALARM, protocol = morningProtocol?.id, reason = "test", detail = "TEST ring", test = true)
+                effects += Effect.RingWakeAlarm(now, 1, now.plus(ringMax()), test = true)
+            }
+            is Input.TodoDone -> onTodo(input.index, input.done)
             is Input.Toggle -> onToggle(input.name, input.on)
             is Input.Manual -> onManual(input.protocolId, input.test)
             is Input.StepDone -> onStepDone(input.runId, input.index, input.text)
@@ -908,13 +1019,15 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
                     onForeground(null, false)
                 } else {
                     s = s.copy(screenOn = true, screenUnlocked = input.unlocked, screenOffSince = s.screenOffSince.takeIf { !input.unlocked })
+                    // The wake alarm was never answered: the first unlock after it is waking up.
+                    if (input.unlocked && s.wakeAlarm.morningAtUnlock != null) wakeUp("unlock")
                 }
             }
             is Input.Foreground -> onForeground(input.app, input.isPool)
             is Input.PoolWaitStarted -> onWaitStarted(input.app)
             is Input.PoolWaitDone -> onWaitDone(input.app)
             is Input.PoolWaitAbandoned -> onWaitAbandoned(input.app)
-            Input.GoingToSleep -> onGoingToSleep()
+            is Input.GoingToSleep -> goToSleep(input.ishaPrayed)
             is Input.Suspend -> onSuspend(input.minutes)
             Input.Resume -> if (s.suspendedUntil != null) {
                 s = s.copy(suspendedUntil = null)
@@ -935,19 +1048,65 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
     }
 
     /**
-     * GOING TO SLEEP ends the day, but not before the day's own wake time: the day then started last night (an earlier
-     * tap, idle, the first start), and ending it again would skip a whole day (its key, MY TIMES weekday and windows).
+     * GOING TO SLEEP (home, or the wind-down's last step): Isha confirmed first when the user said so, the wind-down
+     * completes, the day ends now and the night lock starts. Not before the day's own wake time: the day then started
+     * last night (an earlier tap, idle, the first start), and ending it again would skip a whole day (its key, MY TIMES
+     * weekday and windows). Returns true when the day ended.
      */
-    private fun onGoingToSleep() {
+    private fun goToSleep(ishaPrayed: Boolean): Boolean {
         val wake = dayTimes().wake
-        if (now.isAfter(wake)) {
-            endDay(DayEndReason.SLEEP_TAP, now)
-            return
+        if (!now.isAfter(wake)) {
+            log(
+                EntryType.SKIPPED, reason = "sleep_tap",
+                detail = "GOING TO SLEEP before ${hhmm(wake)}: the day ${day.key} began at ${hhmm(day.startedAt)} and goes on",
+            )
+            return false
         }
-        log(
-            EntryType.SKIPPED, reason = "sleep_tap",
-            detail = "GOING TO SLEEP before ${hhmm(wake)}: the day ${day.key} began at ${hhmm(day.startedAt)} and goes on",
-        )
+        if (ishaPrayed) confirmIsha()
+        s.runs.firstOrNull { it.kind == ProtocolKind.SLEEP && !it.test && it.phase != RunPhase.NIGHT }?.let {
+            // Like the day end: nothing starts after the wind-down at this moment.
+            dayEnding = true
+            finishWindDown(it)
+            dayEnding = false
+        }
+        endDay(DayEndReason.SLEEP_TAP, now)
+        return true
+    }
+
+    /** GOING TO SLEEP finishes the wind-down: its last step is done and it completes (not clean when steps were skipped). */
+    private fun finishWindDown(r: Run) {
+        val steps = stepsOf(r)
+        val last = steps.lastIndex
+        val skipped = r.phase != RunPhase.REMINDER && r.step < last
+        if (last >= 0 && r.step <= last) {
+            logRun(EntryType.STEP_DONE, r, step = last, detail = steps[last].text, reason = if (skipped) "going_to_sleep" else null)
+        }
+        complete(r.copy(confirmed = true, steppedDown = r.steppedDown || skipped))
+    }
+
+    /** "I prayed Isha" at GOING TO SLEEP: it counts, even while its done step is still locked. */
+    private fun confirmIsha() {
+        val isha = ishaToConfirm() ?: return
+        val confirmed = isha.copy(confirmed = true)
+        put(confirmed)
+        logConfirmed(confirmed)
+    }
+
+    private fun onTodo(index: Int, done: Boolean) {
+        val list = s.todos[day.key] ?: return
+        val todo = list.getOrNull(index) ?: return
+        if (todo.done == done) return
+        s = s.copy(todos = s.todos + (day.key to list.mapIndexed { i, t -> if (i == index) t.copy(done = done) else t }))
+        log(EntryType.TODO_DONE, day = day.key, step = index, text = todo.text, reason = if (done) "done" else "undone")
+    }
+
+    /** A wind-down's to-dos step: its lines become the to-dos of the day the next wake alarm belongs to (tomorrow). */
+    private fun setTodos(r: Run, st: Step, text: String) {
+        val lines = text.lines().map { it.trim() }.filter { it.isNotEmpty() }.take(st.lines ?: 1)
+        if (lines.isEmpty()) return
+        val key = alarmKey().toString()
+        s = s.copy(todos = s.todos + (key to lines.map { Todo(it) }))
+        log(EntryType.TODO_SET, protocol = r.protocol, run = r.id, day = key, text = lines.joinToString("\n"), detail = "${lines.size} for $key")
     }
 
     private fun onToggle(name: ToggleName, on: Boolean) = setToggle(name, on)
@@ -1005,9 +1164,12 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
                 if (forced && until != null && runNow.isBefore(until)) return
             }
             StepType.TIMER -> if (forced) return
-            StepType.TEXT -> if (nonBlankLines(text) < (st.lines ?: 1)) return
+            // A to-dos step takes up to its lines (at least one); other text steps need every line.
+            StepType.TEXT -> if (nonBlankLines(text) < (if (st.todos) 1 else st.lines ?: 1)) return
             StepType.DONE -> if (forced && r.doneAfterAt != null && runNow.isBefore(r.doneAfterAt)) return
         }
+        // The wind-down's last step is GOING TO SLEEP: the day ends (before the day's wake time only the run finishes).
+        if (r.kind == ProtocolKind.SLEEP && !r.test && index == steps.lastIndex && goToSleep(ishaPrayed = false)) return
         stepDone(r, steps, text = text?.trim())
     }
 
@@ -1056,11 +1218,18 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         val moved = r.copy(version = next, step = 0, stepStartedAt = now, steppedDown = true)
         put(moved)
         logRun(EntryType.STEPPED_DOWN, moved, detail = if (next == Version.SINGLE) "minimum" else null)
+        if (moved.lock != LockType.SCREEN && moved.phase == RunPhase.ACTIVE) notifyRun(moved)
     }
 
     private fun onBailOut(runId: String) {
         val r = run(runId) ?: return
         val p = protocol(r) ?: return
+        if (r.phase == RunPhase.NIGHT) {
+            // Leaving the night lock costs the usual penalty; the night itself was judged when the day ended.
+            endNight(r, "left")
+            penalty(r)
+            return
+        }
         if (r.prayer != null) {
             if (r.phase != RunPhase.ACTIVE && r.phase != RunPhase.QUEUED && r.phase != RunPhase.RETURNED) return
             val minimumEnd = r.doneAfterAt ?: r.lockStartedAt?.plus(Duration.ofMinutes((p.lock.doneAfterMin ?: 0).toLong()))
@@ -1085,6 +1254,8 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
             return
         }
         if (r.phase == RunPhase.REMINDER) return
+        // Leaving tonight's wind-down makes the night a missed one for sleep shifting.
+        if (r.kind == ProtocolKind.SLEEP && !r.test) updateDay { it.copy(sleepBailed = true) }
         remove(r.id)
         logRun(EntryType.BAILED, r)
         cancelRunNotices(r)
@@ -1128,6 +1299,10 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
             // Fresh each time: closing one run can start a queued one.
             val r = run(id) ?: continue
             val p = protocol(r)
+            if (r.phase == RunPhase.NIGHT) {
+                endNight(r, "kill_switch")
+                continue
+            }
             if (r.prayer != null && p != null) {
                 when {
                     r.confirmed -> complete(r)
@@ -1147,6 +1322,224 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         // The pool is simply open while suspended: a live session ends now (its minutes and cooldown count as usual), so
         // the suspended time is never counted, and never turns into heavy use the moment the suspension ends.
         s.pool.session?.let { endSession(if (it.inSince != null) now else it.leftAt ?: now, cooldown = true) }
+    }
+
+    // ------------------------------------------------------------------ sleep and wake
+
+    private fun ringMax(): Duration = Duration.ofMinutes(alarmParam("ring_max_min").toLong())
+
+    /**
+     * Sleep shifting's verdict on the night of day [d], which ends at [at] for [reason]: good when GOING TO SLEEP came at
+     * most `late_min` after tonight's target and the wind-down was not left early. Journals the sleep time (GOING TO
+     * SLEEP, or the moment the phone was put down) and a missed night. True without a sleep protocol.
+     */
+    private fun judgeNight(d: DayState, reason: DayEndReason, at: Instant): Boolean {
+        val p = sleepProtocol ?: return true
+        val target = dayTimes().bedtime
+        val after = Duration.between(target, at).toMinutes().toInt()
+        if (reason == DayEndReason.SLEEP_TAP || reason == DayEndReason.IDLE) {
+            val detail = when {
+                after > 0 -> "$after min after the target ${hhmm(target)}"
+                after < 0 -> "${-after} min before the target ${hhmm(target)}"
+                else -> "at the target ${hhmm(target)}"
+            }
+            log(EntryType.SLEEP, at = at, protocol = p.id, reason = reason.json, scheduled = target, minutes = after, detail = detail)
+        }
+        val late = p.intParam("late_min")
+        val (why, detail) = when {
+            d.sleepBailed -> "bailed" to "the wind-down was left early"
+            reason != DayEndReason.SLEEP_TAP -> "no_sleep_tap" to "the day ended without GOING TO SLEEP (${reason.json})"
+            after > late -> "late" to "GOING TO SLEEP $after min after the target ${hhmm(target)} (more than $late)"
+            else -> return true
+        }
+        log(EntryType.NIGHT_MISSED, at = at, protocol = p.id, reason = why, scheduled = target, detail = detail)
+        return false
+    }
+
+    /**
+     * The new day's target bedtime: `shift_min` earlier than last night's after a good night, and after a missed one too
+     * unless it is the `hold_after_missed`th missed night in a row (then it holds); never before MY TIMES bedtime_goal,
+     * never after bedtime_start (a MY TIMES change applies from today, so the target is kept inside the new range).
+     */
+    private fun shiftTarget(good: Boolean) {
+        val p = sleepProtocol ?: return
+        val (goal, start) = bedtimeRange(s.times.current)
+        val prev = nightMinutes(WallClock.parseTime(s.sleep.target) ?: start)
+        val missed = if (good) 0 else s.sleep.missedInARow + 1
+        val holdAfter = p.intParam("hold_after_missed")
+        val hold = !good && holdAfter > 0 && missed >= holdAfter
+        val wanted = if (hold) prev else maxOf(nightMinutes(goal), prev - p.intParam("shift_min"))
+        val next = clampTarget(wanted, goal, start)
+        val nextMin = nightMinutes(next)
+        val reason = when {
+            nextMin != wanted || prev < nightMinutes(goal) -> "clamped"
+            hold -> "held"
+            nextMin == prev -> "goal"
+            else -> "shifted"
+        }
+        setTarget(next, missed, reason, prev - nextMin)
+    }
+
+    private fun setTarget(target: LocalTime, missed: Int, reason: String, earlier: Int) {
+        val p = sleepProtocol ?: return
+        s = s.copy(sleep = SleepState("%02d:%02d".format(target.hour, target.minute), missed))
+        val tonight = dayTimes().bedtime
+        val detail = when (reason) {
+            "start" -> "tonight's target ${hhmm(tonight)}: MY TIMES bedtime start"
+            "held" -> "tonight's target ${hhmm(tonight)}: held after $missed missed nights in a row"
+            "goal" -> "tonight's target ${hhmm(tonight)}: the goal"
+            "clamped" -> "tonight's target ${hhmm(tonight)}: kept within MY TIMES bedtimes"
+            else -> "tonight's target ${hhmm(tonight)}: $earlier min earlier"
+        }
+        log(EntryType.SLEEP_TARGET, protocol = p.id, scheduled = tonight, minutes = earlier, reason = reason, detail = detail)
+    }
+
+    /**
+     * The night lock begins (at [at]: GOING TO SLEEP, or when the phone was put down / the fallback for an idle or
+     * fallback day end): a run of the sleep protocol in phase NIGHT with its lock (screen = a silent dark takeover and
+     * the pool blocked), until the wake alarm is answered and at the latest wake + `night_lock_grace_min`. Not at stage 3
+     * (one notification, no lock) and not while suspended.
+     */
+    private fun startNight(reason: DayEndReason, at: Instant) {
+        val p = sleepProtocol ?: return
+        val stage = stageOf(p)
+        if (suspended || stage >= 3 || p.lock.type == LockType.NONE) return
+        val alarm = alarmAt(alarmKey())
+        // GOING TO SLEEP in the morning (just after waking) is no night: no lock until tomorrow's alarm.
+        if (Duration.between(at, alarm) > Machine.MAX_NIGHT) return
+        val end = alarm.plus(Duration.ofMinutes(p.intParam("night_lock_grace_min").toLong()))
+        if (!end.isAfter(now)) return
+        s.runs.filter { it.phase == RunPhase.NIGHT }.forEach { remove(it.id) }
+        val id = "run-${s.nextRun}"
+        s = s.copy(nextRun = s.nextRun + 1)
+        val night = Run(
+            id = id, protocol = p.id, kind = p.kind, stage = stage, phase = RunPhase.NIGHT, firedAt = at, reason = "night",
+            weekday = WallClock.dayCode(day.date), lock = p.lock.type, startedAt = at, lockStartedAt = at, lockEndsAt = end,
+        )
+        add(night)
+        log(
+            EntryType.NIGHT_LOCK, at = at, protocol = p.id, run = id, stage = stage, reason = reason.json, until = end,
+            detail = "until the wake alarm is answered (${hhmm(end)} at the latest)",
+        )
+        if (p.boolParam("white_noise")) effects += Effect.Audio(Effect.Audio.PLAY, Effect.Audio.WHITE_NOISE)
+    }
+
+    /** The night lock is over ([reason] wake, unlock, timeout, left, kill_switch, day_end). */
+    private fun endNight(r: Run, reason: String, at: Instant = now) {
+        remove(r.id)
+        log(
+            EntryType.NIGHT_LOCK, at = at, protocol = r.protocol, run = r.id, stage = r.stage, reason = reason,
+            minutes = WallClock.minutesCeil(r.firedAt, at),
+        )
+        cancelRunNotices(r)
+        if (reason == "wake" || reason == "unlock" || reason == "timeout") {
+            effects += Effect.Audio(Effect.Audio.STOP, Effect.Audio.WHITE_NOISE)
+        }
+    }
+
+    /**
+     * The wake alarm: it rings at MY TIMES wake of the day it belongs to ([alarmKey]); unanswered after `ring_max_min`
+     * it rings again `snooze_min` later, at most `max_rings` times, then gives up (the morning starts at the next unlock).
+     * One more than [Machine.PLANNED_GRACE] late (the phone was off) does not ring at all: not_fired.
+     */
+    private fun settleAlarm() {
+        if (!alarmOn) return
+        val a = s.wakeAlarm
+        val key = a.ringingFor
+        if (key != null) {
+            val since = a.ringingSince
+            val again = a.nextRingAt
+            when {
+                since != null -> since.plus(ringMax()).let { if (!now.isBefore(it)) unanswered(it) }
+                again == null || Duration.between(again, now) > Machine.PLANNED_GRACE -> giveUp(again ?: now)
+                !now.isBefore(again) -> ring(key, a.scheduled ?: again, a.rings + 1)
+            }
+            return
+        }
+        val due = alarmKey()
+        val at = alarmAt(due)
+        if (now.isBefore(at)) return
+        if (Duration.between(at, now) > Machine.PLANNED_GRACE) {
+            s = s.copy(wakeAlarm = a.copy(handledFor = due.toString()))
+            log(
+                EntryType.NOT_FIRED, protocol = morningProtocol?.id, scheduled = at, reason = "wake_alarm",
+                detail = "the wake alarm (${hhmm(at)}) did not ring: the phone was off or VIGIL was stopped",
+            )
+            return
+        }
+        ring(due.toString(), at, 1)
+    }
+
+    private fun ring(key: String, scheduled: Instant, n: Int) {
+        val stop = now.plus(ringMax())
+        s = s.copy(wakeAlarm = s.wakeAlarm.copy(ringingFor = key, scheduled = scheduled, ringingSince = now, rings = n, nextRingAt = null))
+        log(EntryType.WAKE_ALARM, protocol = morningProtocol?.id, scheduled = scheduled, detail = "ring $n of ${alarmParam("max_rings")}")
+        effects += Effect.RingWakeAlarm(scheduled, n, stop)
+    }
+
+    /** A ring ended unanswered at [at]: it rings again `snooze_min` later, or gives up after `max_rings`. */
+    private fun unanswered(at: Instant) {
+        val a = s.wakeAlarm
+        if (a.rings < alarmParam("max_rings")) {
+            effects += Effect.StopWakeAlarm
+            s = s.copy(wakeAlarm = a.copy(ringingSince = null, nextRingAt = at.plus(Duration.ofMinutes(alarmParam("snooze_min").toLong()))))
+        } else {
+            giveUp(at)
+        }
+    }
+
+    private fun giveUp(at: Instant) {
+        val a = s.wakeAlarm
+        val key = a.ringingFor ?: return
+        s = s.copy(wakeAlarm = WakeAlarmState(handledFor = key, morningAtUnlock = key))
+        log(
+            EntryType.WAKE_ALARM_UNANSWERED, at = at, protocol = morningProtocol?.id, scheduled = a.scheduled,
+            detail = "rang ${a.rings} time(s) without an answer; the morning starts at the next unlock",
+        )
+        effects += Effect.StopWakeAlarm
+    }
+
+    /**
+     * Waking up: the wake alarm was dismissed ([reason] dismissed), or the phone was unlocked after it gave up (unlock).
+     * The day ends if it has not (the alarm the morning after), the night lock ends, the wake time is journaled (minutes
+     * after the alarm) and the morning starts.
+     */
+    private fun wakeUp(reason: String) {
+        val a = s.wakeAlarm
+        val key = (a.ringingFor ?: a.morningAtUnlock)?.let { runCatching { LocalDate.parse(it) }.getOrNull() } ?: alarmKey()
+        val scheduled = a.scheduled?.takeIf { a.ringingFor != null } ?: alarmAt(key)
+        if (DayRules.wakeAlarmEndsDay(day.date, now, zone)) endDay(DayEndReason.WAKE_ALARM, now)
+        s.runs.filter { it.phase == RunPhase.NIGHT }.forEach { endNight(it, if (reason == "unlock") "unlock" else "wake") }
+        if (day.key == key.toString() && day.woke == null) updateDay { it.copy(woke = now) }
+        val after = Duration.between(scheduled, now).toMinutes().toInt()
+        log(
+            EntryType.WAKE, protocol = morningProtocol?.id, reason = reason, scheduled = scheduled, minutes = after,
+            detail = listOfNotNull(
+                if (after > 0) "$after min after the alarm" else "on time",
+                a.rings.takeIf { it > 1 }?.let { "after $it rings" },
+            ).joinToString(", "),
+        )
+        s = s.copy(wakeAlarm = WakeAlarmState(handledFor = key.toString()))
+        effects += Effect.StopWakeAlarm
+        file.protocols.filter { it.parsedTrigger == Trigger.WakeAlarm }.forEach { fire(it, "wake_alarm") }
+    }
+
+    /** A TEST ring was dismissed: the morning starts as a TEST preview; nothing else changes. */
+    private fun wakeTest() {
+        log(EntryType.WAKE, protocol = morningProtocol?.id, reason = "test", detail = "TEST ring dismissed", test = true)
+        file.protocols.filter { it.parsedTrigger == Trigger.WakeAlarm }.forEach { fire(it, "test", test = true) }
+    }
+
+    /** At a day start: a ringing alarm or a waiting morning from before the new day [newKey] is over. */
+    private fun expireAlarm(newKey: String) {
+        val a = s.wakeAlarm
+        var b = a
+        if (a.morningAtUnlock != null && a.morningAtUnlock < newKey) b = b.copy(morningAtUnlock = null)
+        if (a.ringingFor != null && a.ringingFor < newKey) {
+            b = b.copy(ringingFor = null, scheduled = null, ringingSince = null, rings = 0, nextRingAt = null, handledFor = a.ringingFor)
+            effects += Effect.StopWakeAlarm
+        }
+        if (b != a) s = s.copy(wakeAlarm = b)
     }
 
     companion object {

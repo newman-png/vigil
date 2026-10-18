@@ -124,7 +124,7 @@ class PoolMachineTest {
 
     @Test
     fun outsideEveryWindowIsBlockedAndLogged() {
-        val sim = Sim()
+        val sim = Sim(file = PRAYERS_ONLY)
         // Yesterday's Dhuhr puts today's estimate at 12:30, where the morning window closes ("next").
         sim.state = sim.state.copy(prayers = sim.state.prayers.copy(lastAdhan = mapOf(Prayer.DHUHR to rome("2026-10-18T12:30"))))
         val windows = Machine.windows(sim.state, sim.env)
@@ -347,7 +347,7 @@ class PoolMachineTest {
         sim.now = rome("2026-10-19T22:00")
         sim.open() // from 22:01
         sim.after(4, Input.Foreground("dev.vigil", false)) // 4 minutes used; the 60-second gap starts at 22:05
-        sim.afterSeconds(20, Input.GoingToSleep)
+        sim.afterSeconds(20, Input.GoingToSleep())
         assertNull(sim.state.pool.session)
         val types = sim.types()
         assertTrue(types.lastIndexOf(EntryType.POOL_SESSION) < types.lastIndexOf(EntryType.DAY_END))
@@ -453,7 +453,7 @@ class PoolMachineTest {
         sim.after(2, Input.Foreground(home, false))
         sim.after(2)
         assertEquals(1, sim.state.pool.opens)
-        sim.at("2026-10-19T23:30", Input.GoingToSleep)
+        sim.at("2026-10-19T23:30", Input.GoingToSleep())
         assertEquals(0, sim.state.pool.opens)
         assertEquals(0L, sim.state.pool.usedSeconds)
         assertTrue(sim.state.pool.windowUsed.isEmpty())

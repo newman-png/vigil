@@ -134,8 +134,14 @@ sealed interface TimeBase {
     /** MY TIMES wake time of the day's weekday (always the morning of the day). */
     data object Wake : TimeBase
 
-    /** Tonight's target bedtime (until M2: MY TIMES bedtime_goal). */
+    /**
+     * Tonight's target bedtime: sleep shifting's target when the file has a sleep protocol (from MY TIMES bedtime_start
+     * towards bedtime_goal), else MY TIMES bedtime_goal.
+     */
     data object Bedtime : TimeBase
+
+    /** The moment the wake alarm was dismissed today; MY TIMES wake while it has not been. */
+    data object Woke : TimeBase
 
     /** The start of the day's MY TIMES meal with [label] (breakfast, lunch or dinner). */
     data class Meal(val label: String) : TimeBase
@@ -150,11 +156,15 @@ sealed interface TimeBase {
     data class Clock(val time: LocalTime) : TimeBase
 }
 
-/** A time expression: `wake`, `bedtime`, `meal:<label>`, `class_start`, `class_end` or `HH:MM`, optionally `+N` / `-N` minutes. */
+/**
+ * A time expression: `wake`, `woke`, `bedtime`, `meal:<label>`, `class_start`, `class_end` or `HH:MM`, optionally `+N` /
+ * `-N` minutes.
+ */
 data class TimeExpr(val base: TimeBase, val offsetMin: Int = 0) {
     override fun toString(): String {
         val b = when (base) {
             TimeBase.Wake -> "wake"
+            TimeBase.Woke -> "woke"
             TimeBase.Bedtime -> "bedtime"
             is TimeBase.Meal -> "meal:${base.label}"
             TimeBase.ClassStart -> "class_start"
@@ -171,17 +181,18 @@ data class TimeExpr(val base: TimeBase, val offsetMin: Int = 0) {
     companion object {
         const val MAX_OFFSET_MIN = 1440
         val MEAL_LABELS = listOf("breakfast", "lunch", "dinner")
-        private val SHAPE = Regex("^(wake|bedtime|class_start|class_end|meal:[a-z]+|[0-9]{2}:[0-9]{2})(([+-])([0-9]{1,4}))?$")
+        private val SHAPE = Regex("^(wake|woke|bedtime|class_start|class_end|meal:[a-z]+|[0-9]{2}:[0-9]{2})(([+-])([0-9]{1,4}))?$")
 
         fun parse(text: String): Parsed<TimeExpr> {
             val m = SHAPE.matchEntire(text)
                 ?: return Parsed.Error(
-                    "\"$text\" is not a time; use wake, bedtime, meal:<label>, class_start, class_end or HH:MM, " +
+                    "\"$text\" is not a time; use wake, woke, bedtime, meal:<label>, class_start, class_end or HH:MM, " +
                         "optionally followed by +N or -N minutes (e.g. wake+60).",
                 )
             val baseText = m.groupValues[1]
             val base = when {
                 baseText == "wake" -> TimeBase.Wake
+                baseText == "woke" -> TimeBase.Woke
                 baseText == "bedtime" -> TimeBase.Bedtime
                 baseText == "class_start" -> TimeBase.ClassStart
                 baseText == "class_end" -> TimeBase.ClassEnd
@@ -211,7 +222,8 @@ data class TimeExpr(val base: TimeBase, val offsetMin: Int = 0) {
 /**
  * When a free window opens or closes. `<expr>`; `done:<protocol-id>|<expr>` = the moment that protocol's run completed
  * today, else (or if that protocol is not in the file) the expression; `start:<protocol-id>|<expr>` likewise for its
- * start; `next` (closes only) = the next timeline start after the window opened, else the day's end.
+ * start; `max(<anchor>,<anchor>)` = the later of the two (both must exist that day); `next` (closes only) = the next
+ * timeline start after the window opened, else the day's end.
  */
 sealed interface Anchor {
     data class At(val expr: TimeExpr) : Anchor
@@ -220,12 +232,28 @@ sealed interface Anchor {
 
     data class Start(val protocolId: String, val fallback: TimeExpr) : Anchor
 
+    /** The later of two anchors (neither of them `next` or another `max`). */
+    data class Max(val first: Anchor, val second: Anchor) : Anchor
+
     data object Next : Anchor
 
     companion object {
         fun parse(text: String, allowNext: Boolean): Parsed<Anchor> {
             if (text == "next") {
                 return if (allowNext) Parsed.Ok(Next) else Parsed.Error("\"next\" can only close a window.")
+            }
+            if (text.startsWith("max(")) {
+                val parts = text.removePrefix("max(").removeSuffix(")").split(',')
+                if (!text.endsWith(")") || parts.size != 2 || parts.any { it.startsWith("max(") || it == "next" }) {
+                    return Parsed.Error(
+                        "\"$text\" must be max(<anchor>,<anchor>): two anchors, no spaces, e.g. max(done:morning|woke+60,woke+60).",
+                    )
+                }
+                val first = parse(parts[0], allowNext = false)
+                if (first is Parsed.Error) return first
+                val second = parse(parts[1], allowNext = false)
+                if (second is Parsed.Error) return second
+                return Parsed.Ok(Max((first as Parsed.Ok).value, (second as Parsed.Ok).value))
             }
             for ((prefix, make) in listOf<Pair<String, (String, TimeExpr) -> Anchor>>("done:" to ::Done, "start:" to ::Start)) {
                 if (!text.startsWith(prefix)) continue

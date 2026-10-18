@@ -38,7 +38,7 @@ class BundledProtocolsTest {
         assertEquals(60, pool.sessionGapS)
         assertEquals(
             listOf(
-                FreeWindowConfig("morning", "done:morning|wake+60", "next", 30),
+                FreeWindowConfig("morning", "max(done:morning|woke+60,woke+60)", "next", 30),
                 FreeWindowConfig("evening", "done:dinner|meal:dinner+45", "start:sleep|bedtime-60", 30),
             ),
             pool.windows,
@@ -65,7 +65,11 @@ class BundledProtocolsTest {
 
     @Test
     fun fivePrayersAsTheDesignSays() {
-        assertEquals(Prayer.entries.map { "prayer-${it.json}" }, file.protocols.map { it.id })
+        assertEquals(
+            listOf("prayer-fajr", "morning", "prayer-dhuhr", "prayer-asr", "prayer-maghrib", "prayer-isha", "sleep"),
+            file.protocols.map { it.id },
+        )
+        assertEquals(Prayer.entries.map { "prayer-${it.json}" }, file.protocols.filter { it.kind == ProtocolKind.PRAYER }.map { it.id })
         for (prayer in Prayer.entries) {
             val p = file.prayerProtocol(prayer)!!
             assertEquals(ProtocolKind.PRAYER, p.kind)
@@ -80,5 +84,66 @@ class BundledProtocolsTest {
             assertTrue(p.stages)
             assertEquals(null, p.short)
         }
+    }
+
+    @Test
+    fun sleepWindDownAsTheSpecSays() {
+        val p = file.find("sleep")!!
+        assertEquals(ProtocolKind.SLEEP, p.kind)
+        assertEquals(Trigger.Time(TimeExpr(TimeBase.Bedtime, -60)), p.parsedTrigger)
+        assertEquals(Intensity.FULL_THEN_SUBTLE, p.intensity)
+        assertEquals(Lock(LockType.SCREEN), p.lock)
+        // Close the day (3 lines), tomorrow (up to 4 to-dos), prep 10, hygiene 10, phone away, lights low, GOING TO SLEEP.
+        assertEquals(
+            listOf(StepType.TEXT, StepType.TEXT, StepType.CHECK, StepType.CHECK, StepType.CHECK, StepType.CHECK, StepType.DONE),
+            p.steps.map { it.type },
+        )
+        assertEquals(listOf(3, 4), p.steps.take(2).map { it.lines })
+        assertEquals(listOf(false, true), p.steps.take(2).map { it.todos })
+        assertEquals(listOf(10, 10), p.steps.subList(2, 4).map { it.min })
+        assertTrue(p.steps[5].noiseToggle)
+        // Short skips prep and hygiene; minimal = a line, tomorrow's first task, phone away, sleep; single = sleep.
+        assertEquals(p.steps.filterIndexed { i, _ -> i != 2 && i != 3 }, p.short)
+        assertEquals(listOf(StepType.TEXT, StepType.TEXT, StepType.CHECK, StepType.DONE), p.minimal!!.map { it.type })
+        assertEquals(listOf(1, 1), p.minimal!!.take(2).map { it.lines })
+        assertTrue(p.minimal!![1].todos)
+        assertEquals(listOf(StepType.DONE), p.single!!.map { it.type })
+        assertEquals(20, p.intParam("shift_min"))
+        assertEquals(2, p.intParam("hold_after_missed"))
+        assertEquals(30, p.intParam("late_min"))
+        assertEquals(120, p.intParam("night_lock_grace_min"))
+        assertTrue(!p.boolParam("white_noise"))
+    }
+
+    @Test
+    fun morningRoutineAsTheSpecSays() {
+        val p = file.find("morning")!!
+        assertEquals(ProtocolKind.MORNING, p.kind)
+        assertEquals(Trigger.WakeAlarm, p.parsedTrigger)
+        assertEquals(Lock(LockType.POOL), p.lock)
+        fun shape(steps: List<Step>?) = steps!!.map { it.type to it.min }
+        // Get up, sun 5 (timer), bathroom 5, skincare or shower 15, breakfast, chores 20 (timer), walk 15 (timer).
+        assertEquals(
+            listOf(StepType.CHECK to null, StepType.TIMER to 5, StepType.CHECK to 5, StepType.CHECK to 15, StepType.CHECK to null, StepType.TIMER to 20, StepType.TIMER to 15),
+            shape(p.steps),
+        )
+        assertEquals(listOf(6), p.steps.indices.filter { p.steps[it].skipOnClassDays })
+        // Short: no skincare, chores 10, walk 10. Minimal: get up, bathroom, breakfast, sun 5. Single: sun 5, marked minimum.
+        assertEquals(
+            listOf(StepType.CHECK to null, StepType.TIMER to 5, StepType.CHECK to 5, StepType.CHECK to null, StepType.TIMER to 10, StepType.TIMER to 10),
+            shape(p.short),
+        )
+        assertEquals(listOf(StepType.CHECK to null, StepType.CHECK to null, StepType.CHECK to null, StepType.TIMER to 5), shape(p.minimal))
+        assertEquals(listOf(StepType.TIMER to 5), shape(p.single))
+        // Thursday (08:30 class): get up, sun 5, bathroom 5, shower 10, breakfast. Friday: a shower for Jummah.
+        assertEquals(
+            listOf(StepType.CHECK to null, StepType.TIMER to 5, StepType.CHECK to 5, StepType.CHECK to 10, StepType.CHECK to null),
+            shape(p.stepsFor(Version.FULL, "thu")),
+        )
+        assertTrue(p.stepsFor(Version.FULL, "fri")!!.any { it.text.contains("Jummah") })
+        assertTrue(p.stepsFor(Version.SHORT, "fri")!!.any { it.text.contains("Jummah") })
+        assertEquals(10, p.intParam("ring_max_min"))
+        assertEquals(5, p.intParam("snooze_min"))
+        assertEquals(3, p.intParam("max_rings"))
     }
 }

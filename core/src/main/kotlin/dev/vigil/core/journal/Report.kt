@@ -50,6 +50,17 @@ data class DaySummary(
     /** Entries with typed text (text steps). */
     val notes: List<Entry>,
     val entries: List<Entry>,
+    /** Tonight's target bedtime (the day's sleep_target `scheduled`), or null without a sleep protocol. */
+    val sleepTarget: String? = null,
+    /** When the day's night began (GOING TO SLEEP, or the phone put down) with minutes after the target. */
+    val slept: Entry? = null,
+    /** This morning's wake (the alarm dismissed, or the unlock after it went unanswered) with minutes after the alarm. */
+    val woke: Entry? = null,
+    /** Why this day's night was a missed one for sleep shifting (late, no_sleep_tap, bailed), or null. */
+    val nightMissed: String? = null,
+    val alarmsUnanswered: Int = 0,
+    /** To-dos ticked off this day. */
+    val todosDone: Int = 0,
 )
 
 /** Facts written at the top of the report. */
@@ -121,8 +132,14 @@ object Report {
             appExits = list.filter { it.type == EntryType.APP_EXIT },
             lateAlarms = list.filter { it.type == EntryType.ALARM_LATE },
             stageChanges = list.filter { it.type == EntryType.STAGE_UP || it.type == EntryType.STAGE_DOWN },
-            notes = list.filter { !it.text.isNullOrBlank() },
+            notes = list.filter { !it.text.isNullOrBlank() && it.type != EntryType.TODO_DONE && it.type != EntryType.TODO_SET },
             entries = all,
+            sleepTarget = list.lastOrNull { it.type == EntryType.SLEEP_TARGET }?.scheduled,
+            slept = list.lastOrNull { it.type == EntryType.SLEEP },
+            woke = list.firstOrNull { it.type == EntryType.WAKE },
+            nightMissed = list.lastOrNull { it.type == EntryType.NIGHT_MISSED }?.reason,
+            alarmsUnanswered = list.count { it.type == EntryType.WAKE_ALARM_UNANSWERED },
+            todosDone = list.count { it.type == EntryType.TODO_DONE && it.reason == "done" },
         )
     }
 
@@ -156,6 +173,18 @@ object Report {
                 "${all.sumOf { it.steppedDown }} stepped down, ${all.sumOf { it.bailed }} bailed, ${all.sumOf { it.missed }} missed, " +
                 "${all.sumOf { it.notFired }} not fired",
         )
+        val nights = days.mapNotNull { it.slept }
+        val wakes = days.mapNotNull { it.woke }
+        if (nights.isNotEmpty() || wakes.isNotEmpty() || days.any { it.sleepTarget != null }) {
+            val missed = days.mapNotNull { it.nightMissed }
+            val why = missed.groupingBy { it }.eachCount().entries.joinToString(", ") { "${missedText(it.key)} ${it.value}" }
+            val average = wakes.mapNotNull { it.minutes }.takeIf { it.isNotEmpty() }?.average()?.let { Math.round(it).toInt() }
+            sb.appendLine(
+                "- Sleep: ${count(nights.size, "night")} logged, ${missed.size} missed" + (if (why.isEmpty()) "" else " ($why)") +
+                    "; woke ${count(wakes.size, "time")}" + (average?.let { ", on average ${relative(it, "the alarm")}" } ?: "") +
+                    "; ${count(days.sumOf { it.alarmsUnanswered }, "alarm")} unanswered",
+            )
+        }
         sb.appendLine(
             "- Kill switch: ${days.sumOf { d -> d.killSwitch.count { it.reason == "suspended" } }} · " +
                 "speed bumps: ${days.sumOf { it.speedBumps.size }} · app exits: ${days.sumOf { it.appExits.size }} · " +
@@ -180,6 +209,15 @@ object Report {
                 "- **Pool** ${d.poolOpens} opens, ${duration(d.poolSeconds)} · blocked $blocks · waits abandoned ${d.waitsAbandoned} · " +
                     "heavy use ${d.heavyUse} · penalty ${d.penaltyMinutes} min",
             )
+            val sleep = listOfNotNull(
+                d.sleepTarget?.let { "target ${time(it)}" },
+                d.woke?.let { "woke ${time(it.ts)} (${relative(it.minutes ?: 0, "the alarm")})" },
+                d.slept?.let { "slept ${time(it.ts)} (${relative(it.minutes ?: 0, "the target")})" },
+                d.nightMissed?.let { "missed night: ${missedText(it)}" },
+                d.alarmsUnanswered.takeIf { it > 0 }?.let { "alarm unanswered" },
+                d.todosDone.takeIf { it > 0 }?.let { "$it to-dos ticked" },
+            )
+            if (sleep.isNotEmpty()) sb.appendLine("- **Sleep** " + sleep.joinToString(" · "))
             sb.appendLine()
             if (d.protocols.isNotEmpty()) {
                 sb.appendLine("| Protocol | Fired | Completed | Clean | Stepped down | Bailed | Missed | Not fired | Skipped |")
@@ -231,6 +269,22 @@ object Report {
         if (value == null) return ""
         val needsQuotes = value.any { it == ',' || it == '"' || it == '\n' || it == '\r' } || value != value.trim()
         return if (needsQuotes) "\"" + value.replace("\"", "\"\"") + "\"" else value
+    }
+
+    /** 12 -> "12 min after the alarm", -5 -> "5 min before the alarm", 0 -> "at the alarm". */
+    private fun relative(minutes: Int, what: String): String = when {
+        minutes > 0 -> "$minutes min after $what"
+        minutes < 0 -> "${-minutes} min before $what"
+        else -> "at $what"
+    }
+
+    private fun count(n: Int, word: String): String = if (n == 1) "1 $word" else "$n ${word}s"
+
+    private fun missedText(reason: String): String = when (reason) {
+        "late" -> "late"
+        "no_sleep_tap" -> "no GOING TO SLEEP"
+        "bailed" -> "wind-down left"
+        else -> reason
     }
 
     private fun <T> listLine(sb: StringBuilder, label: String, items: List<T>, render: (T) -> String) {

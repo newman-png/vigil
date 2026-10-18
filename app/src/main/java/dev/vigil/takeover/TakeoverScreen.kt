@@ -2,9 +2,12 @@ package dev.vigil.takeover
 
 import android.os.SystemClock
 import androidx.activity.compose.BackHandler
+import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -33,6 +36,7 @@ import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.drawBehind
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.res.integerResource
 import androidx.compose.ui.unit.dp
@@ -83,6 +87,12 @@ internal interface TakeoverCallbacks {
 
     /** LEAVE was held to the end: the run is left early (logged, the pool penalty follows). */
     fun bailOut(runId: String)
+
+    /**
+     * The wind-down's GOING TO SLEEP step, after CONFIRM ISHA was answered: the day ends ([ishaPrayed]: Isha was prayed,
+     * so it counts).
+     */
+    fun goingToSleep(ishaPrayed: Boolean)
 
     /** A timer or the lock ran out on the clock: bring the engine up to date (its alarm does too). */
     fun tick()
@@ -164,7 +174,9 @@ private fun timingFor(tier: Int): Timing = when {
  * when this takeover first appeared. Silence (QUIET) is the activity's business: it builds [fx] silent or mutes it.
  *
  * [initial] is the run as it was when this takeover appeared; [live] is the same run as the engine has it now while
- * it owns the screen, or null once it does not. [steps] are [live]'s steps (its version on its weekday). A takeover
+ * it owns the screen, or null once it does not. [steps] are [live]'s steps (its version on its weekday); [todo] is a
+ * line under them (the morning: today's first to-do). The wind-down's GOING TO SLEEP step with Isha still open asks
+ * CONFIRM ISHA first ([StepView.ishaToConfirm]); the answer goes to [TakeoverCallbacks.goingToSleep]. A takeover
  * that was already under way (its intro was seen ([introSeen]), its run has moved on, or it first appeared a while
  * ago) starts at the open eye and its current step. When the run stops owning the screen the takeover ends as the
  * engine ended it: the filled eye closes for a finished run; a lock that ran out, a missed window or a run left from
@@ -176,6 +188,7 @@ internal fun TakeoverScreen(
     live: Run?,
     protocol: Protocol?,
     steps: List<Step>,
+    todo: String?,
     penaltyToday: Int,
     bailOut: BailOutConfig,
     takeover: TakeoverConfig,
@@ -239,6 +252,8 @@ internal fun TakeoverScreen(
     var note by remember { mutableStateOf<String?>(null) }
     var leaveHeld by remember { mutableStateOf(false) }
     var appsOpen by remember { mutableStateOf(false) }
+    // GOING TO SLEEP was held with Isha still open: CONFIRM ISHA shows over the takeover.
+    var askIsha by remember { mutableStateOf(false) }
 
     val clock = rememberTakeoverClock()
     val tear = rememberTear(running = effectsAt != 0L && !quietScreen)
@@ -256,6 +271,7 @@ internal fun TakeoverScreen(
         effectsOff()
         holdStartedAt = 0L
         appsOpen = false
+        askIsha = false
         setEye(EyeMode.HIDDEN)
         farewell = text
         farewellMs = holdMs
@@ -267,6 +283,7 @@ internal fun TakeoverScreen(
         effectsOff()
         holdStartedAt = 0L
         appsOpen = false
+        askIsha = false
         stepVisible = false
         if (eyeMode == EyeMode.HIDDEN) {
             phase = Phase.DONE
@@ -281,6 +298,12 @@ internal fun TakeoverScreen(
     fun finishStep(index: Int, type: StepType, text: String?) {
         val r = currentLive ?: return
         if (ended) return
+        // GOING TO SLEEP would miss an open Isha: ask first (the answer finishes the step).
+        val v = view
+        if (v != null && v.index == index && v.goingToSleep && v.ishaToConfirm != null) {
+            askIsha = true
+            return
+        }
         fx.confirmStep()
         if (type == StepType.DONE && r.prayer != null) cb.confirm(r.id) else cb.stepDone(r.id, index, text)
         view = cb.stepView(r.id)
@@ -290,6 +313,16 @@ internal fun TakeoverScreen(
         setEye(EyeMode.OPEN)
         val v = view ?: return
         finishStep(v.index, v.step.type, null)
+    }
+
+    /** CONFIRM ISHA was answered: GOING TO SLEEP, with Isha counted when it was prayed. */
+    fun sleepAfterIsha(prayed: Boolean) {
+        val r = currentLive ?: return
+        askIsha = false
+        if (ended) return
+        fx.confirmStep()
+        cb.goingToSleep(prayed)
+        view = cb.stepView(r.id)
     }
 
     fun notOkay() {
@@ -313,7 +346,7 @@ internal fun TakeoverScreen(
     val current = view
     val holdable = current != null && current.canTap && current.step.type != StepType.TEXT
     val canHold by rememberUpdatedState(
-        phase == Phase.STEP && stepVisible && holdable && !checklist && !ended && !appsOpen && live != null,
+        phase == Phase.STEP && stepVisible && holdable && !checklist && !ended && !appsOpen && !askIsha && live != null,
     )
     val onConfirm by rememberUpdatedState({ confirmHeld() })
 
@@ -496,6 +529,7 @@ internal fun TakeoverScreen(
         ended = true
         holdStartedAt = 0L
         appsOpen = false
+        askIsha = false
         leaveHeld = false
         if (eyeMode == EyeMode.CONTRACTING) setEye(EyeMode.OPEN)
         val open = cb.run(id)
@@ -530,7 +564,10 @@ internal fun TakeoverScreen(
         }
     }
 
-    BackHandler(enabled = appsOpen) { appsOpen = false }
+    BackHandler(enabled = appsOpen || askIsha) {
+        appsOpen = false
+        askIsha = false
+    }
 
     val holds = (phase == Phase.LINE || phase == Phase.STEP) && !ended && live != null
 
@@ -662,6 +699,10 @@ internal fun TakeoverScreen(
                                         Spacer(Modifier.height(20.dp))
                                         TakeoverText(version, TakeoverType.Small)
                                     }
+                                    if (todo != null) {
+                                        Spacer(Modifier.height(12.dp))
+                                        TakeoverText(todo, TakeoverType.Small)
+                                    }
                                 }
                             }
                         }
@@ -692,6 +733,14 @@ internal fun TakeoverScreen(
             )
         }
 
+        if (askIsha) {
+            IshaQuestion(
+                onPrayed = { sleepAfterIsha(prayed = true) },
+                onNotYet = { askIsha = false },
+                onSleepAnyway = { sleepAfterIsha(prayed = false) },
+            )
+        }
+
         if (appsOpen) {
             AppsSheet(
                 load = { cb.apps() },
@@ -703,6 +752,46 @@ internal fun TakeoverScreen(
             )
         }
     }
+}
+
+/**
+ * CONFIRM ISHA over the takeover, at GOING TO SLEEP with Isha still open: I PRAYED ISHA (it counts, and the day ends),
+ * NOT YET (back to the step: pray first), or SLEEP WITHOUT IT (Isha is missed, and the day ends).
+ */
+@Composable
+private fun IshaQuestion(onPrayed: () -> Unit, onNotYet: () -> Unit, onSleepAnyway: () -> Unit) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .background(Palette.Black)
+            // Takes every touch, so nothing under it reacts.
+            .pointerInput(Unit) { awaitEachGesture { awaitFirstDown(requireUnconsumed = false) } }
+            .safeDrawingPadding()
+            .padding(horizontal = 24.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.Center,
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        TakeoverText("ISHA IS NOT CONFIRMED", TakeoverType.Title)
+        Spacer(Modifier.height(12.dp))
+        TakeoverText("DID YOU PRAY IT?", TakeoverType.Small)
+        Spacer(Modifier.height(40.dp))
+        QuestionChoice("I PRAYED ISHA", Palette.White, onPrayed)
+        QuestionChoice("NOT YET", TakeoverType.Dim, onNotYet)
+        QuestionChoice("SLEEP WITHOUT IT", TakeoverType.Faint, onSleepAnyway)
+    }
+}
+
+@Composable
+private fun QuestionChoice(label: String, color: Color, onTap: () -> Unit) {
+    TakeoverText(
+        label,
+        TakeoverType.Choice,
+        Modifier
+            .fillMaxWidth()
+            .clickable(remember { MutableInteractionSource() }, indication = null, onClick = onTap)
+            .padding(vertical = 16.dp),
+        color = color,
+    )
 }
 
 /** The small line under the title, when there is something to say before the steps. */

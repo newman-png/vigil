@@ -10,6 +10,7 @@ import android.util.Log
 import dev.vigil.Graph
 import dev.vigil.core.machine.Machine
 import dev.vigil.core.run.Run
+import dev.vigil.core.run.RunPhase
 import dev.vigil.engine.Device
 import dev.vigil.engine.Notifications
 import dev.vigil.engine.Vigil
@@ -27,7 +28,9 @@ import java.lang.ref.WeakReference
  *    sheet; so it never covers the lock screen's emergency button;
  *  - only a stage-1 run comes back ([Machine.reasserts]); a stage-2 run shows once, then its notification leads back;
  *  - only a run that has just started (the engine's ShowTakeover) may turn the screen on, through the notification's
- *    full-screen intent; a takeover that was already on screen never wakes or lights up the phone.
+ *    full-screen intent; a takeover that was already on screen never wakes or lights up the phone;
+ *  - the night lock never wakes or lights up the phone at all: it shows when the phone is in use (after GOING TO SLEEP,
+ *    or after an unlock), silently.
  *
  * How it gets on screen: on a locked phone or a dark screen, the notification's full-screen intent opens it (the
  * system acts on that intent only when the notification is newly added, so it is posted again when the phone has
@@ -110,13 +113,15 @@ object TakeoverLauncher {
     fun ensureShowing(context: Context) {
         val app = context.applicationContext
         if (!onMain { ensureShowing(app) }) return
-        val id = Vigil.activeRun()?.id
+        val run = Vigil.activeRun()
+        val id = run?.id
         if (id != null && id != unseen) {
             unseen = id
             attempts = 0
             startTried = null
-            // After an alarm or a notification the phone may fall back asleep before the takeover is up.
-            if (!visible) Device.keepAwake(app, WAKE_MS)
+            // After an alarm or a notification the phone may fall back asleep before the takeover is up (not for the
+            // night lock, which waits for the phone to be used).
+            if (!visible && run.phase != RunPhase.NIGHT) Device.keepAwake(app, WAKE_MS)
         }
         show(app, mayAdd = true)
     }
@@ -205,6 +210,7 @@ object TakeoverLauncher {
         }
         val id = run.id
         val fresh = id == unseen
+        val night = run.phase == RunPhase.NIGHT
 
         if (visible) {
             // Already on screen: the activity moves on to whatever owns the screen next by itself. Keep the
@@ -287,7 +293,7 @@ object TakeoverLauncher {
         // a known front app. On an awake, locked phone the user may be typing an emergency number over the lock
         // screen, so there only the full-screen intent is used: the system shows it as a banner over that dialer.
         // A waiting takeover never gets here on a dark or locked phone (see above).
-        if (!awake || (present && front != null && canStart)) start(context)
+        if ((!awake && !night) || (present && front != null && canStart)) start(context)
         if (fresh && attempts < MAX_ATTEMPTS) {
             attempts++
             retryIn(VERIFY_MS, mayAdd = true)
@@ -335,7 +341,11 @@ object TakeoverLauncher {
      */
     private fun post(context: Context, run: Run, fullScreen: Boolean, mayAlert: Boolean, overLock: Boolean = false) {
         val nm = context.getSystemService(NotificationManager::class.java) ?: return
-        val key = Posted(run.id, fullScreen, fullScreen && overLock)
+        // The night lock never opens itself over the lock screen and never alerts.
+        val night = run.phase == RunPhase.NIGHT
+        val full = fullScreen && !night
+        val alert = mayAlert && !night
+        val key = Posted(run.id, full, full && overLock)
         val settling = posted != null && SystemClock.elapsedRealtime() - postedAt < POST_SETTLE_MS
         val shown = settling || try {
             nm.activeNotifications?.any { it.id == Notifications.ID_TAKEOVER } == true
@@ -344,11 +354,11 @@ object TakeoverLauncher {
         }
         if (!shown) posted = null
         if (shown && posted == key) return
-        if (!shown && !fullScreen && !mayAlert) return
+        if (!shown && !full && !alert) return
         try {
-            if (fullScreen && shown) nm.cancel(Notifications.ID_TAKEOVER)
+            if (full && shown) nm.cancel(Notifications.ID_TAKEOVER)
             val title = Vigil.file().find(run.protocol)?.title ?: run.protocol
-            nm.notify(Notifications.ID_TAKEOVER, Notifications.takeover(context, title, fullScreen))
+            nm.notify(Notifications.ID_TAKEOVER, Notifications.takeover(context, title, full, night))
             posted = key
             postedAt = SystemClock.elapsedRealtime()
         } catch (e: RuntimeException) {

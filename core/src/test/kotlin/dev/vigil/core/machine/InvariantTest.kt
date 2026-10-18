@@ -29,7 +29,6 @@ class InvariantTest {
     private val file0 = fileWith(
         testProtocol("alpha"),
         testProtocol("timed", trigger = "time:10:00", steps = listOf(Step("Sun.", StepType.CHECK, min = 2), Step("Breathe.", StepType.TIMER, min = 3))),
-        testProtocol("sleep", trigger = "time:bedtime-60", kind = ProtocolKind.SLEEP, lock = Lock(LockType.POOL, 30, null)),
         testProtocol("meal", trigger = "slot:meal", kind = ProtocolKind.MEAL, lock = Lock(LockType.POOL, 20, null)),
         testProtocol("friends", trigger = "toggle:friends", kind = ProtocolKind.FRIENDS, lock = Lock(LockType.POOL)),
         testProtocol("free", trigger = "event:after:prayer-dhuhr", kind = ProtocolKind.ATTENTION, lock = Lock(LockType.SCREEN, 5, null)),
@@ -87,7 +86,6 @@ class InvariantTest {
             val ok = when {
                 r.prayer == Prayer.ISHA -> !r.firedAt.isBefore(day.startedAt)
                 r.prayer != null -> Duration.between(r.firedAt, now) <= Duration.ofHours(21)
-                r.kind.survivesDayEnd -> !r.firedAt.isBefore(previousDayStart)
                 else -> !r.firedAt.isBefore(day.startedAt)
             }
             if (!ok) broken("${r.id} (${r.protocol}, fired ${r.firedAt}) outlived its day")
@@ -97,9 +95,17 @@ class InvariantTest {
         val view = View(s, env)
         val screenLocks = s.runs.count { it.lock == LockType.SCREEN && view.lockActive(it) }
         if (screenLocks > 1) broken("$screenLocks screen locks at once")
-        if (!view.suspended && view.screenOwner() == null && s.runs.any { it.phase == RunPhase.QUEUED }) {
-            broken("a run waits in the queue while the screen is free")
+        if (!view.suspended && view.screenOwner() == null && s.runs.any { it.phase == RunPhase.QUEUED || it.phase == RunPhase.PAUSED }) {
+            broken("a run waits in the queue (or paused) while the screen is free")
         }
+        if (s.runs.count { it.phase == RunPhase.NIGHT } > 1) broken("two night locks")
+        s.runs.firstOrNull { it.phase == RunPhase.PAUSED && it.prayer != null }?.let { broken("a paused prayer") }
+        // The night lock and the wake alarm always have an end.
+        s.runs.filter { it.phase == RunPhase.NIGHT }.forEach { if (it.lockEndsAt == null || Duration.between(it.firedAt, it.lockEndsAt) > Duration.ofHours(20)) broken("a night lock without a near end") }
+        s.wakeAlarm.ringingSince?.let { if (Duration.between(it, now) > Duration.ofMinutes(15)) broken("the wake alarm rings for too long") }
+        if (s.wakeAlarm.ringingFor != null && s.wakeAlarm.ringingSince == null && s.wakeAlarm.nextRingAt == null) broken("a silent alarm that never rings again")
+        if (s.todos.keys.any { it < day.key }) broken("to-dos of an ended day")
+        if (s.sleep.missedInARow < 0) broken("negative missed nights")
         if (s.pool.penaltyMinutesToday > file.pool.bailOut.dailyCapMin) broken("penalty over the daily cap")
         s.pool.cooldownUntil?.let {
             val longest = Duration.ofMinutes(maxOf(file.pool.cooldownCapMin, file.pool.heavyUse.withinMin).toLong())
@@ -137,9 +143,15 @@ class InvariantTest {
             19 -> Input.PoolWaitStarted(ig)
             20, 21 -> Input.PoolWaitDone(ig)
             22 -> Input.PoolWaitAbandoned(ig)
-            23 -> if (rnd.nextInt(4) == 0) Input.GoingToSleep else Input.Tick
+            23 -> if (rnd.nextInt(4) == 0) Input.GoingToSleep(ishaPrayed = rnd.nextBoolean()) else Input.TodoDone(rnd.nextInt(3), rnd.nextBoolean())
             24 -> Input.Toggle(ToggleName.entries[rnd.nextInt(3)], rnd.nextBoolean())
-            25 -> if (rnd.nextInt(3) == 0) Input.WakeAlarm else Input.Tick
+            25 -> when (rnd.nextInt(6)) {
+                0 -> Input.WakeAlarm()
+                1 -> Input.WakeAlarmUnanswered()
+                2 -> Input.RingWakeAlarmTest
+                3 -> Input.WakeAlarm(test = true)
+                else -> Input.Tick
+            }
             26 -> if (rnd.nextInt(5) == 0) Input.Suspend(5 + rnd.nextInt(55)) else Input.Resume
             27 -> Input.Alarm(sim.now.minusSeconds(rnd.nextInt(300).toLong()))
             28 -> if (rnd.nextInt(10) == 0) Input.EditMyTimes(MyTimes(bedtimeGoal = "23:30")) else Input.Tick

@@ -85,6 +85,17 @@ object EntryType {
     const val APP_EXIT = "app_exit"
     const val ALARM_LATE = "alarm_late"
     const val MY_TIMES = "my_times"
+    const val PAUSED = "paused"
+    const val RESUMED = "resumed"
+    const val SLEEP = "sleep"
+    const val NIGHT_MISSED = "night_missed"
+    const val SLEEP_TARGET = "sleep_target"
+    const val NIGHT_LOCK = "night_lock"
+    const val WAKE_ALARM = "wake_alarm"
+    const val WAKE = "wake"
+    const val WAKE_ALARM_UNANSWERED = "wake_alarm_unanswered"
+    const val TODO_SET = "todo_set"
+    const val TODO_DONE = "todo_done"
 
     val DESCRIPTIONS: Map<String, String> = linkedMapOf(
         DAY_START to "A day started (day = its key; reason = how the previous day ended, or first_start).",
@@ -99,9 +110,11 @@ object EntryType {
         LOCK_ENDED to "A run's lock ended before it was finished: the screen is free, the run waits (prayer: CONFIRM on home).",
         MISSED to "A run ended unfinished (reason day_end, replaced = its protocol started again, prayer: window_closed or " +
             "next_adhan, unconfirmed; an unconfirmed stage-3 reminder too). Counts for stages.",
-        NOT_FIRED to "Daily self-check: a planned start that never fired (scheduled = when it was due).",
+        NOT_FIRED to "Daily self-check: a planned start that never fired (scheduled = when it was due); reason wake_alarm = " +
+            "a wake alarm that never rang (the phone was off).",
         SKIPPED to "A trigger happened but nothing started (reason: suspended, already_running, day_end = set off while the " +
-            "day ended; sleep_tap = GOING TO SLEEP before the day's wake time, the day goes on).",
+            "day ended; sleep_tap = GOING TO SLEEP before the day's wake time, the day goes on; wake_alarm = a dismissal with no " +
+            "alarm ringing).",
         DROPPED to "A run was closed without an outcome (reason: kill_switch, day_end for a test run, protocol_removed).",
         CONFIRMED to "A prayer was confirmed (Done, or CONFIRM on home / the card).",
         STAGE_UP to "Promoted one stage after enough clean completions in a row (stage = the new stage).",
@@ -128,6 +141,23 @@ object EntryType {
         APP_EXIT to "The app was killed or crashed since the last start (reason from ApplicationExitInfo).",
         ALARM_LATE to "An alarm fired late (scheduled = planned, seconds late).",
         MY_TIMES to "MY TIMES were edited (detail: applies from tomorrow, or now on first setup).",
+        PAUSED to "A prayer took the screen from a running protocol: its timers stop until the prayer's lock is over.",
+        RESUMED to "A paused protocol went on where it was (minutes = how long it was paused).",
+        SLEEP to "Gone to sleep (reason sleep_tap = GOING TO SLEEP, idle = the moment the phone was put down; " +
+            "scheduled = tonight's target bedtime; minutes = minutes after it, negative = earlier).",
+        NIGHT_MISSED to "A missed night for sleep shifting (reason bailed = the wind-down was left, no_sleep_tap = the day " +
+            "ended without GOING TO SLEEP, late = more than late_min after the target).",
+        SLEEP_TARGET to "Tonight's target bedtime (scheduled; minutes = how much earlier than last night's; reason start, " +
+            "shifted, held = after missed nights in a row, goal = already at the goal, clamped = moved into new MY TIMES).",
+        NIGHT_LOCK to "The night lock started (reason sleep_tap, idle or fallback; until = its latest end) or ended (reason " +
+            "wake, unlock, timeout = wake + night_lock_grace_min, left = LEAVE, kill_switch, day_end; minutes = its length).",
+        WAKE_ALARM to "The wake alarm rang (scheduled = MY TIMES wake; detail = which ring).",
+        WAKE to "Woke up: the wake alarm was dismissed (reason dismissed), or the phone was unlocked after it was never " +
+            "answered (reason unlock). Scheduled = the alarm time; minutes = minutes after it.",
+        WAKE_ALARM_UNANSWERED to "The wake alarm rang max_rings times without an answer and gave up; the morning starts at " +
+            "the next unlock.",
+        TODO_SET to "Tomorrow's to-dos were written in the wind-down (day = the day they are for; text = one per line).",
+        TODO_DONE to "A to-do was ticked off (reason done) or unticked (reason undone); text = the to-do.",
     )
 }
 

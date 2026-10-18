@@ -51,7 +51,7 @@ class ReportTest {
         sim.at("2026-10-19T19:02", Input.Alarm(rome("2026-10-19T19:00")))
         sim.step(Input.SpeedBump("app_info"))
         sim.step(Input.Suspend(60))
-        sim.at("2026-10-19T23:30", Input.GoingToSleep)
+        sim.at("2026-10-19T23:30", Input.GoingToSleep())
         // Day two: a step-down.
         sim.at("2026-10-20T09:00", Input.Manual("close"))
         sim.step(Input.NotOkay(sim.runId("close")))

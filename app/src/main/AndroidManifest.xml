@@ -6,6 +6,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+    <!-- The wake alarm's sound and white noise keep playing with the screen locked (media playback services). -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
@@ -86,6 +88,21 @@
             android:turnScreenOn="true"
             tools:ignore="DiscouragedApi,LockedOrientationActivity" />
 
+        <!-- The wake alarm: full screen over the lock screen, turning the screen on. Its own task, so dismissing it never
+             reveals VIGIL's other screens. -->
+        <activity
+            android:name=".alarm.WakeAlarmActivity"
+            android:configChanges="orientation|screenSize|screenLayout|smallestScreenSize|keyboardHidden|keyboard|navigation|uiMode|density|fontScale"
+            android:excludeFromRecents="true"
+            android:exported="false"
+            android:launchMode="singleInstance"
+            android:screenOrientation="portrait"
+            android:showWhenLocked="true"
+            android:taskAffinity="dev.vigil.alarm"
+            android:theme="@style/Theme.Vigil"
+            android:turnScreenOn="true"
+            tools:ignore="DiscouragedApi,LockedOrientationActivity" />
+
         <!-- The Guard's screens: the pool's wait and blocked screens, and the kill switch's 5-minute wait. Its own task,
              so finishing it returns to the app it stood in front of. -->
         <activity
@@ -106,7 +123,25 @@
                 android:value="Personal commitment device: runs the user's own daily protocols at their times and keeps the user's chosen distracting apps closed." />
         </service>
 
-        <!-- The engine's alarm and the TEST screen's alarm. Reached only through VIGIL's own PendingIntents. -->
+        <!-- The wake alarm ringing (a tone made in code on the alarm stream, with vibration), and white noise for falling
+             asleep (made in code); both keep playing with the screen locked. -->
+        <service
+            android:name=".alarm.WakeAlarmService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
+
+        <service
+            android:name=".alarm.WhiteNoiseService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
+
+        <!-- STOP on the white noise notification. -->
+        <receiver
+            android:name=".alarm.WhiteNoiseStopReceiver"
+            android:exported="false" />
+
+        <!-- The engine's alarm, the wake alarm clock and the TEST screen's alarm. Reached only through VIGIL's own
+             PendingIntents. -->
         <receiver
             android:name=".trigger.AlarmReceiver"
             android:exported="false" />

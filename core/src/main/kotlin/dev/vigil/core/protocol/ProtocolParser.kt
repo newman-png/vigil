@@ -108,6 +108,9 @@ object ProtocolParser {
             "type" to Shape.OneOf(StepType.entries.map { it.json }),
             "min" to Shape.Whole,
             "lines" to Shape.Whole,
+            "todos" to Shape.Bool,
+            "skip_on_class_days" to Shape.Bool,
+            "noise_toggle" to Shape.Bool,
         ),
         required = setOf("text"),
     )
@@ -303,12 +306,13 @@ object ProtocolParser {
         when (val a = Anchor.parse(text, allowNext)) {
             is Parsed.Error -> ctx.error(path, a.message)
             is Parsed.Ok -> {
-                val ref = when (val v = a.value) {
-                    is Anchor.Done -> v.protocolId
-                    is Anchor.Start -> v.protocolId
-                    else -> null
+                fun refs(v: Anchor): List<String> = when (v) {
+                    is Anchor.Done -> listOf(v.protocolId)
+                    is Anchor.Start -> listOf(v.protocolId)
+                    is Anchor.Max -> refs(v.first) + refs(v.second)
+                    else -> emptyList()
                 }
-                if (ref != null && ref !in ids) {
+                for (ref in refs(a.value).filter { it !in ids }) {
                     ctx.warn(path, "no protocol \"$ref\" in the file (yet), so the time after | is used.")
                 }
             }
@@ -434,8 +438,13 @@ object ProtocolParser {
                 ctx.error("$sp.min", "a timer without min lasts until the lock ends, but this lock has no minutes.")
             }
             if (s.type == StepType.DONE) doneCount++
+            if (s.todos && s.type != StepType.TEXT) ctx.error("$sp.todos", "only a text step can hold to-dos.")
+            if (s.todos && p.kind != ProtocolKind.SLEEP) ctx.warn("$sp.todos", "only sleep protocols turn lines into to-dos; it is ignored here.")
         }
         if (doneCount > 1) ctx.error(path, "has more than one done step.")
+        if (steps.isNotEmpty() && steps.all { it.skipOnClassDays }) {
+            ctx.error(path, "every step is skip_on_class_days: on class days nothing would be left.")
+        }
         // Tapping done is what confirms a prayer: without it the steps would finish the run unconfirmed.
         if (doneCount == 0 && p.kind == ProtocolKind.PRAYER) ctx.error(path, "a prayer needs a done step (tapping it confirms the prayer).")
     }

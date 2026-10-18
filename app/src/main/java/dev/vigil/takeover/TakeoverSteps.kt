@@ -37,8 +37,9 @@ import dev.vigil.ui.theme.Palette
 /**
  * Stage 1: the current step alone, by its type. A check or done step is dim while it is locked (with when it
  * unlocks) and white once it can be held; a timer counts itself down and ends by itself; a text step asks for its
- * lines and SAVE. [nowSec] reads the clock (epoch seconds) for the countdowns, so only this step redraws each second;
- * [onTyping] is told about every keystroke.
+ * lines and SAVE. A step with `noise_toggle` (the wind-down's lights low) also has the WHITE NOISE switch. [nowSec]
+ * reads the clock (epoch seconds) for the countdowns, so only this step redraws each second; [onTyping] is told about
+ * every keystroke.
  */
 @Composable
 internal fun SingleStep(view: StepView, nowSec: () -> Long, onTyping: () -> Unit, onSave: (String) -> Unit) {
@@ -74,11 +75,18 @@ internal fun SingleStep(view: StepView, nowSec: () -> Long, onTyping: () -> Unit
             StepType.TEXT -> {
                 TakeoverText(step.text, TakeoverType.Step)
                 Spacer(Modifier.height(20.dp))
-                TextLines(step.lines ?: 1, onTyping, onSave)
+                TextLines(step.lines ?: 1, requiredLines(step), onTyping, onSave)
             }
+        }
+        if (step.noiseToggle) {
+            Spacer(Modifier.height(16.dp))
+            NoiseSwitch()
         }
     }
 }
+
+/** How many of a text step's lines must be filled: all of them, or one for a to-dos step ("up to" its lines). */
+internal fun requiredLines(step: Step): Int = if (step.todos) 1 else (step.lines ?: 1)
 
 /**
  * Stage 2 (guided): every step as a plain checklist, without timers or step locks. Only the current step [current]
@@ -115,25 +123,26 @@ internal fun Checklist(
                     TakeoverText(step.text, TakeoverType.Item, Modifier.weight(1f), color = color)
                 }
                 if (now && step.type == StepType.TEXT) {
-                    TextLines(step.lines ?: 1, onTyping) { onSave(i, it) }
+                    TextLines(step.lines ?: 1, requiredLines(step), onTyping) { onSave(i, it) }
                     Spacer(Modifier.height(8.dp))
                 }
+                if (now && step.noiseToggle) NoiseSwitch()
             }
         }
     }
 }
 
 /**
- * A text step's [count] lines, one field each, then SAVE (only once every line has something). The lines are
- * joined with line breaks, as the engine counts them. [onTyping] is told about every change: the keyboard's keys
- * never reach the activity, which keeps the display on only while it is touched.
+ * A text step's [count] lines, one field each, then SAVE (only once at least [required] lines have something). The
+ * filled lines are joined with line breaks, as the engine counts them. [onTyping] is told about every change: the
+ * keyboard's keys never reach the activity, which keeps the display on only while it is touched.
  */
 @Composable
-internal fun TextLines(count: Int, onTyping: () -> Unit, onSave: (String) -> Unit) {
+internal fun TextLines(count: Int, required: Int, onTyping: () -> Unit, onSave: (String) -> Unit) {
     val lines = count.coerceAtLeast(1)
     val values = remember(lines) { mutableStateListOf<String>().apply { repeat(lines) { add("") } } }
     val focus = LocalFocusManager.current
-    val ready = values.all { it.isNotBlank() }
+    val ready = values.count { it.isNotBlank() } >= required.coerceIn(1, lines)
     Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
         for (i in 0 until lines) {
             Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -174,7 +183,7 @@ internal fun TextLines(count: Int, onTyping: () -> Unit, onSave: (String) -> Uni
             Modifier
                 .clickable(remember { MutableInteractionSource() }, indication = null, enabled = ready) {
                     focus.clearFocus()
-                    onSave(values.joinToString("\n") { it.trim() })
+                    onSave(values.filter { it.isNotBlank() }.joinToString("\n") { it.trim() })
                 }
                 .padding(horizontal = 24.dp, vertical = 14.dp),
             color = if (ready) Palette.White else TakeoverType.Faint,

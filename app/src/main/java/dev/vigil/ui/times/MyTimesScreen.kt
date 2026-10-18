@@ -98,7 +98,12 @@ fun MyTimesScreen(onSaved: () -> Unit) {
         Spacer(Modifier.height(16.dp))
 
         Section("WAKE", hint = wakeHint(draft), hintColor = errorColor(showErrors && problems.any { it.startsWith("Wake") }), initiallyOpen = true) {
-            PixelText("Your wake time on each day. The morning free window opens an hour after it.", Type.Small)
+            PixelText(
+                "Your wake time on each day (04:00 to 11:00). VIGIL's wake alarm rings then and the morning routine " +
+                    "starts when you hold I'M UP. The morning free window opens when the routine is done, at least an " +
+                    "hour after you got up.",
+                Type.Small,
+            )
             Spacer(Modifier.height(6.dp))
             for (code in WallClock.DAY_CODES.keys) {
                 val value = draft.wake[code].orEmpty()
@@ -124,16 +129,26 @@ fun MyTimesScreen(onSaved: () -> Unit) {
 
         Section(
             "BEDTIME",
-            hint = "GOAL ${draft.bedtimeGoal.ifEmpty { "--:--" }}",
+            hint = "START ${draft.bedtimeStart.ifEmpty { "--:--" }} · GOAL ${draft.bedtimeGoal.ifEmpty { "--:--" }}",
             hintColor = errorColor(showErrors && problems.any { it.startsWith("Bedtime") }),
         ) {
             PixelText(
-                "GOAL: where your bedtime should end up. NOW: your real bedtime today. Sleep shifting moves tonight's " +
-                    "bedtime 20 minutes earlier each night, from NOW to GOAL, once the sleep protocol is added; until " +
-                    "then tonight's bedtime is the goal. Times before 05:00 count as that night.",
+                "BEDTIME START: where the 20-minute shift begins (your real bedtime now). BEDTIME GOAL: where it ends " +
+                    "up. Sleep shifting: tonight's target bedtime starts at START and moves 20 minutes earlier each " +
+                    "night until it reaches GOAL; after two missed nights in a row it holds for a night. Wind-down " +
+                    "starts an hour before tonight's target. Times before 05:00 count as that night.",
                 Type.Small,
             )
             Spacer(Modifier.height(6.dp))
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Caption("START")
+                TimeField(
+                    draft.bedtimeStart,
+                    { draft = draft.copy(bedtimeStart = it) },
+                    Modifier.width(FIELD_WIDTH),
+                    isError = showErrors && badTime(draft.bedtimeStart),
+                )
+            }
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Caption("GOAL")
                 TimeField(
@@ -141,15 +156,6 @@ fun MyTimesScreen(onSaved: () -> Unit) {
                     { draft = draft.copy(bedtimeGoal = it) },
                     Modifier.width(FIELD_WIDTH),
                     isError = showErrors && badTime(draft.bedtimeGoal),
-                )
-            }
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Caption("NOW")
-                TimeField(
-                    draft.bedtimeStart,
-                    { draft = draft.copy(bedtimeStart = it) },
-                    Modifier.width(FIELD_WIDTH),
-                    isError = showErrors && badTime(draft.bedtimeStart),
                 )
             }
         }

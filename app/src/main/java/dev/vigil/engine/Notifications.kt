@@ -10,8 +10,11 @@ import android.content.Intent
 import android.graphics.drawable.Icon
 import android.util.Log
 import dev.vigil.R
+import dev.vigil.alarm.WakeAlarmActivity
+import dev.vigil.alarm.WhiteNoiseStopReceiver
 import dev.vigil.core.machine.Effect
 import dev.vigil.core.machine.NotifyKind
+import dev.vigil.core.run.RunPhase
 import dev.vigil.takeover.TakeoverActivity
 import dev.vigil.ui.MainActivity
 
@@ -29,12 +32,16 @@ object Notifications {
     const val CHANNEL_HEADS_UP = "heads_up"
     const val CHANNEL_CARDS = "cards"
     const val CHANNEL_REMINDERS = "reminders"
+    const val CHANNEL_ALARM = "wake_alarm"
+    const val CHANNEL_NOISE = "white_noise"
 
     /** v1 channels that no longer exist. */
     private val OLD_CHANNELS = listOf("plan")
 
     const val ID_SERVICE = 1
     const val ID_TAKEOVER = 2
+    const val ID_ALARM = 3
+    const val ID_NOISE = 4
 
     /** Every engine notice is posted with this id and the core's notice id as its tag. */
     const val ID_NOTICE = 10
@@ -79,6 +86,22 @@ object Notifications {
                 lockscreenVisibility = Notification.VISIBILITY_PUBLIC
             },
         )
+        nm.createNotificationChannel(
+            NotificationChannel(CHANNEL_ALARM, "Wake alarm", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "Opens VIGIL's wake alarm. The alarm makes its own sound on the alarm stream."
+                setSound(null, null)
+                enableVibration(false)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            },
+        )
+        nm.createNotificationChannel(
+            NotificationChannel(CHANNEL_NOISE, "White noise", NotificationManager.IMPORTANCE_LOW).apply {
+                description = "Shown while white noise plays, with STOP."
+                setSound(null, null)
+                enableVibration(false)
+                setShowBadge(false)
+            },
+        )
         OLD_CHANNELS.forEach { runCatching { nm.deleteNotificationChannel(it) } }
     }
 
@@ -109,21 +132,56 @@ object Notifications {
      * the phone is locked or the screen is off (only for a run that has just started). During a call it is posted
      * without that, so the takeover never covers the call screen.
      */
-    fun takeover(context: Context, title: String, fullScreen: Boolean): Notification {
+    fun takeover(context: Context, title: String, fullScreen: Boolean, night: Boolean = false): Notification {
         val open = PendingIntent.getActivity(
             context, 1, TakeoverActivity.intent(context),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         return Notification.Builder(context, CHANNEL_TAKEOVER)
             .setSmallIcon(R.drawable.ic_stat_eye)
-            .setContentTitle("VIGIL · ${title.uppercase()}")
-            .setContentText("A protocol is running. Tap to open it.")
+            .setContentTitle(if (night) "VIGIL · NIGHT LOCK" else "VIGIL · ${title.uppercase()}")
+            .setContentText(if (night) "Until your wake alarm. Tap to open it." else "A protocol is running. Tap to open it.")
             .setCategory(Notification.CATEGORY_ALARM)
             .setVisibility(Notification.VISIBILITY_PUBLIC)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
             .setContentIntent(open)
             .apply { if (fullScreen) setFullScreenIntent(open, true) }
+            .build()
+    }
+
+    /** The wake alarm's notification (it keeps its service running); [fullScreen] opens the alarm over the lock screen. */
+    fun wakeAlarm(context: Context, test: Boolean, fullScreen: Boolean): Notification {
+        val open = PendingIntent.getActivity(
+            context, 3, WakeAlarmActivity.intent(context, test),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        return Notification.Builder(context, CHANNEL_ALARM)
+            .setSmallIcon(R.drawable.ic_stat_eye)
+            .setContentTitle(if (test) "VIGIL · WAKE ALARM (TEST)" else "VIGIL · WAKE UP")
+            .setContentText("Get up. Hold I'M UP on the alarm screen to stop it.")
+            .setCategory(Notification.CATEGORY_ALARM)
+            .setVisibility(Notification.VISIBILITY_PUBLIC)
+            .setOngoing(true)
+            .setContentIntent(open)
+            .apply { if (fullScreen) setFullScreenIntent(open, true) }
+            .build()
+    }
+
+    /** White noise is playing: STOP ends it. */
+    fun whiteNoise(context: Context): Notification {
+        val stop = PendingIntent.getBroadcast(
+            context, 4, Intent(context, WhiteNoiseStopReceiver::class.java),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
+        return Notification.Builder(context, CHANNEL_NOISE)
+            .setSmallIcon(R.drawable.ic_stat_eye)
+            .setContentTitle("VIGIL · WHITE NOISE")
+            .setContentText("Playing. It stops at the wake alarm, after 8 hours at the latest.")
+            .setOngoing(true)
+            .setShowWhen(false)
+            .setContentIntent(openApp(context))
+            .addAction(Notification.Action.Builder(Icon.createWithResource(context, R.drawable.ic_stat_eye), "STOP", stop).build())
             .build()
     }
 
@@ -136,12 +194,16 @@ object Notifications {
             alerting -> CHANNEL_REMINDERS
             else -> CHANNEL_CARDS
         }
+        // A run without a screen lock that is still going (the morning): its takeover opens from the notice.
+        val openable = notice.runId?.takeIf { id ->
+            notice.kind == NotifyKind.RUN && Vigil.state.value.runs.any { it.id == id && it.phase == RunPhase.ACTIVE }
+        }
         val builder = Notification.Builder(context, channel)
             .setSmallIcon(R.drawable.ic_stat_eye)
             .setContentTitle(notice.title)
             .setContentText(notice.text)
             .setStyle(Notification.BigTextStyle().bigText(notice.text))
-            .setContentIntent(openApp(context))
+            .setContentIntent(openable?.let { openRun(context, it) } ?: openApp(context))
             .setVisibility(Notification.VISIBILITY_PUBLIC)
         // A notice that must not alert is on a low-importance channel (heads-up, cards): no sound, no vibration.
         // (Notification.Builder.setSilent is hidden API, not part of the SDK.)
@@ -149,7 +211,12 @@ object Notifications {
             NotifyKind.HEADS_UP -> builder.setTimeoutAfter(HEADS_UP_TIMEOUT_MS).setAutoCancel(true)
             NotifyKind.CLASS_CARD, NotifyKind.CONFIRM, NotifyKind.WARNING -> builder.setCategory(Notification.CATEGORY_REMINDER)
             NotifyKind.REMINDER -> builder.setCategory(Notification.CATEGORY_REMINDER)
-            NotifyKind.RUN -> builder.setCategory(Notification.CATEGORY_STATUS)
+            NotifyKind.RUN -> {
+                builder.setCategory(Notification.CATEGORY_STATUS)
+                openable?.let { id ->
+                    builder.addAction(Notification.Action.Builder(Icon.createWithResource(context, R.drawable.ic_stat_eye), "OPEN", openRun(context, id)).build())
+                }
+            }
         }
         val runId = notice.runId
         if (runId != null && notice.kind != NotifyKind.HEADS_UP && notice.kind != NotifyKind.RUN) {
@@ -182,6 +249,12 @@ object Notifications {
         Intent(context, NoticeActionReceiver::class.java)
             .setAction(NoticeActionReceiver.ACTION_CONFIRM)
             .putExtra(NoticeActionReceiver.EXTRA_RUN, runId),
+        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+    )
+
+    /** Opens the takeover of run [runId] (one without a screen lock is shown only when asked for). */
+    private fun openRun(context: Context, runId: String): PendingIntent = PendingIntent.getActivity(
+        context, runId.hashCode(), TakeoverActivity.intent(context, runId),
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
     )
 

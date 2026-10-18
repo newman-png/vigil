@@ -181,8 +181,18 @@ class ProtocolParserTest {
         assertError(pool("windows", two), "pool.windows[1]", "more than one window")
         assertError(pool("windows", el(listOf(obj("id" to "a", "opens" to "12:00")))), "closes", "missing")
         assertTrue(warnings(pool("windows", el(emptyList<Any>()))).any { it.message.contains("never be opened") })
-        // A reference to a protocol not (yet) in the file is fine but noted.
-        assertTrue(warnings(base).any { it.path.contains("morning") && it.message.contains("no protocol \"morning\"") })
+        // A reference to a protocol not (yet) in the file is fine but noted (inside max(...) too).
+        assertTrue(warnings(pool("windows", win("done:nap|wake+60", "next"))).any { it.message.contains("no protocol \"nap\"") })
+        assertTrue(warnings(pool("windows", win("max(start:nap|wake,woke+60)", "next"))).any { it.message.contains("no protocol \"nap\"") })
+        assertTrue(warnings(base).none { it.message.contains("no protocol \"morning\"") || it.message.contains("no protocol \"sleep\"") })
+        // max(<anchor>,<anchor>): the later of two anchors; woke = when the wake alarm was dismissed.
+        assertOk(pool("windows", win("max(done:morning|woke+60,woke+60)", "next")))
+        assertOk(pool("windows", win("12:00", "max(meal:dinner+45,start:sleep|bedtime-60)")))
+        assertError(pool("windows", win("max(12:00)", "13:00")), "opens", "two anchors")
+        assertError(pool("windows", win("max(12:00,13:00", "14:00")), "opens", "two anchors")
+        assertError(pool("windows", win("max(12:00,max(13:00,14:00))", "15:00")), "opens", "two anchors")
+        assertError(pool("windows", win("12:00", "max(next,13:00)")), "closes", "two anchors")
+        assertError(pool("windows", win("max(12:00,noon)", "13:00")), "opens", "not a time")
     }
 
     // ------------------------------------------------------------------ globals
@@ -225,7 +235,7 @@ class ProtocolParserTest {
 
     @Test
     fun unknownKindAndStepType() {
-        assertError(withProtocols(protocol(kind = "nap")), "protocols[5] (test).kind", "must be one of")
+        assertError(withProtocols(protocol(kind = "nap")), "protocols[7] (test).kind", "must be one of")
         assertError(withProtocols(protocol(steps = listOf(step(type = "tap")))), "steps[0].type", "must be one of")
         assertError(withProtocols(protocol(lock = obj("type" to "phone"))), "lock.type", "must be one of")
         assertError(withProtocols(protocol(extra = mapOf("intensity" to JsonPrimitive("loud")))), "intensity", "must be one of")
@@ -288,11 +298,11 @@ class ProtocolParserTest {
         // Tapping done is what confirms a prayer: without one its steps would finish it unconfirmed.
         fun dhuhrWith(vararg fields: Pair<String, JsonElement>) = JsonObject(base).let {
             val list = (it["protocols"] as JsonArray).toMutableList()
-            list[1] = JsonObject(list[1].jsonObject + fields)
+            list[2] = JsonObject(list[2].jsonObject + fields)
             JsonObject(it + ("protocols" to JsonArray(list)))
         }
         val noDone = dhuhrWith("steps" to JsonArray(listOf(step("Pray."), step("Quiet.", "timer"))))
-        assertError(noDone, "protocols[1] (prayer-dhuhr).steps", "needs a done step")
+        assertError(noDone, "protocols[2] (prayer-dhuhr).steps", "needs a done step")
         assertError(dhuhrWith("weekdays" to obj("fri" to obj("steps" to listOf(step("Pray."))))), "weekdays.fri.steps", "needs a done step")
         assertOk(dhuhrWith("weekdays" to obj("fri" to obj("steps" to listOf(step("Pray."), step("Done.", "done"))))))
     }
@@ -340,10 +350,10 @@ class ProtocolParserTest {
         assertError(withProtocols(protocol(kind = "reset", extra = mapOf("short" to JsonArray(emptyList())))), "short", "at least one step")
         val prayerShort = base.let {
             val list = (it["protocols"] as JsonArray).toMutableList()
-            list[1] = JsonObject(list[1].jsonObject + ("short" to JsonArray(listOf(step()))))
+            list[2] = JsonObject(list[2].jsonObject + ("short" to JsonArray(listOf(step()))))
             JsonObject(it + ("protocols" to JsonArray(list)))
         }
-        assertError(prayerShort, "protocols[1] (prayer-dhuhr).short", "prayer protocols have no step-down ladder")
+        assertError(prayerShort, "protocols[2] (prayer-dhuhr).short", "prayer protocols have no step-down ladder")
     }
 
     @Test
@@ -434,5 +444,33 @@ class ProtocolParserTest {
         assertEquals(Version.MINIMAL, p.nextVersion(Version.FULL, null))
         assertEquals(Version.SINGLE, p.nextVersion(Version.MINIMAL, null))
         assertNull(p.nextVersion(Version.SINGLE, null))
+    }
+
+    @Test
+    fun wokeAndMaxAnchors() {
+        assertEquals(TimeExpr(TimeBase.Woke, 60), (TimeExpr.parse("woke+60") as Parsed.Ok).value)
+        assertEquals("woke+60", TimeExpr(TimeBase.Woke, 60).toString())
+        assertEquals(
+            Anchor.Max(Anchor.Done("morning", TimeExpr(TimeBase.Woke, 60)), Anchor.At(TimeExpr(TimeBase.Woke, 60))),
+            (Anchor.parse("max(done:morning|woke+60,woke+60)", false) as Parsed.Ok).value,
+        )
+        assertTrue(Anchor.parse("max(12:00, 13:00)", false) is Parsed.Error)
+    }
+
+    @Test
+    fun stepFieldsForSleepAndMorning() {
+        val todos = obj("text" to "Tomorrow.", "type" to "text", "lines" to 4, "todos" to true)
+        val sleep = protocol(id = "s", kind = "sleep", lock = obj("type" to "screen"), steps = listOf(todos, step("Sleep.", "done")))
+        val file = assertOk(withProtocols(sleep))
+        assertTrue(file.find("s")!!.steps[0].todos)
+        assertError(withProtocols(protocol(kind = "sleep", steps = listOf(obj("text" to "x", "todos" to true)))), "steps[0].todos", "only a text step")
+        assertTrue(warnings(withProtocols(protocol(steps = listOf(todos, step("Done.", "done"))))).any { it.path.endsWith("steps[0].todos") })
+        assertError(withProtocols(protocol(steps = listOf(obj("text" to "x", "todos" to "yes")))), "todos", "true or false")
+        val walk = obj("text" to "Walk.", "type" to "timer", "min" to 15, "skip_on_class_days" to true)
+        val morning = protocol(id = "m", kind = "morning", lock = obj("type" to "pool"), steps = listOf(step("Up."), walk))
+        assertTrue(assertOk(withProtocols(morning)).find("m")!!.steps[1].skipOnClassDays)
+        assertError(withProtocols(protocol(id = "m", kind = "morning", steps = listOf(walk))), "steps", "nothing would be left")
+        val noise = obj("text" to "Lights low.", "noise_toggle" to true)
+        assertTrue(assertOk(withProtocols(protocol(steps = listOf(noise, step("Done.", "done"))))).find("test")!!.steps[0].noiseToggle)
     }
 }

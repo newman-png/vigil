@@ -229,7 +229,7 @@ private fun baseItems(context: Context, requestNotifications: () -> Unit): List<
         ) { requestNotifications() },
         SetupItem(
             "FULL-SCREEN TAKEOVERS",
-            "Lets a protocol take over the screen when the phone is locked or asleep.",
+            "Lets a protocol take over the screen when the phone is locked or asleep, and the wake alarm open full screen.",
             if (Build.VERSION.SDK_INT >= 34) nm?.canUseFullScreenIntent() ?: false else true,
             "OPEN",
         ) {

@@ -8,6 +8,7 @@ import dev.vigil.core.pool.PoolDecision
 import dev.vigil.core.pool.PoolRules
 import dev.vigil.core.pool.WindowSpan
 import dev.vigil.core.protocol.Anchor
+import dev.vigil.core.protocol.Trigger
 import dev.vigil.core.protocol.LockType
 import dev.vigil.core.protocol.ParamSpec
 import dev.vigil.core.protocol.Parsed
@@ -23,8 +24,10 @@ import dev.vigil.core.timeline.PlannedStart
 import dev.vigil.core.timeline.StartSource
 import dev.vigil.core.timeline.Timeline
 import dev.vigil.core.times.DayTimes
+import dev.vigil.core.times.MyTimes
 import java.time.Duration
 import java.time.Instant
+import java.time.LocalDate
 import java.time.LocalTime
 
 /** Read-only rules over a state at `env.now`, shared by the reducer ([Txn]) and the queries ([Machine]). */
@@ -45,7 +48,88 @@ internal open class View(var s: MachineState, val env: MachineEnv) {
     /** The clock for run timers and locks: frozen while a call is connected. */
     val runNow: Instant get() = s.callSince?.takeIf { it.isBefore(now) } ?: now
 
-    fun dayTimes(): DayTimes = DayTimes(day.date, zone, nightEdge, s.times.current)
+    fun dayTimes(): DayTimes = DayTimes(day.date, zone, nightEdge, s.times.current, sleepTarget(), day.woke)
+
+    /** The next day's times (MY TIMES as tomorrow will have them): its wake alarm and its early starts. */
+    fun nextDayTimes(): DayTimes = DayTimes(day.date.plusDays(1), zone, nightEdge, s.times.upcoming)
+
+    /** The file's sleep protocol (wind-down, night lock, sleep shifting), or null. */
+    val sleepProtocol: Protocol? get() = file.protocols.firstOrNull { it.kind == ProtocolKind.SLEEP }
+
+    /** The file's morning protocol (its params set the wake alarm's rings), or null. */
+    val morningProtocol: Protocol? get() = file.protocols.firstOrNull { it.kind == ProtocolKind.MORNING }
+
+    /** A sleep param: from the sleep protocol, else the kind's default. */
+    fun sleepParam(name: String): Int = sleepProtocol?.intParam(name) ?: kindDefault(ProtocolKind.SLEEP, name)
+
+    /** A wake alarm param (`ring_max_min`, `snooze_min`, `max_rings`): from the morning protocol, else the default. */
+    fun alarmParam(name: String): Int = morningProtocol?.intParam(name) ?: kindDefault(ProtocolKind.MORNING, name)
+
+    private fun kindDefault(kind: ProtocolKind, name: String): Int = (kind.params[name] as? ParamSpec.IntRange)?.default ?: 0
+
+    /** Minutes after the night edge: orders a night's times (23:00 before 00:30). */
+    fun nightMinutes(t: LocalTime): Int = Math.floorMod(t.hour * 60 + t.minute - (nightEdge.hour * 60 + nightEdge.minute), 1440)
+
+    /** The local time [m] minutes after the night edge. */
+    fun fromNightMinutes(m: Int): LocalTime =
+        LocalTime.of(0, 0).plusMinutes((Math.floorMod(m, 1440) + nightEdge.hour * 60 + nightEdge.minute).toLong())
+
+    /**
+     * Tonight's target bedtime (sleep shifting): the saved target, kept between MY TIMES bedtime_goal and bedtime_start
+     * (never later than the start); the start before the first night. Null when the file has no sleep protocol (bedtime
+     * is then bedtime_goal).
+     */
+    fun sleepTarget(): LocalTime? {
+        if (sleepProtocol == null) return null
+        val (goal, start) = bedtimeRange(s.times.current)
+        return clampTarget(nightMinutes(WallClock.parseTime(s.sleep.target) ?: start), goal, start)
+    }
+
+    /** MY TIMES bedtime_goal and bedtime_start (23:00 and 00:30 when unreadable). */
+    fun bedtimeRange(times: MyTimes): Pair<LocalTime, LocalTime> =
+        (WallClock.parseTime(times.bedtimeGoal) ?: LocalTime.of(23, 0)) to (WallClock.parseTime(times.bedtimeStart) ?: LocalTime.of(0, 30))
+
+    /** [minutes] (after the night edge) kept from [goal] to [start]: never later than the start, never before the goal. */
+    fun clampTarget(minutes: Int, goal: LocalTime, start: LocalTime): LocalTime =
+        fromNightMinutes(minOf(nightMinutes(start), maxOf(nightMinutes(goal), minutes)))
+
+    /** VIGIL rings a wake alarm when the file has a sleep protocol or a protocol started by `event:wake_alarm`. */
+    val alarmOn: Boolean get() = file.protocols.any { it.kind == ProtocolKind.SLEEP || it.parsedTrigger == Trigger.WakeAlarm }
+
+    /**
+     * The day whose wake alarm comes next: today's own (the day began the night before its wake time, and its alarm has
+     * not been dealt with), else tomorrow's (else the day after, if tomorrow's was already dealt with).
+     */
+    fun alarmKey(): LocalDate {
+        val handled = s.wakeAlarm.handledFor
+        if (dayTimes().wake.isAfter(day.startedAt) && handled != day.key) return day.date
+        val next = day.date.plusDays(1)
+        return if (handled == next.toString()) next.plusDays(1) else next
+    }
+
+    /** When the wake alarm of day [key] is due: that day's MY TIMES wake (tomorrow's with tomorrow's times). */
+    fun alarmAt(key: LocalDate): Instant =
+        if (key == day.date) dayTimes().wake else DayTimes(key, zone, nightEdge, s.times.upcoming).wake
+
+    /** When the wake alarm rings next: its due time, or a ring again after an unanswered one; null while it rings. */
+    fun wakeAlarmAt(): Instant? {
+        if (!alarmOn) return null
+        val a = s.wakeAlarm
+        if (a.ringingFor != null) return a.nextRingAt
+        return alarmAt(alarmKey())
+    }
+
+    /** The night lock run while it holds. */
+    fun nightRun(): Run? = s.runs.firstOrNull { it.phase == RunPhase.NIGHT && (it.lockEndsAt == null || now.isBefore(it.lockEndsAt)) }
+
+    /** An Isha prayer still open and not confirmed (GOING TO SLEEP would miss it), or null. */
+    fun ishaToConfirm(): Run? = s.runs.firstOrNull { it.prayer == Prayer.ISHA && !it.test && !it.confirmed }
+
+    /** Today's to-dos (written in last night's wind-down). */
+    fun todosToday(): List<Todo> = s.todos[day.key] ?: emptyList()
+
+    /** When the walking switch turns itself off (no step detection yet), or null while it is off. */
+    fun walkingEnd(): Instant? = s.toggles.walkingSince?.takeIf { s.toggles.walking }?.plus(Machine.MAX_WALKING)
 
     /** The latest moment the current day can last. */
     fun fallback(): Instant = DayRules.fallbackEnd(day.date, file.day, zone)
@@ -54,10 +138,14 @@ internal open class View(var s: MachineState, val env: MachineEnv) {
 
     fun protocol(r: Run): Protocol? = file.find(r.protocol)
 
-    /** The steps a run shows: its version on its weekday (the full steps if that version vanished). */
+    /**
+     * The steps a run shows: its version on its weekday (the full steps if that version vanished), without the steps
+     * marked `skip_on_class_days` on a class or commute day.
+     */
     fun stepsOf(r: Run): List<Step> {
         val p = protocol(r) ?: return emptyList()
-        return p.stepsFor(r.version, r.weekday) ?: p.stepsFor(Version.FULL, r.weekday) ?: p.steps
+        val steps = p.stepsFor(r.version, r.weekday) ?: p.stepsFor(Version.FULL, r.weekday) ?: p.steps
+        return if (r.classDay) steps.filterNot { it.skipOnClassDays } else steps
     }
 
     /** The stage a protocol fires at now. */
@@ -67,9 +155,13 @@ internal open class View(var s: MachineState, val env: MachineEnv) {
     fun lockActive(r: Run): Boolean =
         r.phase == RunPhase.ACTIVE && r.lock != LockType.NONE && (r.lockEndsAt == null || runNow.isBefore(r.lockEndsAt))
 
-    /** The run that owns the screen: an active run with a running screen lock, else a returned prayer takeover. */
+    /**
+     * The run that owns the screen: an active run with a running screen lock, else a returned prayer takeover, else the
+     * night lock (a prayer at night takes the screen from it, and it comes back after).
+     */
     fun screenOwner(): Run? =
         s.runs.firstOrNull { it.lock == LockType.SCREEN && lockActive(it) } ?: s.runs.firstOrNull { it.phase == RunPhase.RETURNED }
+            ?: nightRun()?.takeIf { it.lock == LockType.SCREEN }
 
     /** How much a connected call has extended [r] so far (what the call's end will add to its timers and lock). */
     fun callShift(r: Run): Duration {
@@ -106,9 +198,9 @@ internal open class View(var s: MachineState, val env: MachineEnv) {
     /** When protocol [id]'s run last completed today, after the day's wake time. */
     fun completedToday(id: String): Instant? = day.completed[id]?.takeIf { it.isAfter(dayTimes().wake) }
 
-    /** The day's planned starts (time, slot, prayers) between its start and its latest end. */
+    /** The day's planned starts (time, slot, prayers) between its start and its latest end (tomorrow's early ones too). */
     fun plan(): List<PlannedStart> =
-        Timeline.plan(file, dayTimes(), s.prayers.lastAdhan, day.adhans, day.startedAt, fallback())
+        Timeline.plan(file, dayTimes(), s.prayers.lastAdhan, day.adhans, day.startedAt, fallback(), nextDayTimes())
 
     /** The free windows placed on today. */
     fun windows(plan: List<PlannedStart> = plan()): List<WindowSpan> {
@@ -122,15 +214,24 @@ internal open class View(var s: MachineState, val env: MachineEnv) {
 
     private fun resolveAnchor(text: String, allowNext: Boolean, dt: DayTimes, opened: Instant?, plan: List<PlannedStart>): Instant? {
         val anchor = (Anchor.parse(text, allowNext) as? Parsed.Ok)?.value ?: return null
+        return resolve(anchor, dt, opened, plan)
+    }
+
+    private fun resolve(anchor: Anchor, dt: DayTimes, opened: Instant?, plan: List<PlannedStart>): Instant? {
         return when (anchor) {
             is Anchor.At -> dt.resolve(anchor.expr)
+            is Anchor.Max -> {
+                val a = resolve(anchor.first, dt, opened, plan) ?: return null
+                val b = resolve(anchor.second, dt, opened, plan) ?: return null
+                maxOf(a, b)
+            }
             is Anchor.Done -> (if (file.find(anchor.protocolId) != null) completedToday(anchor.protocolId) else null) ?: dt.resolve(anchor.fallback)
             is Anchor.Start -> (if (file.find(anchor.protocolId) != null) startedToday(anchor.protocolId) else null) ?: dt.resolve(anchor.fallback)
             Anchor.Next -> plan.firstOrNull { opened != null && it.at.isAfter(opened) }?.at ?: fallback()
         }
     }
 
-    /** Run locks and toggles that block the pool, in design order (run lock, friends, walking; the night lock is M2). */
+    /** Run locks, toggles and the night lock that block the pool, in design order. */
     fun lockBlocks(): List<Block> {
         val out = mutableListOf<Block>()
         val locking = s.runs.filter { (it.lock == LockType.SCREEN || it.lock == LockType.POOL) && lockActive(it) } +
@@ -142,6 +243,8 @@ internal open class View(var s: MachineState, val env: MachineEnv) {
         }
         if (s.toggles.friends) out += Block(BlockReason.FRIENDS, null)
         if (s.toggles.walking) out += Block(BlockReason.WALKING, null)
+        // Until the wake alarm is answered (its latest end is a safety limit, not the usual end).
+        if (nightRun() != null) out += Block(BlockReason.NIGHT_LOCK, null)
         return out
     }
 
@@ -193,6 +296,11 @@ internal open class View(var s: MachineState, val env: MachineEnv) {
         s.suspendedUntil?.let { c += it }
         s.callSince?.let { c += it.plus(Machine.MAX_CALL_PAUSE) }
         friendsEnd()?.let { c += it }
+        walkingEnd()?.let { c += it }
+        if (alarmOn) {
+            s.wakeAlarm.ringingSince?.let { c += it.plus(Duration.ofMinutes(alarmParam("ring_max_min").toLong())) }
+            wakeAlarmAt()?.let { c += it }
+        }
         val plan = plan()
         plan.filter { it.source != StartSource.ADHAN && it.key !in day.handled }.forEach { c += it.at }
         if (!suspended) {
@@ -213,6 +321,7 @@ internal open class View(var s: MachineState, val env: MachineEnv) {
                 if (!r.warned) warnAt(r, p)?.let { c += it }
             }
             if (r.phase == RunPhase.CARD) r.classEndsAt?.let { c += it }
+            if (r.phase == RunPhase.NIGHT) r.lockEndsAt?.let { c += it }
             if (r.phase == RunPhase.ACTIVE && s.callSince == null) {
                 r.lockEndsAt?.let { c += it }
                 val steps = stepsOf(r)

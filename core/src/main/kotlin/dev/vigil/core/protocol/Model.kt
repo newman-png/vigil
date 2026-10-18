@@ -220,8 +220,14 @@ data class Step(
     val type: StepType = StepType.CHECK,
     /** check: locked for this many minutes; timer: lasts this many minutes (none = until the lock ends). */
     val min: Int? = null,
-    /** text: how many lines to type (default 1). */
+    /** text: how many lines to type (default 1); with [todos], up to this many (at least one). */
     val lines: Int? = null,
+    /** text, sleep protocols: the lines become the next day's to-dos (home, the morning takeover). */
+    val todos: Boolean = false,
+    /** Left out on days with a MY TIMES class or commute (the morning walk: the commute counts as the walk). */
+    @SerialName("skip_on_class_days") val skipOnClassDays: Boolean = false,
+    /** The takeover offers the WHITE NOISE switch on this step (wind-down: lights low). */
+    @SerialName("noise_toggle") val noiseToggle: Boolean = false,
 )
 
 /** Step types: what a step asks for and when it is finished. */
@@ -327,10 +333,19 @@ enum class ProtocolKind(val json: String, val ladder: Set<Version>, val params: 
         mapOf(
             "shift_min" to ParamSpec.IntRange(0, 120, 20),
             "hold_after_missed" to ParamSpec.IntRange(0, 7, 2),
+            "late_min" to ParamSpec.IntRange(0, 240, 30),
+            "night_lock_grace_min" to ParamSpec.IntRange(10, 600, 120),
             "white_noise" to ParamSpec.Bool(false),
         ),
     ),
-    @SerialName("morning") MORNING("morning", ALL_LADDER, mapOf("min_after_wake_min" to ParamSpec.IntRange(0, 240, 60))),
+    @SerialName("morning") MORNING(
+        "morning", ALL_LADDER,
+        mapOf(
+            "ring_max_min" to ParamSpec.IntRange(1, 60, 10),
+            "snooze_min" to ParamSpec.IntRange(1, 60, 5),
+            "max_rings" to ParamSpec.IntRange(1, 10, 3),
+        ),
+    ),
     @SerialName("prayer") PRAYER(
         "prayer", emptySet(),
         mapOf(
@@ -397,12 +412,6 @@ enum class ProtocolKind(val json: String, val ladder: Set<Version>, val params: 
     ),
     @SerialName("reset") RESET("reset", ALL_LADDER, emptyMap()),
     ;
-
-    /**
-     * Runs of this kind stay open when the day ends (the sleep run lasts the night). Only across the day end that follows
-     * their start: at the next one they are closed like any other run, so a run never outlives two days.
-     */
-    val survivesDayEnd: Boolean get() = this == SLEEP
 
     companion object {
         fun fromJson(value: String): ProtocolKind? = entries.firstOrNull { it.json == value }

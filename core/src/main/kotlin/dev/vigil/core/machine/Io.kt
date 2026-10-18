@@ -29,8 +29,22 @@ sealed interface Input {
     /** The adhan app posted its notification for [prayer] (AdhanMatcher on the app side). */
     data class Adhan(val prayer: Prayer) : Input
 
-    /** The wake alarm rang (or was dismissed): ends the day the morning after, starts `event:wake_alarm` protocols. */
-    data object WakeAlarm : Input
+    /**
+     * The wake alarm was dismissed (held on its screen): ends the day if it has not ended, ends the night lock, journals
+     * the wake time and starts the `event:wake_alarm` protocols (the morning). Ignored (journaled as skipped) while no
+     * alarm rings or waits to ring again. [test] = a TEST ring: the morning starts as a TEST preview and nothing else
+     * changes.
+     */
+    data class WakeAlarm(val test: Boolean = false) : Input
+
+    /** The wake alarm rang for its `ring_max_min` without an answer and the app stopped it: it rings again later. */
+    data class WakeAlarmUnanswered(val test: Boolean = false) : Input
+
+    /** TEST > RING WAKE ALARM NOW: ring the alarm now as a TEST (its dismissal previews the morning). */
+    data object RingWakeAlarmTest : Input
+
+    /** A to-do of today's list was ticked off ([done]) or unticked. */
+    data class TodoDone(val index: Int, val done: Boolean = true) : Input
 
     /** A home switch changed. */
     data class Toggle(val name: ToggleName, val on: Boolean) : Input
@@ -71,8 +85,12 @@ sealed interface Input {
     /** The pool wait screen was left early. */
     data class PoolWaitAbandoned(val app: String) : Input
 
-    /** GOING TO SLEEP: the day ends now. */
-    data object GoingToSleep : Input
+    /**
+     * GOING TO SLEEP (home, or the wind-down's last step): the wind-down completes, the day ends now and the night lock
+     * starts. Ignored before the day's wake time. [ishaPrayed]: the app asked about an open Isha ([HomeStatus.ishaToConfirm])
+     * and the answer was yes, so Isha is confirmed first (it counts, even inside its done lock).
+     */
+    data class GoingToSleep(val ishaPrayed: Boolean = false) : Input
 
     /** Kill switch (after its 5-minute wait, or the adb escape): suspend VIGIL for [minutes]. */
     data class Suspend(val minutes: Int = 60) : Input
@@ -104,7 +122,7 @@ enum class NotifyKind {
     /** A stage-3 reminder (the one notification). */
     REMINDER,
 
-    /** A run without a screen lock (pool or no lock): its steps are on home. */
+    /** A run without a screen lock (pool or no lock): its current step, and its takeover opens from it. */
     RUN,
 
     /** A prayer window about to close (stage 3, or while suspended). */
@@ -141,14 +159,26 @@ sealed interface Effect {
     /** Close the front pool app now (the session ended: heavy use, window over, a lock began) and show [reason]. */
     data class Kick(val app: String?, val reason: BlockReason) : Effect
 
-    /** Ring VIGIL's own wake alarm (M3). */
-    data object RingWakeAlarm : Effect
+    /**
+     * Ring VIGIL's wake alarm now (ring [ring] of the alarm due at [scheduledAt]) until [stopAt], then stop and report
+     * [Input.WakeAlarmUnanswered]. A full-screen alarm on the alarm stream; its dismissal is [Input.WakeAlarm].
+     */
+    data class RingWakeAlarm(val scheduledAt: Instant, val ring: Int, val stopAt: Instant, val test: Boolean = false) : Effect
+
+    /** Stop a ringing wake alarm (the engine counted it unanswered, or it is over). */
+    data object StopWakeAlarm : Effect
 
     /** Do Not Disturb on/off (M4 Jummah). */
     data class SetDnd(val on: Boolean) : Effect
 
-    /** Audio control (M8): [action] play/stop, [sound] a bundled sound or an uploaded file. */
-    data class Audio(val action: String, val sound: String? = null) : Effect
+    /** Audio control: [action] play/stop, [sound] `white_noise` ([WHITE_NOISE]; M8 adds more sounds and uploaded files). */
+    data class Audio(val action: String, val sound: String? = null) : Effect {
+        companion object {
+            const val PLAY = "play"
+            const val STOP = "stop"
+            const val WHITE_NOISE = "white_noise"
+        }
+    }
 }
 
 /** The result of [Machine.step]: the new state to persist, journal entries to append, and effects to run. */

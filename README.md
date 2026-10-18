@@ -22,12 +22,13 @@ VIGIL opens on **SETUP**.
 3. **NOTIFICATION ACCESS:** turn VIGIL on. It reads your adhan app's prayer notification, and other apps' call notifications, so a takeover never covers a WhatsApp call.
 4. Grant the other rows under **PERMISSIONS**: notifications, full-screen takeovers, display over other apps, battery unrestricted (*Settings › Apps › VIGIL › Battery › Unrestricted*), exact alarms, usage access (lets a takeover come back when you leave it) and, optionally, phone (call pause).
 5. **ADHAN:** once your adhan app has posted a notification, tap it in the list. Check the result with **TEST TRIGGER**; the default phrase `time for` already matches "It's time for Isha".
-6. Tap **DONE**. **MY TIMES** opens: set your wake time, bedtime goal, classes and meals, then **SAVE**. The first save applies at once.
+6. Tap **DONE**. **MY TIMES** opens: set your wake times, bedtime start and goal, classes and meals, then **SAVE**. The first save applies at once.
 7. In **TEST**, tap **FIRE IN 60 S (LOCK THE PHONE)** and lock the phone. A test preview of a prayer should take over the locked screen.
+8. In **TEST**, tap **RING WAKE ALARM NOW**: VIGIL's wake alarm rings on the alarm stream (also in silent mode); hold **I'M UP** for 3 s to stop it, and a preview of the morning starts.
 
-## What M1 does today
+## What it does today
 
-M1 is the engine and the five prayers. The bundled `protocols.json` holds the prayer protocols; the other protocols come with later milestones.
+M1 is the engine and the five prayers, M2 the sleep wind-down and the night lock, M3 the wake alarm and the morning routine. The other protocols come with later milestones.
 
 ### Prayers
 
@@ -41,6 +42,22 @@ Each prayer starts when your adhan app posts its notification. VIGIL never calcu
 6. **Missed:** the window closes, or the next adhan arrives, before you confirm. It counts against the prayer's stage.
 7. **Class rule:** when a MY TIMES class is in progress at the adhan, only a silent card shows. When the class ends, if the prayer is still unconfirmed and its window open, the takeover starts.
 8. **No ladder:** NOT OKAY shortens a prayer's lock to the 8-minute minimum. LEAVE before those 8 minutes is a bail-out; after them it costs nothing.
+
+A prayer never waits behind another protocol: when its adhan comes, a protocol holding the screen pauses (its timers stop) and goes on where it was after the prayer's lock.
+
+### Sleep wind-down and the night lock
+
+- **Sleep shifting:** tonight's target bedtime starts at MY TIMES *bedtime start* (00:30) and moves 20 minutes earlier each night until it reaches *bedtime goal* (23:00). A night is missed when you leave the wind-down early, when the day ends without GOING TO SLEEP, or when GOING TO SLEEP comes more than 30 minutes after the target. After two missed nights in a row the target holds; a good night moves it on again. Home shows tonight's target.
+- **Wind-down:** an hour before the target, a takeover (full for 30 s, then quiet): *close the day* (three lines on how it went), *tomorrow* (up to four lines: your top 3 tasks and the first block; they become tomorrow's to-dos), *prep* (10 min), *hygiene* (10 min), *phone away*, *lights low* (with a **WHITE NOISE** switch), and **GOING TO SLEEP**, which ends the day. NOT OKAY: short skips prep and hygiene; minimal is one line, tomorrow's first task, phone away and sleep; then GOING TO SLEEP alone, marked "minimum".
+- **GOING TO SLEEP** (the last step, or hold it on home): with Isha still unconfirmed it asks first (I PRAYED ISHA counts it). Before the day's own wake time it does nothing, and home says why.
+- **Night lock:** from GOING TO SLEEP (or the screen-off day end after wind-down) until you answer the wake alarm, two hours after it at the latest: a dark, silent, very dim screen with the time, SLEEP, the alarm time, tomorrow's first to-do, WHITE NOISE, CALL, APPS and LEAVE (the usual penalty). The pool is blocked. It shows when you use the phone and never lights up the screen by itself. Fajr takes the screen with its own takeover, and the night lock comes back after it.
+- **To-dos:** tomorrow's lines show on home with tick boxes, and the first one on the morning takeover. Unticked ones expire with their day.
+- **White noise** is made by the app (no sound file), keeps playing with the screen locked, has STOP in its notification, and stops at the wake alarm or after 8 hours.
+
+### Wake alarm and morning routine
+
+- **Wake alarm:** VIGIL rings it at your MY TIMES wake time for the day (04:00 to 11:00), as a real alarm clock (the alarm icon shows in the status bar): a full-screen alarm over the lock screen with a tone made by the app on the alarm stream (heard in silent mode and Do Not Disturb), its volume rising over 30 s, with vibration. Hold **I'M UP** for 3 s to stop it; there is no snooze. Unanswered for 10 minutes, it stops and rings again 5 minutes later, three times at most; then the morning starts at your next unlock. QUIET and the kill switch do not silence it.
+- **Morning:** dismissing the alarm ends the night lock and opens the morning takeover: *get up*, *sun in your eyes* (5 min timer), *bathroom and brush* (5), *skincare or shower* (15), *breakfast*, *chores* (20 min timer), *walk* (15 min; left out on days with a class or commute in MY TIMES, since the commute is the walk). Thursday is shorter (shower, no chores or walk); Friday has a shower for Jummah. The screen stays free: the morning notification shows the current step, and **OPEN** (or home) brings the takeover back. The pool stays blocked until every step is done, and the morning free window opens then, but not before an hour after you got up. NOT OKAY: short drops skincare and shortens chores and the walk to 10 minutes; minimal is get up, bathroom, breakfast and sun; then 5 minutes in the sun, marked "minimum".
 
 ### The takeover
 
@@ -61,7 +78,7 @@ At stage 1, a takeover you leave for an app that is not on the whitelist comes b
 
 The distracting apps share one counter: TikTok, Facebook (and Facebook Lite), YouTube, Instagram, Pinterest, Brave, and every browser installed on the phone (any app that opens `https://` links; your home screen app is never closed). **SETUP › POOL AND APPS** lists what VIGIL found on your phone.
 
-- **Free windows.** The pool opens only inside a free window; outside one it is blocked outright. *Morning:* from 60 minutes after waking (from M3: once the morning routine is done) until the next planned start, usually Dhuhr. *Evening:* from 45 minutes after dinner in MY TIMES (from M7: once the dinner protocol is done) until wind-down, which is your bedtime goal minus 60 minutes until M2. Each window allows 30 minutes of use a day.
+- **Free windows.** The pool opens only inside a free window; outside one it is blocked outright. *Morning:* once the morning routine is done and at least 60 minutes after you got up, until the next planned start, usually Dhuhr. *Evening:* from 45 minutes after dinner in MY TIMES (from M7: once the dinner protocol is done) until wind-down. Each window allows 30 minutes of use a day.
 - **Waits.** The Nth open of the day waits N minutes (1, 2, 3 ..., at most 10) on a wait screen. Stay on it and the app opens at zero; leave it and the next wait is the same length.
 - **Sessions and cooldowns.** Switching between pool apps, or leaving the pool for less than 60 seconds, keeps the session going. When it ends, the pool locks for twice the minutes you used (at most 60).
 - **Heavy use.** 10 minutes in one session, or the 3rd open within 30 minutes, closes the app (**ENOUGH FOR NOW**) and starts the cooldown early.
@@ -73,10 +90,10 @@ Every blocked screen says why and until when. The counters reset when the day en
 
 The day does not end at midnight. It ends at the first of:
 
-- **GOING TO SLEEP** on home (hold 2 s);
-- 2 hours of screen off after wind-down started (your bedtime goal minus 60 minutes until M2); the day then ends at the moment the screen went off;
-- 06:00 the next morning;
-- from M3, the wake alarm.
+- **GOING TO SLEEP** (the wind-down's last step, or hold it 2 s on home);
+- 2 hours of screen off after wind-down started; the day then ends at the moment the screen went off;
+- the wake alarm, if the day is still running then (a wake time before 06:00);
+- 06:00 the next morning.
 
 A new day starts at once and the counters reset. Anything after midnight belongs to the day before until it ends. GOING TO SLEEP before the day's own wake time does nothing.
 
@@ -92,23 +109,21 @@ A protocol moves up a stage after 10 clean completions in a row (the full versio
 
 ### Home
 
-The **VIGIL** title, the day (since when, and when it ends at the latest), the pool's status, flags (quiet, suspended, in a call), the prayers prayed and missed today, the next planned start, a red **A PROTOCOL IS RUNNING · OPEN** while a takeover owns the screen, open prayers with **CONFIRM**, and **TODAY**: the day's timeline (prayers at their adhan, `~` when estimated) with each protocol's stage and when it last fired. Below that:
+The **VIGIL** title, the day (since when, and when it ends at the latest), the pool's status, flags (quiet, suspended, in a call), the prayers prayed and missed today, the next planned start, tonight's target bedtime and the next wake alarm (with missed nights in a row), a red **A PROTOCOL IS RUNNING · OPEN** (or **NIGHT LOCK**) while a takeover owns the screen, a running morning with **OPEN**, today's **TO-DOS** with tick boxes, open prayers with **CONFIRM**, and **TODAY**: the day's timeline (prayers at their adhan, `~` when estimated) with each protocol's stage and when it last fired. Below that:
 
 | item | what it does |
 |---|---|
 | **QUIET** | Tap to make every takeover silent (no sound, vibration or Glyph), whatever its intensity. Also on the always-on notification. |
-| **GOING TO SLEEP** | Hold 2 s: the day ends now. |
-| **MY TIMES** | Your week: wake time per weekday, bedtime goal, classes, meals, study, gym, calls, commute and the Jummah time, with **+ ADD** rows and weekday chips. A change **applies from tomorrow** (only the very first save applies at once). M1 uses wake, dinner, the bedtime goal and classes; the rest is for later milestones. |
+| **GOING TO SLEEP** | Hold 2 s: the day ends now and the night lock starts (CONFIRM ISHA first while Isha is open). |
+| **MY TIMES** | Your week: wake time per weekday (the wake alarm), bedtime start and goal (sleep shifting), classes, meals, study, gym, calls, commute and the Jummah time, with **+ ADD** rows and weekday chips. A change **applies from tomorrow** (only the very first save applies at once). Used so far: wake, bedtime, dinner, classes and commute (the morning walk); the rest is for later milestones. |
 | **SETUP** | Permissions (with the count missing), restricted settings, battery, **POOL AND APPS** (the pool, the browsers found, the rules, the APPS button), **ADHAN**, **TAKEOVER** (switches for sound, vibration and the Glyph lights) and **SAFETY**. |
-| **TEST** | **START** any protocol as a test preview: stage 1, logged as a test, and left out of stages, penalties, prayer times and the report. **FIRE IN 60 S (LOCK THE PHONE)**: a real exact alarm starts a preview of the next prayer, to try the whole path with the screen off. **POOL CHECK**: what the pool would do right now for each pool app. **LAST EVENTS**: the newest 30 journal entries. |
+| **TEST** | **START** any protocol as a test preview: stage 1, logged as a test, and left out of stages, penalties, prayer times and the report. **FIRE IN 60 S (LOCK THE PHONE)**: a real exact alarm starts a preview of the next prayer, to try the whole path with the screen off. **RING WAKE ALARM NOW**: the real wake alarm as a test; I'M UP starts a morning preview. **POOL CHECK**: what the pool would do right now for each pool app. **LAST EVENTS**: the newest 30 journal entries. |
 | **EXPORT** | A progress report (markdown: totals, then each day's prayers, pool use, protocols, bail-outs, app exits, late alarms and stage changes) and the whole journal as CSV, through the share sheet. |
 
 ## Coming next
 
 Each milestone adds its protocols to `protocols.json` (with core, app and tests) and ships through the same release.
 
-- **M2 Sleep wind-down** (coming): the night lock until the wake alarm, sleep shifting (20 minutes earlier per night until the goal), close-the-day lines that become tomorrow's to-dos, optional white noise.
-- **M3 Morning routine** (coming): VIGIL rings the wake alarm itself; the pool stays blocked until every step is done and 60 minutes have passed; weekday versions.
 - **M4 Jummah** (coming): on Fridays it replaces Dhuhr: prep the night before, a leave-by takeover, "I'M AT UNI" before class, then the phone silent and the pool blocked for 45 minutes.
 - **M5 Reset and the 10-minute promise** (coming): a way back after a derailed day, and "I'll do it in 10" held to account.
 - **M6 Study block and attention reset** (coming): timed work and break rounds, and a few still minutes facing a wall after Dhuhr.
@@ -143,7 +158,7 @@ Every rule lives in [`core/src/main/resources/dev/vigil/core/protocols.json`](co
 
 ## Reliability notes
 
-- **Exact alarms.** VIGIL keeps one exact alarm at the next moment it must act (a prayer heads-up, the end of a lock, a window, the day's end), at most 30 minutes ahead. Android delivers it on the minute even in Doze with the screen off. It is deliberately not an "alarm clock" alarm: that would show as your next alarm, and a bedtime Do Not Disturb schedule set to end at the next alarm would switch off early. An alarm more than a minute late is journaled (`alarm_late`).
+- **Exact alarms.** VIGIL keeps one exact alarm at the next moment it must act (a prayer heads-up, the end of a lock, a window, the day's end), at most 30 minutes ahead. Android delivers it on the minute even in Doze with the screen off. It is deliberately not an "alarm clock" alarm: that would show as your next alarm, and a bedtime Do Not Disturb schedule set to end at the next alarm would switch off early. Only the wake alarm is a real alarm clock (the most reliable kind; it shows as your next alarm, as it should). An alarm more than a minute late is journaled (`alarm_late`); a wake alarm that never rang (the phone was off) is logged as `not_fired`.
 - **Battery unrestricted.** Without it Android may put VIGIL to sleep. If protocols stop starting after a while, don't swipe VIGIL away in Recents.
 - **Notification access is rebound.** Android sometimes disconnects a notification listener, which would silently stop the prayers. VIGIL asks Android to reconnect it at once and checks again about every minute. **SETUP › ADHAN** shows whether the listener is connected; if it stays disconnected, switch VIGIL's notification access off and on.
 - **The journal records app exits.** On every start, VIGIL journals the exits Android recorded since the last one (killed for memory, crashed, force-stopped ...) as `app_exit`, so the report shows when and why it was not running.
@@ -162,7 +177,7 @@ Five WAV files in [`app/src/main/res/raw/`](app/src/main/res/raw/). To swap one,
 | `drone.wav` | a slow sub-bass drone, looped | fades in once the eye is open (half as loud when full then subtle, and it fades out when the takeover turns subtle) |
 | `thud.wav` | a dry low thud with no tail | each confirmed step |
 
-Sounds play only while a takeover is at full intensity. Full takeovers use the alarm stream (heard with the ringer on vibrate); full-then-subtle ones follow the ringer like a notification. QUIET silences every takeover, the **SETUP › TAKEOVER** switches turn sound, vibration or the Glyph lights off for good, and completing or leaving a takeover is silence. The files are deterministic placeholders made by [`tools/assetgen/generate.py`](tools/assetgen/generate.py) (see [`tools/assetgen/README.md`](tools/assetgen/README.md)).
+Sounds play only while a takeover is at full intensity. Full takeovers use the alarm stream (heard with the ringer on vibrate); full-then-subtle ones follow the ringer like a notification. QUIET silences every takeover, the **SETUP › TAKEOVER** switches turn sound, vibration or the Glyph lights off for good, and completing or leaving a takeover is silence. The files are deterministic placeholders made by [`tools/assetgen/generate.py`](tools/assetgen/generate.py) (see [`tools/assetgen/README.md`](tools/assetgen/README.md)). The wake alarm's beeps and the white noise have no files: the app makes them as it plays them.
 
 ## Audio licence
 

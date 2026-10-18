@@ -45,10 +45,10 @@ import kotlinx.coroutines.withContext
 import java.time.Instant
 
 /**
- * Try things out: start any protocol now, a real alarm with the screen off, what the pool would do for a pool app, and
- * the newest journal entries. Every protocol started here is a TEST preview (stage 1, journaled as a test, no stages,
- * penalties, prayer memory or report counts). There are no kill switch buttons here: its only way in is the 5-minute
- * wait (seven taps on the HOME title or the takeover's eye).
+ * Try things out: start any protocol now, a real alarm with the screen off, the wake alarm, what the pool would do for
+ * a pool app, and the newest journal entries. Every protocol started here is a TEST preview (stage 1, journaled as a
+ * test, no stages, penalties, prayer memory or report counts). There are no kill switch buttons here: its only way in
+ * is the 5-minute wait (seven taps on the HOME title or the takeover's eye).
  */
 @Composable
 fun TestScreen() {
@@ -116,6 +116,23 @@ fun TestScreen() {
                 Toast.makeText(context, "Test alarm cancelled.", Toast.LENGTH_SHORT).show()
             },
             Modifier.fillMaxWidth(),
+        )
+
+        Spacer(Modifier.height(12.dp))
+        Label("WAKE ALARM")
+        PixelButton(
+            "RING WAKE ALARM NOW",
+            {
+                Vigil.testWakeAlarm()
+                Toast.makeText(context, "The wake alarm rings now (TEST). Hold I'M UP for 3 s to stop it.", Toast.LENGTH_LONG).show()
+            },
+            Modifier.fillMaxWidth(),
+        )
+        PixelText(
+            "The real alarm screen and sound, on the alarm stream. Holding I'M UP starts a preview of the morning; " +
+                "nothing else changes. " +
+                (status.wakeAlarmAt?.let { "The next real alarm rings ${Format.dayTime(it, zone)}." } ?: "VIGIL rings no wake alarm."),
+            Type.Small,
         )
 
         Spacer(Modifier.height(12.dp))

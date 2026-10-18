@@ -31,6 +31,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import dev.vigil.Graph
 import dev.vigil.core.machine.HomeStatus
+import dev.vigil.core.protocol.LockType
 import dev.vigil.core.protocol.Prayer
 import dev.vigil.core.run.Run
 import dev.vigil.core.run.RunPhase
@@ -65,8 +66,10 @@ class HomeActions(
 )
 
 /**
- * HOME: the day, the pool, the flags, a red line while a protocol owns the screen, prayers waiting for CONFIRM and
- * today's timeline (with when each protocol last fired); then QUIET, GOING TO SLEEP, MY TIMES, SETUP, TEST and EXPORT.
+ * HOME: the day, the pool, the flags, tonight's bedtime and the next wake alarm, a red line while a protocol (or the
+ * night lock) owns the screen, a running morning to open, today's to-dos with tick boxes, prayers waiting for CONFIRM
+ * and today's timeline (with when each protocol last fired); then QUIET, GOING TO SLEEP (CONFIRM ISHA first when Isha
+ * is still open), MY TIMES, SETUP, TEST and EXPORT.
  * Everything shown comes from the engine ([Vigil.status], [Vigil.timeline]); nothing is decided here.
  *
  * [refreshKey] changes on every resume, so the permission count is re-read after a visit to system settings.
@@ -86,6 +89,17 @@ fun HomeScreen(refreshKey: Int, actions: HomeActions) {
     var titleTaps by remember { mutableIntStateOf(0) }
     var lastTapMs by remember { mutableLongStateOf(0L) }
     var exporting by remember { mutableStateOf(false) }
+    var askIsha by remember { mutableStateOf(false) }
+
+    /** GOING TO SLEEP for real ([ishaPrayed]: the answer to CONFIRM ISHA), and what happened. */
+    fun sleepNow(ishaPrayed: Boolean) {
+        val before = Vigil.state.value.day?.startedAt
+        val why = Vigil.status().sleepTapIgnored
+        Vigil.goingToSleep(ishaPrayed)
+        val ended = Vigil.state.value.day?.startedAt != before
+        val text = if (ended) "The day has ended. Sleep well." else why ?: "The day goes on."
+        Toast.makeText(context, text, Toast.LENGTH_LONG).show()
+    }
 
     Column(Modifier.fillMaxWidth()) {
         Spacer(Modifier.height(32.dp))
@@ -122,23 +136,47 @@ fun HomeScreen(refreshKey: Int, actions: HomeActions) {
         if (flags.isNotEmpty()) PixelText(flags.joinToString(" · "), Type.Label, color = Palette.White)
         prayersLine(status)?.let { PixelText(it, Type.Label) }
         status.nextStart?.let { PixelText("NEXT · ${startTime(it, zone)} ${it.start.title.uppercase()}", Type.Label) }
+        sleepLine(status, zone)?.let { PixelText(it, Type.Label) }
 
         val owner = status.activeRun
         if (owner != null) {
             Spacer(Modifier.height(12.dp))
             PixelText(
-                "A PROTOCOL IS RUNNING · OPEN",
+                if (owner.phase == RunPhase.NIGHT) "NIGHT LOCK · UNTIL THE ALARM · OPEN" else "A PROTOCOL IS RUNNING · OPEN",
                 Type.Body,
                 Modifier.fillMaxWidth().tap(onClick = actions.openTakeover).padding(vertical = 8.dp),
                 color = Palette.Red,
             )
         }
+        status.nightLockUntil?.let {
+            PixelText("THE NIGHT LOCK ENDS WHEN YOU ANSWER THE ALARM, ${Format.clock(it, zone)} AT THE LATEST", Type.Label)
+        }
+        // A run without a screen lock (the morning): its takeover opens from here, like from its notification.
         val others = status.runs.filter { it.id != owner?.id && (it.phase == RunPhase.ACTIVE || it.phase == RunPhase.QUEUED) }
-        if (others.isNotEmpty()) {
+        for (r in others) {
+            val openable = r.phase == RunPhase.ACTIVE && r.lock != LockType.SCREEN
+            val step = if (openable) Vigil.stepView(r.id)?.let { " · STEP ${it.index + 1}/${it.total}" } ?: "" else ""
             PixelText(
-                others.joinToString(" · ") { (if (it.phase == RunPhase.QUEUED) "WAITING: " else "RUNNING: ") + title(it) },
-                Type.Label,
+                (if (r.phase == RunPhase.QUEUED) "WAITING: " else "RUNNING: ") + title(r) + step + if (openable) " · OPEN" else "",
+                if (openable) Type.Body else Type.Label,
+                Modifier.fillMaxWidth().tap(enabled = openable) { Vigil.openTakeover(context, r.id) }.padding(vertical = 4.dp),
             )
+        }
+
+        // Today's to-dos, written in last night's wind-down: a tap ticks one off (or back on).
+        if (status.todos.isNotEmpty()) {
+            Spacer(Modifier.height(12.dp))
+            Label("TO-DOS")
+            status.todos.forEachIndexed { i, t ->
+                Row(
+                    Modifier.fillMaxWidth().tap { Vigil.todoDone(i, !t.done) }.padding(vertical = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    PixelText(if (t.done) "[X]" else "[ ]", Type.Body, color = if (t.done) Palette.Dim else Palette.White)
+                    Spacer(Modifier.width(12.dp))
+                    PixelText(t.text, Type.Body, Modifier.weight(1f), color = if (t.done) Palette.Dim else Palette.White)
+                }
+            }
         }
 
         // Prayers waiting for CONFIRM (lock over, a card during class, a reminder), and stage-3 reminders to mark done.
@@ -165,17 +203,41 @@ fun HomeScreen(refreshKey: Int, actions: HomeActions) {
         )
         HoldItem(
             "GOING TO SLEEP",
-            hint = "HOLD 2 S · ENDS THE DAY",
+            hint = if (status.sleepTapIgnored != null) "NOT BEFORE TODAY'S WAKE TIME" else "HOLD 2 S · ENDS THE DAY",
             holdMillis = 2_000,
             onComplete = {
-                // Before the day's own wake time the engine keeps the day going (it only journals the tap as skipped).
-                val before = Vigil.state.value.day?.startedAt
-                Vigil.goingToSleep()
-                val ended = Vigil.state.value.day?.startedAt != before
-                val text = if (ended) "The day has ended. Sleep well." else "It is before today's wake time, so the day goes on."
-                Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
+                // Isha still open: ask first, so a prayed Isha is not logged as missed. Before the day's own wake time
+                // the engine keeps the day going (it journals the tap as skipped) and says why.
+                if (Vigil.status().ishaToConfirm != null) askIsha = true else sleepNow(ishaPrayed = false)
             },
         )
+        if (askIsha) {
+            PixelText("ISHA IS NOT CONFIRMED. DID YOU PRAY IT?", Type.Body, color = Palette.White)
+            Spacer(Modifier.height(8.dp))
+            Row(Modifier.fillMaxWidth()) {
+                PixelButton(
+                    "I PRAYED ISHA",
+                    {
+                        askIsha = false
+                        sleepNow(ishaPrayed = true)
+                    },
+                    Modifier.weight(1f),
+                )
+                Spacer(Modifier.width(8.dp))
+                PixelButton("NOT YET", { askIsha = false }, Modifier.weight(1f))
+            }
+            Spacer(Modifier.height(8.dp))
+            PixelButton(
+                "SLEEP WITHOUT IT (ISHA MISSED)",
+                {
+                    askIsha = false
+                    sleepNow(ishaPrayed = false)
+                },
+                Modifier.fillMaxWidth(),
+                color = Palette.Dim,
+            )
+            Spacer(Modifier.height(12.dp))
+        }
         Item(
             "MY TIMES",
             hint = if (state.times.pending != null) "CHANGED · FROM TOMORROW" else if (!state.times.edited) "NOT SET" else null,
@@ -210,6 +272,19 @@ fun HomeScreen(refreshKey: Int, actions: HomeActions) {
 /** SUN 18 OCT · SINCE 06:12 · ENDS BY 06:00 */
 private fun dayLine(status: HomeStatus, zone: ZoneId): String =
     "${Format.dayKey(status.day)} · SINCE ${Format.clock(status.dayStartedAt, zone)} · ENDS BY ${Format.clock(status.dayEndsBy, zone)}"
+
+/**
+ * BEDTIME 00:10 · ALARM TUE 07:00 · 2 MISSED NIGHTS: tonight's target (sleep shifting), the next wake alarm (RINGING
+ * while it rings) and missed nights in a row; null without a sleep protocol or alarm.
+ */
+private fun sleepLine(status: HomeStatus, zone: ZoneId): String? {
+    val parts = buildList {
+        status.bedtime?.let { add("BEDTIME ${Format.clock(it, zone)}") }
+        if (status.wakeAlarmRinging) add("ALARM RINGING") else status.wakeAlarmAt?.let { add("ALARM ${Format.dayTime(it, zone)}") }
+        if (status.missedNights > 0) add(if (status.missedNights == 1) "1 MISSED NIGHT" else "${status.missedNights} MISSED NIGHTS")
+    }
+    return parts.takeIf { it.isNotEmpty() }?.joinToString(" · ")
+}
 
 /** PRAYED FAJR, DHUHR · MISSED ASR, or null before anything happened today. */
 private fun prayersLine(status: HomeStatus): String? {

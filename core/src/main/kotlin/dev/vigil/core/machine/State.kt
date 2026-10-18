@@ -38,6 +38,10 @@ data class DayState(
     val confirmed: List<Prayer> = emptyList(),
     /** Prayers missed today. */
     val missed: List<Prayer> = emptyList(),
+    /** When the wake alarm was dismissed this day (the `woke` time base, minutes late in the journal). */
+    val woke: Instant? = null,
+    /** Tonight's wind-down was left early (LEAVE): the night counts as missed for sleep shifting. */
+    @SerialName("sleep_bailed") val sleepBailed: Boolean = false,
 ) {
     val date: LocalDate get() = LocalDate.parse(key)
 }
@@ -50,6 +54,38 @@ data class PrayerMemory(
     /** The expected adhan each heads-up was sent for, so it is sent once. */
     @SerialName("heads_up_for") val headsUpFor: Map<Prayer, Instant> = emptyMap(),
 )
+
+/** Sleep shifting (design M2): tonight's target bedtime and the missed nights in a row. */
+@Serializable
+data class SleepState(
+    /** Tonight's target bedtime `HH:MM`; null before the first day start with a sleep protocol (= bedtime_start). */
+    val target: String? = null,
+    /** Missed nights in a row; a good night resets it. At `hold_after_missed` the target holds for a night. */
+    @SerialName("missed_in_a_row") val missedInARow: Int = 0,
+)
+
+/** VIGIL's own wake alarm (design M3): the one ringing now (or waiting to ring again) and the last one dealt with. */
+@Serializable
+data class WakeAlarmState(
+    /** The day key whose alarm is ringing or waiting to ring again; null when none is. */
+    @SerialName("ringing_for") val ringingFor: String? = null,
+    /** When that alarm was due (MY TIMES wake): minutes late are counted from it. */
+    val scheduled: Instant? = null,
+    /** Ringing since then; null while it waits to ring again ([nextRingAt]). */
+    @SerialName("ringing_since") val ringingSince: Instant? = null,
+    /** How many times it has rung. */
+    val rings: Int = 0,
+    /** Unanswered: it rings again then. */
+    @SerialName("next_ring_at") val nextRingAt: Instant? = null,
+    /** The day key of the last alarm that was dismissed, given up or found too late (it does not ring again). */
+    @SerialName("handled_for") val handledFor: String? = null,
+    /** The alarm of this day key was never answered: the morning starts at the next unlock. */
+    @SerialName("morning_at_unlock") val morningAtUnlock: String? = null,
+)
+
+/** One to-do, typed in last night's wind-down. */
+@Serializable
+data class Todo(val text: String, val done: Boolean = false)
 
 /** The home switches. */
 @Serializable
@@ -97,6 +133,10 @@ data class MachineState(
     @SerialName("foreground_is_pool") val foregroundIsPool: Boolean = false,
     /** The number of the next run id. */
     @SerialName("next_run") val nextRun: Long = 1,
+    val sleep: SleepState = SleepState(),
+    @SerialName("wake_alarm") val wakeAlarm: WakeAlarmState = WakeAlarmState(),
+    /** To-dos by day key: written in a wind-down for the next day, gone when that day ends. */
+    val todos: Map<String, List<Todo>> = emptyMap(),
 ) {
     /**
      * The state as JSON. Nulls are written out: a field whose default is not null (a pool session's `inSince`) would

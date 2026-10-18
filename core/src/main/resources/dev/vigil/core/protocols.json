@@ -20,7 +20,7 @@
     "cooldown_cap_min": 60,
     "session_gap_s": 60,
     "windows": [
-      { "id": "morning", "opens": "done:morning|wake+60", "closes": "next", "cap_min": 30 },
+      { "id": "morning", "opens": "max(done:morning|woke+60,woke+60)", "closes": "next", "cap_min": 30 },
       { "id": "evening", "opens": "done:dinner|meal:dinner+45", "closes": "start:sleep|bedtime-60", "cap_min": 30 }
     ],
     "heavy_use": { "continuous_min": 10, "opens": 3, "within_min": 30 },
@@ -51,6 +51,82 @@
         { "text": "Quiet time until the lock ends: dhikr or sit still. Then straight back to bed.", "type": "timer" }
       ],
       "params": { "heads_up_min": 10, "window_warn_min": 15 },
+      "stages": true
+    },
+    {
+      "id": "morning",
+      "_note": "Starts when the wake alarm is dismissed. Pool lock: the screen is free, the morning card shows the step and opens the takeover. The morning window opens when every step is done and an hour has passed since waking.",
+      "kind": "morning",
+      "title": "MORNING",
+      "trigger": "event:wake_alarm",
+      "intensity": "full_then_subtle",
+      "lock": { "type": "pool" },
+      "steps": [
+        { "text": "Get up: feet on the floor, walk to the alarm.", "type": "check" },
+        { "text": "Sun in your eyes: stand at a window or outside.", "type": "timer", "min": 5 },
+        { "text": "Bathroom and brush.", "type": "check", "min": 5 },
+        { "text": "Skincare or shower.", "type": "check", "min": 15 },
+        { "text": "Breakfast: cook, eat, clean.", "type": "check" },
+        { "text": "Chores.", "type": "timer", "min": 20 },
+        { "text": "Walk. On class days the commute is the walk.", "type": "timer", "min": 15, "skip_on_class_days": true }
+      ],
+      "short": [
+        { "text": "Get up: feet on the floor, walk to the alarm.", "type": "check" },
+        { "text": "Sun in your eyes: stand at a window or outside.", "type": "timer", "min": 5 },
+        { "text": "Bathroom and brush.", "type": "check", "min": 5 },
+        { "text": "Breakfast: cook, eat, clean.", "type": "check" },
+        { "text": "Chores.", "type": "timer", "min": 10 },
+        { "text": "Walk. On class days the commute is the walk.", "type": "timer", "min": 10, "skip_on_class_days": true }
+      ],
+      "minimal": [
+        { "text": "Get up: feet on the floor.", "type": "check" },
+        { "text": "Bathroom and brush.", "type": "check" },
+        { "text": "Breakfast.", "type": "check" },
+        { "text": "Sun in your eyes: stand at a window or outside.", "type": "timer", "min": 5 }
+      ],
+      "single": [
+        { "text": "Get up and stand in the sun for 5 minutes.", "type": "timer", "min": 5 }
+      ],
+      "weekdays": {
+        "thu": {
+          "_note": "Thursday has an 08:30 class: shorter, no chores, no walk.",
+          "steps": [
+            { "text": "Get up: feet on the floor, walk to the alarm.", "type": "check" },
+            { "text": "Sun in your eyes: stand at a window or outside.", "type": "timer", "min": 5 },
+            { "text": "Bathroom and brush.", "type": "check", "min": 5 },
+            { "text": "Shower.", "type": "check", "min": 10 },
+            { "text": "Breakfast: cook, eat, clean.", "type": "check" }
+          ],
+          "short": [
+            { "text": "Get up: feet on the floor, walk to the alarm.", "type": "check" },
+            { "text": "Sun in your eyes: stand at a window or outside.", "type": "timer", "min": 5 },
+            { "text": "Bathroom and brush.", "type": "check", "min": 5 },
+            { "text": "Breakfast: cook, eat, clean.", "type": "check" }
+          ]
+        },
+        "fri": {
+          "_note": "Jummah: the shower is a step of its own, clean clothes on.",
+          "steps": [
+            { "text": "Get up: feet on the floor, walk to the alarm.", "type": "check" },
+            { "text": "Sun in your eyes: stand at a window or outside.", "type": "timer", "min": 5 },
+            { "text": "Bathroom and brush.", "type": "check", "min": 5 },
+            { "text": "Shower for Jummah, then skincare. Clean clothes on.", "type": "check", "min": 15 },
+            { "text": "Breakfast: cook, eat, clean.", "type": "check" },
+            { "text": "Chores.", "type": "timer", "min": 20 },
+            { "text": "Walk. On class days the commute is the walk.", "type": "timer", "min": 15, "skip_on_class_days": true }
+          ],
+          "short": [
+            { "text": "Get up: feet on the floor, walk to the alarm.", "type": "check" },
+            { "text": "Sun in your eyes: stand at a window or outside.", "type": "timer", "min": 5 },
+            { "text": "Bathroom and brush.", "type": "check", "min": 5 },
+            { "text": "Shower for Jummah. Clean clothes on.", "type": "check", "min": 10 },
+            { "text": "Breakfast: cook, eat, clean.", "type": "check" },
+            { "text": "Chores.", "type": "timer", "min": 10 },
+            { "text": "Walk. On class days the commute is the walk.", "type": "timer", "min": 10, "skip_on_class_days": true }
+          ]
+        }
+      },
+      "params": { "ring_max_min": 10, "snooze_min": 5, "max_rings": 3 },
       "stages": true
     },
     {
@@ -111,6 +187,42 @@
         { "text": "Quiet time until the lock ends: dhikr or sit still.", "type": "timer" }
       ],
       "params": { "heads_up_min": 10, "window_warn_min": 15 },
+      "stages": true
+    },
+    {
+      "id": "sleep",
+      "_note": "Wind-down an hour before tonight's target bedtime (sleep shifting: from MY TIMES bedtime start, 20 min earlier each night until the goal). GOING TO SLEEP ends the day and starts the night lock until the wake alarm.",
+      "kind": "sleep",
+      "title": "WIND-DOWN",
+      "trigger": "time:bedtime-60",
+      "intensity": "full_then_subtle",
+      "lock": { "type": "screen" },
+      "steps": [
+        { "text": "Close the day: three lines on how the day went.", "type": "text", "lines": 3 },
+        { "text": "Tomorrow: your top 3 tasks and its first block. They become tomorrow's to-dos.", "type": "text", "lines": 4, "todos": true },
+        { "text": "Prep: clothes out, bag packed, water by the bed, alarm checked.", "type": "check", "min": 10 },
+        { "text": "Hygiene: brush your teeth, wash your face.", "type": "check", "min": 10 },
+        { "text": "Phone away: plug it in across the room, out of arm's reach.", "type": "check" },
+        { "text": "Lights low. White noise if you want it, then lights off.", "type": "check", "noise_toggle": true },
+        { "text": "GOING TO SLEEP. The day ends here.", "type": "done" }
+      ],
+      "short": [
+        { "text": "Close the day: three lines on how the day went.", "type": "text", "lines": 3 },
+        { "text": "Tomorrow: your top 3 tasks and its first block. They become tomorrow's to-dos.", "type": "text", "lines": 4, "todos": true },
+        { "text": "Phone away: plug it in across the room, out of arm's reach.", "type": "check" },
+        { "text": "Lights low. White noise if you want it, then lights off.", "type": "check", "noise_toggle": true },
+        { "text": "GOING TO SLEEP. The day ends here.", "type": "done" }
+      ],
+      "minimal": [
+        { "text": "One line on how the day went.", "type": "text", "lines": 1 },
+        { "text": "Tomorrow's first task.", "type": "text", "lines": 1, "todos": true },
+        { "text": "Phone away: plug it in across the room.", "type": "check" },
+        { "text": "GOING TO SLEEP. The day ends here.", "type": "done", "noise_toggle": true }
+      ],
+      "single": [
+        { "text": "GOING TO SLEEP. The day ends here.", "type": "done", "noise_toggle": true }
+      ],
+      "params": { "shift_min": 20, "hold_after_missed": 2, "late_min": 30, "night_lock_grace_min": 120, "white_noise": false },
       "stages": true
     }
   ]

@@ -7,6 +7,7 @@ import dev.vigil.core.pool.PoolRules
 import dev.vigil.core.pool.PoolText
 import dev.vigil.core.pool.WindowSpan
 import dev.vigil.core.protocol.Prayer
+import dev.vigil.core.protocol.ProtocolKind
 import dev.vigil.core.protocol.ProtocolFile
 import dev.vigil.core.protocol.Step
 import dev.vigil.core.protocol.StepType
@@ -63,6 +64,12 @@ object Machine {
      */
     val MAX_CALL_PAUSE: Duration = Duration.ofHours(3)
 
+    /** The walking switch turns itself off after this long (until step detection ends a walk by itself). */
+    val MAX_WALKING: Duration = Duration.ofHours(3)
+
+    /** The night lock starts only when the wake alarm is due within this long (GOING TO SLEEP at night, not at 08:00). */
+    val MAX_NIGHT: Duration = Duration.ofHours(16)
+
     /** Applies [input] to [state] at `env.now`. Pure: same arguments, same outcome. */
     fun step(state: MachineState, input: Input, env: MachineEnv): Outcome {
         val t = Txn(state, env)
@@ -74,6 +81,16 @@ object Machine {
 
     /** When the app must next wake (exact alarm) for [state], or null when nothing is timed. */
     fun nextWake(state: MachineState, env: MachineEnv): Instant? = View(state, env).nextWake()
+
+    /**
+     * When the wake alarm rings next (the app sets an alarm clock for it; at that moment a step rings it with
+     * [Effect.RingWakeAlarm]): MY TIMES wake of the day it belongs to, or a ring again after an unanswered one. Null
+     * while it rings, or when the file has no sleep or morning protocol.
+     */
+    fun wakeAlarmAt(state: MachineState, env: MachineEnv): Instant? = View(state, env).wakeAlarmAt()
+
+    /** Today's to-dos (written in last night's wind-down), in order; ticked ones have `done`. */
+    fun todos(state: MachineState, env: MachineEnv): List<Todo> = View(state, env).todosToday()
 
     /** The run that owns the screen (its takeover should show), or null. Null while suspended. */
     fun activeRun(state: MachineState, env: MachineEnv): Run? {
@@ -88,10 +105,13 @@ object Machine {
     /** The steps [run] shows: its version on its weekday. */
     fun stepsFor(run: Run, env: MachineEnv): List<Step> = View(MachineState(), env).stepsOf(run)
 
-    /** The current step of run [runId] with its locks, for the takeover; null when there is no such run or step. */
+    /**
+     * The current step of run [runId] with its locks, for the takeover; null when there is no such run or step, and for
+     * the night lock (it has no steps: [Run.phase] NIGHT is the night lock screen, [HomeStatus.nightLockUntil] its end).
+     */
     fun stepView(state: MachineState, runId: String, env: MachineEnv): StepView? {
         val v = View(state, env)
-        val r = v.run(runId) ?: return null
+        val r = v.run(runId)?.takeIf { it.phase != RunPhase.NIGHT } ?: return null
         val steps = v.stepsOf(r)
         val st = steps.getOrNull(r.step) ?: return null
         val locked = v.stepLockedUntil(r, st)
@@ -100,7 +120,12 @@ object Machine {
             StepType.TIMER -> !(r.stage == 1 && r.phase == RunPhase.ACTIVE)
             else -> locked == null
         }
-        return StepView(r.step, steps.size, st, locked, timerEnds, canTap, r.isMinimum, v.lockEndShown(r))
+        // The wind-down's last step is GOING TO SLEEP: completing it ends the day (an open Isha is asked about first).
+        val sleepStep = r.kind == ProtocolKind.SLEEP && !r.test && r.step == steps.lastIndex
+        return StepView(
+            r.step, steps.size, st, locked, timerEnds, canTap, r.isMinimum, v.lockEndShown(r),
+            goingToSleep = sleepStep, ishaToConfirm = if (sleepStep) v.ishaToConfirm()?.id else null,
+        )
     }
 
     /** May a pool app open now? [isPool] false = not a pool app = always allowed. */
@@ -166,6 +191,8 @@ object Machine {
         val active = activeRun(state, env)
         val toConfirm = state.runs.filter { it.prayer != null && !it.confirmed && it.phase != RunPhase.ACTIVE && it.phase != RunPhase.QUEUED }
         val next = timeline(state, env).firstOrNull { it.status == StartStatus.PLANNED && it.start.at.isAfter(env.now) }
+        val wake = v.dayTimes().wake
+        val alarm = state.wakeAlarm
         return HomeStatus(
             day = day.key,
             dayStartedAt = day.startedAt,
@@ -184,6 +211,16 @@ object Machine {
             missedToday = day.missed,
             nextStart = next,
             stages = env.protocols.protocols.associate { it.id to v.stageOf(it) },
+            bedtime = if (v.sleepProtocol != null) v.dayTimes().bedtime else null,
+            wakeAlarmAt = if (!v.alarmOn) null else alarm.scheduled.takeIf { alarm.ringingFor != null } ?: v.alarmAt(v.alarmKey()),
+            wakeAlarmRinging = alarm.ringingSince != null,
+            nightLockUntil = v.nightRun()?.lockEndsAt,
+            todos = v.todosToday(),
+            ishaToConfirm = v.ishaToConfirm(),
+            sleepTapIgnored = if (env.now.isAfter(wake)) null else
+                "BEFORE TODAY'S WAKE TIME (${WallClock.hhmm(wake, env.zone)}): THIS DAY BEGAN AT " +
+                    "${WallClock.hhmm(day.startedAt, env.zone)} AND GOES ON.",
+            missedNights = state.sleep.missedInARow,
         )
     }
 
@@ -209,6 +246,10 @@ data class StepView(
     val minimum: Boolean,
     /** When the run's lock ends (live during a call), or null. */
     val lockEndsAt: Instant?,
+    /** The wind-down's GOING TO SLEEP step: the app finishes it with [Input.GoingToSleep], which ends the day. */
+    val goingToSleep: Boolean = false,
+    /** On that step: the open Isha run to ask about first (CONFIRM ISHA), or null. */
+    val ishaToConfirm: String? = null,
 )
 
 /** Everything the home screen shows. */
@@ -237,4 +278,19 @@ data class HomeStatus(
     val nextStart: TimelineItem?,
     /** The current stage per protocol id. */
     val stages: Map<String, Int>,
+    /** Tonight's target bedtime (sleep shifting), or null without a sleep protocol. */
+    val bedtime: Instant? = null,
+    /** When the next (or the ringing) wake alarm is due, or null when VIGIL rings none. */
+    val wakeAlarmAt: Instant? = null,
+    val wakeAlarmRinging: Boolean = false,
+    /** The night lock holds until the wake alarm is answered, this at the latest; null when it is off. */
+    val nightLockUntil: Instant? = null,
+    /** Today's to-dos (tick with [Input.TodoDone]). */
+    val todos: List<Todo> = emptyList(),
+    /** An open, unconfirmed Isha: GOING TO SLEEP asks CONFIRM ISHA first ([Input.GoingToSleep] ishaPrayed). */
+    val ishaToConfirm: Run? = null,
+    /** Non-null when GOING TO SLEEP would be ignored now (before the day's wake time): the reason, for the user. */
+    val sleepTapIgnored: String? = null,
+    /** Missed nights in a row (sleep shifting holds the target after hold_after_missed of them). */
+    val missedNights: Int = 0,
 )

@@ -187,7 +187,7 @@ class PrayerTest {
     @Test
     fun anIshaLeftOpenThroughTheNextDayDoesNotSwallowTheNextIsha() {
         val sim = Sim()
-        sim.at("2026-10-19T22:30", Input.GoingToSleep)
+        sim.at("2026-10-19T22:30", Input.GoingToSleep())
         // Isha comes after GOING TO SLEEP: it belongs to the 20th and stays open until that day ends.
         sim.at("2026-10-19T22:45", Input.Adhan(Prayer.ISHA))
         val first = sim.runId("prayer-isha")
@@ -259,23 +259,27 @@ class PrayerTest {
     }
 
     @Test
-    fun aReturningTakeoverWaitsForTheScreen() {
-        val alpha = testProtocol("alpha")
+    fun aReturningTakeoverTakesTheScreenFromAProtocol() {
+        val alpha = testProtocol("alpha", lock = dev.vigil.core.protocol.Lock(LockType.SCREEN, 30, null))
         val sim = Sim("2026-10-20T08:00", file = fileWith(alpha))
         sim.seed(Prayer.ASR to "2026-10-19T15:40")
         sim.at("2026-10-20T12:31", Input.Adhan(Prayer.DHUHR))
         sim.at("2026-10-20T12:51")
         sim.at("2026-10-20T15:20", Input.Manual("alpha"))
         sim.at("2026-10-20T15:25")
+        // A prayer is never held back by another protocol: alpha pauses (5 of its 30 minutes used).
         assertEquals(RunPhase.RETURNED, sim.run(dhuhr)!!.phase)
-        assertEquals("alpha", Machine.activeRun(sim.state, sim.env)!!.protocol)
-        assertTrue(sim.lastEffects<Effect.ShowTakeover>().isEmpty())
-        val a = sim.runId("alpha")
-        sim.at("2026-10-20T15:27", Input.StepDone(a, 0))
-        sim.step(Input.StepDone(a, 1))
-        sim.step(Input.StepDone(a, 2))
-        assertEquals(listOf(Effect.ShowTakeover(sim.runId(dhuhr))), sim.lastEffects<Effect.ShowTakeover>())
+        assertEquals(RunPhase.PAUSED, sim.run("alpha")!!.phase)
         assertEquals(dhuhr, Machine.activeRun(sim.state, sim.env)!!.protocol)
+        assertEquals(listOf(Effect.ShowTakeover(sim.runId(dhuhr))), sim.lastEffects<Effect.ShowTakeover>())
+        assertEquals("alpha", sim.lastOf(EntryType.PAUSED)!!.protocol)
+        // Confirmed at 15:30: alpha goes on where it was, its lock 25 minutes from now.
+        sim.at("2026-10-20T15:30", Input.Confirm(sim.runId(dhuhr)))
+        val back = sim.run("alpha")!!
+        assertEquals(RunPhase.ACTIVE, back.phase)
+        assertEquals(rome("2026-10-20T15:55"), back.lockEndsAt)
+        assertEquals(5, sim.lastOf(EntryType.RESUMED)!!.minutes)
+        assertEquals("alpha", Machine.activeRun(sim.state, sim.env)!!.protocol)
     }
 
     @Test
@@ -326,7 +330,7 @@ class PrayerTest {
         assertNull(sim.run("prayer-isha")!!.windowEndsAt)
         sim.at("2026-10-19T20:00")
         assertEquals(RunPhase.OPEN, sim.run("prayer-isha")!!.phase)
-        sim.at("2026-10-19T23:30", Input.GoingToSleep)
+        sim.at("2026-10-19T23:30", Input.GoingToSleep())
         val m = sim.of(EntryType.MISSED).single()
         assertEquals("day_end", m.reason)
         assertEquals("isha", m.prayer)
