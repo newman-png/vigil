@@ -23,7 +23,7 @@ object TriggerSetup {
         SetupItem(
             "USAGE ACCESS",
             "Lets a running protocol's takeover come back when you leave it: VIGIL must see that the phone app or a " +
-                "whitelisted app is not in front.",
+                "whitelisted app is not in front. It also lets the Guard catch a pool app it missed.",
             Device.hasUsageAccess(context),
             "OPEN",
         ) {

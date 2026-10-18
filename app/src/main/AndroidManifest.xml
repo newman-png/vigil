@@ -25,11 +25,16 @@
     <!-- Launcher apps: the APPS button's apps (labels, launch intents, "label_contains" matches).
          SHOW_ALARMS and DIAL: the clock and phone apps of the APPS button.
          VIEW https: every installed browser is in the pool.
+         HOME: the Guard looks up the home screen app, which is never closed (even if it also opens links like a browser).
          com.nothing.thirdparty: the Glyph service the Nothing Glyph SDK binds to. -->
     <queries>
         <intent>
             <action android:name="android.intent.action.MAIN" />
             <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.HOME" />
         </intent>
         <intent>
             <action android:name="android.intent.action.SHOW_ALARMS" />
@@ -43,14 +48,6 @@
             <data android:scheme="https" />
         </intent>
         <package android:name="com.nothing.thirdparty" />
-    </queries>
-
-    <!-- The Guard: the home screen app, which is never closed (even if it also opens links like a browser). -->
-    <queries>
-        <intent>
-            <action android:name="android.intent.action.MAIN" />
-            <category android:name="android.intent.category.HOME" />
-        </intent>
     </queries>
 
     <application

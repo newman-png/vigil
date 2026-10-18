@@ -1,5 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">VIGIL</string>
-    <string name="accessibility_description">The VIGIL Guard keeps the apps you put in the pool (TikTok, YouTube, Instagram, browsers and the others) closed outside your free windows and while a protocol locks them. It only notices which app comes to the front, never what is on the screen. Calls, the phone app and your always-allowed apps are never blocked.</string>
 </resources>

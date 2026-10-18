@@ -168,8 +168,12 @@ fun HomeScreen(refreshKey: Int, actions: HomeActions) {
             hint = "HOLD 2 S · ENDS THE DAY",
             holdMillis = 2_000,
             onComplete = {
+                // Before the day's own wake time the engine keeps the day going (it only journals the tap as skipped).
+                val before = Vigil.state.value.day?.startedAt
                 Vigil.goingToSleep()
-                Toast.makeText(context, "The day has ended. Sleep well.", Toast.LENGTH_SHORT).show()
+                val ended = Vigil.state.value.day?.startedAt != before
+                val text = if (ended) "The day has ended. Sleep well." else "It is before today's wake time, so the day goes on."
+                Toast.makeText(context, text, Toast.LENGTH_SHORT).show()
             },
         )
         Item(

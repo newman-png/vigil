@@ -143,7 +143,8 @@ object Notifications {
             .setStyle(Notification.BigTextStyle().bigText(notice.text))
             .setContentIntent(openApp(context))
             .setVisibility(Notification.VISIBILITY_PUBLIC)
-            .setSilent(!alerting)
+        // A notice that must not alert is on a low-importance channel (heads-up, cards): no sound, no vibration.
+        // (Notification.Builder.setSilent is hidden API, not part of the SDK.)
         when (notice.kind) {
             NotifyKind.HEADS_UP -> builder.setTimeoutAfter(HEADS_UP_TIMEOUT_MS).setAutoCancel(true)
             NotifyKind.CLASS_CARD, NotifyKind.CONFIRM, NotifyKind.WARNING -> builder.setCategory(Notification.CATEGORY_REMINDER)

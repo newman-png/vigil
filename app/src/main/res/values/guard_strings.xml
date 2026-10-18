@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <!-- Shown in the system's accessibility settings for the Guard. -->
-    <string name="guard_description">VIGIL\'s Guard keeps the apps in your pool (the distracting apps you chose, and browsers) closed at the times your own rules say: it shows the wait screen, or goes to the home screen and says why. It only learns which app comes to the front. It never reads what is on the screen.</string>
+    <!-- Shown in the system's accessibility settings for the Guard (res/xml/guard_service.xml). -->
+    <string name="guard_description">VIGIL\'s Guard keeps the apps in your pool (the distracting apps you chose, and browsers) closed at the times your own rules say: it shows the wait screen, or goes to the home screen and says why. It only learns which app comes to the front. It never reads what is on the screen. Calls, the phone app and your always-allowed apps are never blocked.</string>
 </resources>
