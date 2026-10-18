@@ -107,7 +107,7 @@ fun PixelButton(
 
 /**
  * A button that must be held for [holdMillis] to fire. While it is held the label gives way to the seconds
- * left, counting down; releasing early resets it. Used for "I'm not okay today", so it cannot happen by accident.
+ * left, counting down; releasing early resets it. For actions that must not happen by accident.
  */
 @Composable
 fun HoldButton(
@@ -158,7 +158,7 @@ fun HoldButton(
     }
 }
 
-/** 1, 2 or 3 red squares showing a directive's tier. */
+/** 1, 2 or 3 red squares: how forced a protocol is (3 at stage 1, 1 at stage 3; see [stagePips]). */
 @Composable
 fun TierPips(tier: Int, modifier: Modifier = Modifier, pip: Dp = 6.dp) {
     Row(modifier, verticalAlignment = Alignment.CenterVertically) {
@@ -172,6 +172,9 @@ fun TierPips(tier: Int, modifier: Modifier = Modifier, pip: Dp = 6.dp) {
         }
     }
 }
+
+/** The pips for a protocol at [stage]: stage 1 (forced) shows 3, stage 2 (guided) 2, stage 3 (reminder) 1. */
+fun stagePips(stage: Int): Int = (4 - stage).coerceIn(1, 3)
 
 /** A thin horizontal rule. */
 @Composable

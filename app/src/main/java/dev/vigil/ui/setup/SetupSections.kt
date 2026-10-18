@@ -9,10 +9,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.selection.SelectionContainer
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -22,30 +20,26 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import dev.vigil.Graph
-import dev.vigil.core.engine.ActiveSet
 import dev.vigil.core.engine.AdhanMatcher
-import dev.vigil.core.plan.DayMode
-import dev.vigil.core.plan.Prayer
-import dev.vigil.core.plan.Trigger
-import dev.vigil.core.plan.UsageLimit
+import dev.vigil.core.protocol.Prayer
 import dev.vigil.engine.Device
 import dev.vigil.engine.KillSwitchReceiver
 import dev.vigil.engine.Vigil
 import dev.vigil.glyph.GlyphFactory
 import dev.vigil.trigger.AdhanListener
-import dev.vigil.trigger.UsageWatcher
 import dev.vigil.ui.Format
 import dev.vigil.ui.components.Field
-import dev.vigil.ui.components.HoldButton
 import dev.vigil.ui.components.Label
 import dev.vigil.ui.components.PixelButton
 import dev.vigil.ui.components.PixelText
+import dev.vigil.ui.components.TextInput
 import dev.vigil.ui.components.Toggle
 import dev.vigil.ui.components.tap
+import dev.vigil.ui.isInstalled
 import dev.vigil.ui.rememberAppLabel
 import dev.vigil.ui.theme.Palette
 import dev.vigil.ui.theme.Type
-import kotlinx.coroutines.delay
+import java.time.Instant
 
 /** ADHAN: which app announces the prayers, the words that count, a test, and what the listener has seen. */
 @Composable
@@ -55,11 +49,11 @@ internal fun AdhanSection() {
     val recent by AdhanListener.recent.collectAsState()
     val connected by AdhanListener.connected.collectAsState()
     val appLabel = rememberAppLabel()
-    // Text fields keep what is being typed; they only reload from settings after a reset.
-    var resets by remember { mutableIntStateOf(0) }
 
     PixelText(
-        "VIGIL fires adhan directives when your adhan app posts its prayer notification. It never calculates prayer times itself.",
+        "Each prayer protocol starts when your adhan app posts its prayer notification (\"It's time for Isha\"). " +
+            "VIGIL never calculates prayer times itself; the heads-up and the prayer window are estimated from " +
+            "yesterday's adhan.",
         Type.Small,
     )
     Spacer(Modifier.height(8.dp))
@@ -72,7 +66,11 @@ internal fun AdhanSection() {
     val packages = remember(version) { s.adhanPackages }
     Label("ADHAN APP")
     if (packages.isEmpty()) {
-        PixelText("No app picked: any app's notification saying \"time for Isha\" counts, even a chat message. Pick your adhan app below.", Type.Small)
+        PixelText(
+            "No app picked: any app's notification saying \"time for Isha\" counts, even a chat message. Pick your adhan " +
+                "app below. It is also the adhan app on the takeover's APPS button.",
+            Type.Small,
+        )
     } else {
         for (pkg in packages) {
             Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
@@ -103,6 +101,8 @@ internal fun AdhanSection() {
         PixelText("Once your adhan app posts a notification it appears here so you can pick it.", Type.Small)
     }
 
+    // The fields show what is being typed; they reload from the settings only after a reset.
+    var resets by remember { mutableIntStateOf(0) }
     Label("PHRASE BEFORE THE PRAYER NAME")
     Field(s.adhanPhrase, resets) { s.adhanPhrase = it }
     PixelText("\"time for\" matches \"It's time for Isha\" but not \"Isha in 15 minutes\". Empty = no phrase needed.", Type.Small)
@@ -110,7 +110,7 @@ internal fun AdhanSection() {
     Label("PRAYER WORDS (COMMA-SEPARATED)")
     for (prayer in Prayer.entries) {
         Row(verticalAlignment = Alignment.CenterVertically) {
-            PixelText(prayer.json.uppercase(), Type.Label, Modifier.width(84.dp))
+            PixelText(prayer.title, Type.Label, Modifier.width(84.dp))
             Field(s.adhanKeywords(prayer).joinToString(", "), resets, Modifier.weight(1f)) { s.setAdhanKeywords(prayer, it) }
         }
     }
@@ -135,7 +135,7 @@ internal fun AdhanSection() {
                 Type.Small,
             )
             PixelText(
-                seen.prayer?.let { "→ MATCHES ${it.json.uppercase()}" } ?: "→ NO MATCH",
+                seen.prayer?.let { "→ MATCHES ${it.title}" } ?: "→ NO MATCH",
                 Type.Label,
                 Modifier.padding(bottom = 6.dp),
                 color = if (seen.prayer != null) Palette.White else Palette.Faint,
@@ -144,7 +144,7 @@ internal fun AdhanSection() {
     }
 }
 
-/** Type a notification text and see what VIGIL would do with it; optionally fire it for real. */
+/** Type a notification text and see what VIGIL would do with it; optionally fire a test preview of that prayer. */
 @Composable
 private fun AdhanTest(version: Int) {
     val s = Graph.settings
@@ -152,73 +152,96 @@ private fun AdhanTest(version: Int) {
     // Recomputed whenever the settings (app, phrase, words) or the test text change.
     val pkg = remember(version) { s.adhanPackages.firstOrNull() ?: "test.adhan.app" }
     val prayer = remember(version, text) { AdhanMatcher.match(s.adhanConfig, pkg, null, text) }
-    val ids = prayer?.let { AdhanListener.directivesFor(it) }.orEmpty()
+    val ids = prayer?.let { AdhanListener.protocolsFor(it) }.orEmpty()
 
     Label("TEST TRIGGER")
-    Field(text, Unit) { text = it }
+    TextInput(text, { text = it })
     PixelText(
         when {
-            prayer == null -> "NO MATCH: NOTHING WOULD FIRE."
-            ids.isEmpty() -> "MATCHES ${prayer.json.uppercase()}, BUT THE RUNNING PLAN HAS NO ${prayer.json.uppercase()} DIRECTIVE."
-            else -> "MATCHES ${prayer.json.uppercase()} → FIRES ${ids.joinToString()}"
+            prayer == null -> "NO MATCH: NOTHING WOULD START."
+            ids.isEmpty() -> "MATCHES ${prayer.title}, BUT THE PROTOCOLS FILE HAS NO ${prayer.title} PROTOCOL."
+            else -> "MATCHES ${prayer.title} → STARTS ${ids.joinToString().uppercase()}"
         },
         Type.Label,
         color = if (prayer != null) Palette.White else Palette.Dim,
     )
     Spacer(Modifier.height(8.dp))
     PixelButton(
-        "FIRE TEST TRIGGER",
+        "FIRE TEST PREVIEW",
         { AdhanListener.onNotification(pkg, null, text, System.currentTimeMillis(), test = true) },
         Modifier.fillMaxWidth(),
         enabled = ids.isNotEmpty(),
     )
-    PixelText("Goes through the real path (quiet and bad-day mode apply) and is logged as \"adhan_test\".", Type.Small)
+    PixelText(
+        "Starts a TEST preview of that prayer's protocol: logged as a test, and it never changes the real prayer " +
+            "times, stages or the report.",
+        Type.Small,
+    )
 }
 
-/** APP USAGE: how app switches are detected, and the live counts of the plan's app-usage directives. */
+/** POOL AND APPS: the blocked apps (with the browsers found on this phone), its rules, and the always-allowed apps. */
 @Composable
-internal fun AppUsageSection() {
+internal fun PoolSection() {
     val context = LocalContext.current
     val appLabel = rememberAppLabel()
-    var tick by remember { mutableIntStateOf(0) }
-    LaunchedEffect(Unit) {
-        while (true) {
-            delay(2_000)
-            tick++
+    val file = remember { Vigil.file() }
+    val pool = file.pool
+    val browsers = remember { if (pool.allBrowsers) Device.browsers(context).sorted() else emptyList() }
+    val whitelist = remember { Vigil.whitelistApps() }
+
+    PixelText(
+        "The pool: these apps share one counter and open only in a free window, after a short wait. Calls and the " +
+            "apps below always work.",
+        Type.Small,
+    )
+    Label("POOL APPS")
+    for (pkg in pool.apps) {
+        val installed = isInstalled(context, pkg)
+        PixelText(
+            if (installed) appLabel(pkg).uppercase() else "$pkg (NOT INSTALLED)",
+            Type.Label,
+            Modifier.padding(vertical = 2.dp),
+            color = if (installed) Palette.White else Palette.Faint,
+        )
+    }
+    if (pool.allBrowsers) {
+        Label("BROWSERS ON THIS PHONE (ALL IN THE POOL)")
+        if (browsers.isEmpty()) PixelText("None found.", Type.Small)
+        for (pkg in browsers) {
+            PixelText(appLabel(pkg).uppercase(), Type.Label, Modifier.padding(vertical = 2.dp), color = Palette.White)
         }
     }
 
-    // Re-read the detection mode and the live counts every couple of seconds.
-    key(tick) {
-        val mode = when {
-            UsageWatcher.accessibilityConnected -> "INSTANT (ACCESSIBILITY)"
-            Device.hasUsageAccess(context) -> "EVERY ~5 SECONDS (USAGE ACCESS)"
-            else -> "OFF: GRANT USAGE ACCESS IN PERMISSIONS"
-        }
-        PixelText("DETECTION: $mode", Type.Label, color = if (mode.startsWith("OFF")) Palette.Red else Palette.White)
-        PixelText(
-            "Accessibility (optional, in PERMISSIONS) notices app switches at once; it only sees which app is in front, never screen content.",
-            Type.Small,
-        )
-        UsageWatcher.foreground?.let {
-            Spacer(Modifier.height(8.dp))
-            PixelText("IN FRONT NOW: ${appLabel(it).uppercase()}", Type.Label)
-        }
-        val usage = Graph.activeSet().directives.mapNotNull { d -> (d.trigger as? Trigger.AppUsage)?.let { d to it } }
-        Spacer(Modifier.height(8.dp))
-        if (usage.isEmpty()) PixelText("The running plan has no app_usage directives.", Type.Small)
-        for ((d, t) in usage) {
-            val status = when (val l = t.limit) {
-                is UsageLimit.Opens -> "${UsageWatcher.openCount(d.id)}/${l.opens} OPENS IN ${l.windowMin} MIN"
-                is UsageLimit.Continuous -> "FIRES AFTER ${l.minutes} MIN NONSTOP"
-            }
-            PixelText(d.title.uppercase(), Type.Body)
-            PixelText("$status · COOLDOWN ${t.cooldownMin} MIN", Type.Label, Modifier.padding(bottom = 6.dp))
-        }
+    Label("RULES")
+    val windows = pool.windows.joinToString(", ") { "${it.id.uppercase()} (${it.capMin} MIN)" }
+    PixelText(
+        listOf(
+            "Free windows: ${windows.ifEmpty { "none" }}.",
+            "The Nth open of the day waits N × ${pool.waitStepMin} min (at most ${pool.waitCapMin}).",
+            "After a session the pool locks for ${formatFactor(pool.cooldownFactor)} × the minutes used (at most ${pool.cooldownCapMin}).",
+            "${pool.heavyUse.continuousMin} minutes in a row, or ${pool.heavyUse.opens} opens within ${pool.heavyUse.withinMin} " +
+                "minutes, closes the app and starts the cooldown early.",
+            "Leaving a protocol early locks the pool ${pool.bailOut.extraLockMin / 60} more hours (at most ${pool.bailOut.dailyCapMin / 60} a day).",
+        ).joinToString(" "),
+        Type.Small,
+    )
+
+    Label("APPS BUTTON (USABLE IN EVERY LOCK)")
+    if (whitelist.isEmpty()) PixelText("None found on this phone.", Type.Small)
+    for (app in whitelist) {
+        PixelText(app.label.uppercase(), Type.Label, Modifier.padding(vertical = 2.dp), color = Palette.White)
     }
+    PixelText(
+        "The phone app and emergency calls always work. The adhan app joins once you pick it in ADHAN (or once it " +
+            "announces a prayer).",
+        Type.Small,
+    )
 }
 
-/** TAKEOVER: what a takeover may use on this phone. */
+/** 2.0 -> "2", 1.5 -> "1.5". */
+private fun formatFactor(f: Double): String = if (f == Math.floor(f)) f.toLong().toString() else f.toString()
+
+/** TAKEOVER: what a full-intensity takeover may use on this phone. */
 @Composable
 internal fun TakeoverSection() {
     val s = Graph.settings
@@ -226,8 +249,13 @@ internal fun TakeoverSection() {
     val sound = remember(version) { s.soundEnabled }
     val vibration = remember(version) { s.vibrationEnabled }
     val glyph = remember(version) { s.glyphEnabled }
-    val override = remember(version) { s.allowQuietOverride }
 
+    PixelText(
+        "A full takeover has sound, vibration and the Glyph lights; a subtle one is a quiet screen. QUIET on HOME " +
+            "silences every takeover. These switches turn each effect off for good.",
+        Type.Small,
+    )
+    Spacer(Modifier.height(4.dp))
     Toggle("SOUND", sound) { s.soundEnabled = it }
     Toggle("VIBRATION", vibration) { s.vibrationEnabled = it }
     Toggle("GLYPH LIGHTS", glyph) { s.glyphEnabled = it }
@@ -240,62 +268,51 @@ internal fun TakeoverSection() {
         },
         Type.Small,
     )
-    Spacer(Modifier.height(8.dp))
-    Toggle("TIER-3 OVERRIDE IN QUIET MODE", override) { s.allowQuietOverride = it }
-    PixelText(
-        "Only directives the plan marks quiet: \"override\" (tier 3, e.g. Fajr or sleep) can ring in quiet mode. Off: they arrive silently.",
-        Type.Small,
-    )
 }
 
-/** SAFETY: a lighter day, and every way out of a takeover. */
+/** SAFETY: every way out of a takeover, the kill switch, and the adb escape. */
 @Composable
-internal fun SafetySection(dayMode: DayMode, active: ActiveSet) {
+internal fun SafetySection() {
     val context = LocalContext.current
-    val until = Format.clock(active.dayBoundary)
-    when (dayMode) {
-        DayMode.NORMAL -> {
-            HoldButton("I'M NOT OKAY TODAY", holdMillis = 3_000, onComplete = { Vigil.setBadDay(true) }, modifier = Modifier.fillMaxWidth())
-            Spacer(Modifier.height(6.dp))
-            PixelText(
-                "Hold 3 s. Until $until only the plan's essentials fire (${active.badDayKeep.size} kept). " +
-                    "It is never logged as a failure. Also on every takeover: NOT OKAY.",
-                Type.Small,
-            )
-        }
-        DayMode.BAD_DAY, DayMode.MINIMUM -> {
-            val badDay = dayMode == DayMode.BAD_DAY
-            PixelText(if (badDay) "NOT OKAY TODAY" else "MINIMUM DAY", Type.Body)
-            PixelText(
-                if (badDay) {
-                    "Until $until only the essentials fire (${active.badDayKeep.size} kept). Not a failure. Rest."
-                } else {
-                    "Chosen by this morning's check-in. Until $until only the minimum fires (${active.minimumKeep.size} kept). Not a failure."
-                },
-                Type.Small,
-            )
-            Spacer(Modifier.height(8.dp))
-            PixelButton("I'M OKAY AGAIN", { Vigil.setBadDay(false) }, Modifier.fillMaxWidth())
-        }
+    val state by Vigil.state.collectAsState()
+    val bail = remember { Vigil.file().pool.bailOut }
+    val until = state.suspendedUntil?.takeIf { it.isAfter(Instant.now()) }
+
+    if (until != null) {
+        PixelText("SUSPENDED UNTIL ${Format.dateTime(until, Graph.zone)}", Type.Label, color = Palette.Red)
+        PixelText("No takeovers and the pool is open until then.", Type.Small)
+        Spacer(Modifier.height(8.dp))
+        PixelButton("RESUME NOW", { Vigil.resume() }, Modifier.fillMaxWidth())
+        Spacer(Modifier.height(8.dp))
     }
 
-    Label("CALL", Modifier.padding(top = 12.dp))
+    Label("CALL")
     PixelText(
         "Every takeover shows CALL at the bottom from its first frame. One tap silences it, opens the dialer (the emergency " +
             "dialer when the phone is locked) and keeps VIGIL away for 10 minutes. Takeovers never appear during a call " +
-            "and never cover the phone app.",
+            "and never cover the phone app. A call pauses the protocol's timers and lock for its length; it never ends " +
+            "the protocol and costs nothing.",
         Type.Small,
     )
+    Label("APPS")
+    PixelText("The takeover's APPS button opens the always-allowed apps (POOL AND APPS) in every lock.", Type.Small)
     Label("NOT OKAY · LEAVE")
     PixelText(
-        "On a takeover, hold NOT OKAY 3 s for a lighter day, or hold LEAVE 10 s to abandon it (logged). A takeover closes " +
-            "itself after 90 minutes.",
+        "Hold NOT OKAY 3 s for a shorter version of the protocol (a prayer's lock shortens to its minimum); it costs " +
+            "nothing. Hold LEAVE 10 s to quit early: logged as a bail-out, and the pool stays locked " +
+            "${bail.extraLockMin / 60} more hours (at most ${bail.dailyCapMin / 60} a day).",
         Type.Small,
     )
     Label("KILL SWITCH")
     PixelText(
-        "Tap the VIGIL title on the home screen 7 times (or the eye on a takeover): SUSPEND 1 H or 24 H stops every takeover. " +
-            "For emergencies and development, not for skipping directives.",
+        "Tap the VIGIL title on HOME 7 times (or the eye on a takeover), then stay on the 5-minute wait: VIGIL is " +
+            "suspended for 1 hour (no takeovers, the pool open). For emergencies, not for skipping protocols.",
+        Type.Small,
+    )
+    Label("NO DEVICE ADMIN")
+    PixelText(
+        "VIGIL never covers Settings, force stop or the uninstall prompt, and it has no device admin: it can be " +
+            "uninstalled like any app.",
         Type.Small,
     )
     Label("ADB ESCAPE")
@@ -312,5 +329,9 @@ internal fun SafetySection(dayMode: DayMode, active: ActiveSet) {
         }
     }
     Spacer(Modifier.height(4.dp))
-    PixelText("Use SUSPEND rather than force-stop: with notification access on, Android restarts VIGIL right after a force-stop.", Type.Small)
+    PixelText(
+        "SUSPEND takes minutes (at most a week). Use it rather than force-stop: with notification access on, Android " +
+            "restarts VIGIL right after a force-stop.",
+        Type.Small,
+    )
 }

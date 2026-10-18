@@ -31,13 +31,13 @@ object Type {
     /** The home screen's "VIGIL" and nothing else. */
     val Logo = TextStyle(fontFamily = PixelFont, fontSize = 96.sp, lineHeight = 88.sp, letterSpacing = 0.04.em, color = Palette.White)
 
-    /** One big word: PLAN COMPLETE. */
+    /** One big statement: APPLIES FROM TOMORROW. */
     val Huge = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 30.sp, lineHeight = 38.sp, letterSpacing = 0.12.em, color = Palette.White)
 
     /** Screen titles. */
     val Title = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 22.sp, lineHeight = 30.sp, letterSpacing = 0.2.em, color = Palette.White)
 
-    /** The four rows of the home screen. */
+    /** The rows of the home screen. */
     val Item = TextStyle(fontFamily = FontFamily.Monospace, fontSize = 24.sp, lineHeight = 30.sp, letterSpacing = 0.18.em, color = Palette.White)
 
     /** Section headers. */

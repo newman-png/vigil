@@ -6,8 +6,8 @@ import androidx.compose.runtime.produceState
 import kotlinx.coroutines.delay
 
 /**
- * The current time (epoch ms), refreshed every [periodMs] while the screen is showing. For text that changes
- * with the clock alone: the plan expiring, the kill switch running out.
+ * The current time (epoch ms), refreshed every [periodMs] while the screen is showing. For text that changes with the
+ * clock alone: minutes left in a window or a cooldown, a suspension running out, a planned start going by.
  */
 @Composable
 fun rememberNow(periodMs: Long = 15_000L): Long {

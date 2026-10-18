@@ -15,6 +15,14 @@ fun appLabel(context: Context, packageName: String): String = try {
     packageName
 }
 
+/** True when [packageName] is installed on this phone (and visible to VIGIL). */
+fun isInstalled(context: Context, packageName: String): Boolean = try {
+    context.packageManager.getApplicationInfo(packageName, PackageManager.ApplicationInfoFlags.of(0))
+    true
+} catch (e: PackageManager.NameNotFoundException) {
+    false
+}
+
 /** [appLabel] for the current screen, as a function the formatters can take. */
 @Composable
 fun rememberAppLabel(): (String) -> String {

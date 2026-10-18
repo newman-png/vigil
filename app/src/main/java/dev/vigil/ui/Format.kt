@@ -1,84 +1,100 @@
 package dev.vigil.ui
 
-import dev.vigil.core.log.LogEvent
-import dev.vigil.core.plan.Trigger
-import dev.vigil.core.plan.UsageLimit
-import java.time.DayOfWeek
+import dev.vigil.core.common.WallClock
+import dev.vigil.core.journal.Entry
+import dev.vigil.core.pool.PoolDecision
+import dev.vigil.core.pool.PoolText
 import java.time.Instant
 import java.time.LocalDate
-import java.time.LocalDateTime
-import java.time.LocalTime
 import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
-import java.time.format.TextStyle
+import java.time.format.DateTimeParseException
 import java.util.Locale
 
 /** Short, uppercase, human descriptions for the UI. */
 object Format {
+    private val dayTime = DateTimeFormatter.ofPattern("EEE HH:mm", Locale.ENGLISH)
     private val dateTime = DateTimeFormatter.ofPattern("EEE d MMM HH:mm", Locale.ENGLISH)
-    private val day = DateTimeFormatter.ofPattern("d MMM", Locale.ENGLISH)
-    private val clock = DateTimeFormatter.ofPattern("HH:mm", Locale.ENGLISH)
-
-    /** MON 26 OCT 04:00 */
-    fun dateTime(t: LocalDateTime): String = dateTime.format(t).uppercase()
-
-    /** 19 OCT */
-    fun day(d: LocalDate): String = day.format(d).uppercase()
+    private val date = DateTimeFormatter.ofPattern("EEE d MMM", Locale.ENGLISH)
 
     /** 14:05 */
-    fun clock(t: LocalTime): String = clock.format(t)
+    fun clock(at: Instant, zone: ZoneId): String = WallClock.hhmm(at, zone)
 
-    /** 14:05 for a moment in epoch milliseconds. */
-    fun clock(epochMs: Long, zone: ZoneId): String = clock(Instant.ofEpochMilli(epochMs).atZone(zone).toLocalTime())
+    /** SUN 14:05 */
+    fun dayTime(at: Instant, zone: ZoneId): String = dayTime.format(at.atZone(zone)).uppercase()
 
-    /** MON 26 OCT 04:00 for a moment in epoch milliseconds. */
-    fun dateTime(epochMs: Long, zone: ZoneId): String = dateTime(LocalDateTime.ofInstant(Instant.ofEpochMilli(epochMs), zone))
+    /** SUN 18 OCT 14:05 */
+    fun dateTime(at: Instant, zone: ZoneId): String = dateTime.format(at.atZone(zone)).uppercase()
 
-    fun trigger(t: Trigger, appLabel: (String) -> String = { it }): String = when (t) {
-        is Trigger.Time -> "TIME ${t.at} ${days(t.days)}"
-        is Trigger.Adhan -> "ADHAN ${t.prayer.json.uppercase()}"
-        is Trigger.AppUsage -> {
-            val apps = t.apps.joinToString(", ") { appLabel(it) }
-            when (val l = t.limit) {
-                is UsageLimit.Opens -> "${l.opens} OPENS / ${l.windowMin} MIN: $apps"
-                is UsageLimit.Continuous -> "${l.minutes} MIN NONSTOP: $apps"
-            }
+    /** SUN 18 OCT */
+    fun date(d: LocalDate): String = date.format(d).uppercase()
+
+    /** A day key (yyyy-MM-dd) as SUN 18 OCT, or the key itself when it is not a date. */
+    fun dayKey(key: String): String = runCatching { date(LocalDate.parse(key)) }.getOrDefault(key)
+
+    /**
+     * When something happened, as short as it can be: 14:05 today, SAT 14:05 within the last week, else the date.
+     */
+    fun ago(at: Instant, now: Instant, zone: ZoneId): String {
+        val day = at.atZone(zone).toLocalDate()
+        val today = now.atZone(zone).toLocalDate()
+        return when {
+            day == today -> clock(at, zone)
+            day.isAfter(today.minusDays(7)) && !day.isAfter(today) -> dayTime(at, zone)
+            else -> dateTime(at, zone)
         }
-        is Trigger.Unsupported -> "UNSUPPORTED \"${t.type}\" (NEVER FIRES)"
     }
 
-    fun days(days: Set<DayOfWeek>): String = when {
-        days.size == 7 -> "DAILY"
-        days == WEEKDAYS -> "MON-FRI"
-        days == WEEKEND -> "SAT-SUN"
-        else -> days.sorted().joinToString(" ") { it.getDisplayName(TextStyle.SHORT, Locale.ENGLISH).uppercase() }
+    /** Day codes ("mon".."sun") as DAILY, MON-FRI, SAT-SUN or "MON WED". */
+    fun days(codes: List<String>): String {
+        val set = codes.toSet()
+        val all = WallClock.DAY_CODES.keys
+        return when {
+            set.containsAll(all) -> "DAILY"
+            set == WEEKDAYS -> "MON-FRI"
+            set == WEEKEND -> "SAT-SUN"
+            set.isEmpty() -> "NO DAYS"
+            else -> all.filter { it in set }.joinToString(" ") { it.uppercase() }
+        }
     }
 
-    fun duration(seconds: Long): String = when {
-        seconds < 60 -> "${seconds}S"
-        seconds < 3600 -> "${seconds / 60}M ${seconds % 60}S"
-        else -> "${seconds / 3600}H ${(seconds % 3600) / 60}M"
+    /** What the pool would do: ALLOWED, WAIT 3 MIN, or BLOCKED with the first reason and its end. */
+    fun decision(d: PoolDecision, zone: ZoneId): String = when (d) {
+        PoolDecision.Allowed -> "ALLOWED (A SESSION IS RUNNING, OR VIGIL IS SUSPENDED)"
+        is PoolDecision.Wait -> "WAIT ${d.minutes} MIN, THEN OPEN"
+        is PoolDecision.Blocked -> "BLOCKED · " + PoolText.block(d.blocks.first(), zone)
     }
 
-    /** One compact line for the TEST screen's event list: "SUN 14:05 DIRECTIVE FIRED water-am DEBUG". */
-    fun event(e: LogEvent): String {
-        val at = runCatching { OffsetDateTime.parse(e.ts) }.getOrNull()
-        val time = at?.let { "${it.dayOfWeek.getDisplayName(TextStyle.SHORT, Locale.ENGLISH).uppercase()} ${clock(it.toLocalTime())}" }
-            ?: e.ts.take(16)
-        return listOfNotNull(
-            time,
-            e.type.uppercase().replace('_', ' '),
-            e.directiveId,
-            e.stepIndex?.let { "STEP ${it + 1}" },
-            e.rating?.uppercase(),
-            e.answer?.uppercase(),
-            e.mode?.uppercase()?.replace('_', ' '),
-            e.variant?.uppercase(),
-            e.trigger?.uppercase(),
-        ).joinToString(" ")
+    /**
+     * One compact line for the TEST screen's event list:
+     * "SUN 14:05 FIRED PRAYER-DHUHR · STAGE 1 · ADHAN · TEST".
+     */
+    fun entry(e: Entry): String {
+        val at = try {
+            OffsetDateTime.parse(e.ts)
+        } catch (ex: DateTimeParseException) {
+            null
+        }
+        val time = at?.let { dayTime.format(it).uppercase() } ?: e.ts.take(16)
+        val head = listOfNotNull(time, e.type.uppercase().replace('_', ' '), e.protocol?.uppercase()).joinToString(" ")
+        val details = listOfNotNull(
+            e.prayer?.uppercase(),
+            e.step?.let { "STEP ${it + 1}" },
+            e.version?.uppercase(),
+            e.stage?.let { "STAGE $it" },
+            e.app,
+            e.minutes?.let { "$it MIN" },
+            e.reason?.uppercase()?.replace('_', ' '),
+            e.detail,
+            e.text?.let { "\"$it\"" },
+            e.day,
+            e.until?.let { u -> "UNTIL " + (runCatching { OffsetDateTime.parse(u).toLocalTime().toString().take(5) }.getOrNull() ?: u) },
+            if (e.test == true) "TEST" else null,
+        ).distinct()
+        return if (details.isEmpty()) head else head + " · " + details.joinToString(" · ")
     }
 
-    private val WEEKDAYS = setOf(DayOfWeek.MONDAY, DayOfWeek.TUESDAY, DayOfWeek.WEDNESDAY, DayOfWeek.THURSDAY, DayOfWeek.FRIDAY)
-    private val WEEKEND = setOf(DayOfWeek.SATURDAY, DayOfWeek.SUNDAY)
+    private val WEEKDAYS = setOf("mon", "tue", "wed", "thu", "fri")
+    private val WEEKEND = setOf("sat", "sun")
 }
