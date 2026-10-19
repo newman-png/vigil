@@ -159,8 +159,9 @@ data class Toggles(
     @SerialName("walking_since") val walkingSince: Instant? = null,
     @SerialName("friends_since") val friendsSince: Instant? = null,
     /**
-     * Without a step counter the walk ends then: an automatic commute its length + `commute_grace_min` after its start, any
-     * other walk `manual_max_min` after it began. Null while walking is off.
+     * Without a step counter the walk ends then: an automatic commute `commute_grace_min` after the commute's end (the
+     * row's end, else its start + its minutes or `commute_min`), any other walk `manual_max_min` after it began. Null
+     * while walking is off.
      */
     @SerialName("walking_until") val walkingUntil: Instant? = null,
 )

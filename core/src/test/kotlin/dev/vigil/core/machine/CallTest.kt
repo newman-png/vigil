@@ -150,6 +150,37 @@ class CallTest {
     }
 
     @Test
+    fun aCallGoingOnAtTheDeadlineHoldsIt() {
+        // MOM is called at 15:55 and the call lasts past the 16:00 deadline: a call never ends a protocol.
+        val sim = Sim(file = file, times = calls(mom))
+        sim.at("2026-10-19T13:00")
+        sim.at("2026-10-19T15:55", Input.CallActive(true))
+        sim.at("2026-10-19T16:05")
+        assertNotNull(sim.call())
+        assertTrue(sim.of(EntryType.MISSED).isEmpty())
+        // It ended at 16:10 (15 minutes): DONE is unlocked and the deadline moved on by the call's length.
+        sim.at("2026-10-19T16:10", Input.CallActive(false))
+        assertTrue(sim.view().call!!.done)
+        assertEquals(rome("2026-10-19T16:15"), sim.call()!!.call!!.dueAt)
+        sim.at("2026-10-19T16:12", Input.Confirm(sim.call()!!.id))
+        assertNull(sim.call())
+        assertEquals("done", sim.lastOf(EntryType.CALL)!!.reason)
+        // Not tapped after the call: missed at the moved deadline.
+        val late = Sim(file = file, times = calls(mom))
+        late.at("2026-10-19T13:00")
+        late.phoneCall("2026-10-19T15:58", "2026-10-19T16:02")
+        assertNotNull(late.call())
+        late.at("2026-10-19T16:07")
+        assertNull(late.call())
+        assertEquals("2026-10-19T16:04:00+02:00", late.lastOf(EntryType.MISSED)!!.ts)
+        // A call that ended before the deadline moves nothing.
+        val early = Sim(file = file, times = calls(mom))
+        early.at("2026-10-19T13:00")
+        early.phoneCall("2026-10-19T14:00", "2026-10-19T14:01")
+        assertEquals(rome("2026-10-19T16:00"), early.call()!!.call!!.dueAt)
+    }
+
+    @Test
     fun twoRowsAreTwoRunsAndMissedCallsCountForTheReset() {
         val sim = Sim(file = file, times = calls(mom, dad))
         sim.at("2026-10-19T13:00")

@@ -60,8 +60,13 @@ object ProtocolParser {
         ProtocolKind.NUDGE to (LockType.SCREEN to "a nudge holds the screen for its seconds: use \"screen\"."),
     )
 
-    /** Kinds the engine runs once (two would double every walk, card or nudge). */
-    private val ONE_PER_FILE = setOf(ProtocolKind.WALK, ProtocolKind.FRIENDS, ProtocolKind.CALL, ProtocolKind.NUDGE)
+    /**
+     * Kinds the engine runs once (two would double every walk, card or nudge; the wind-down, the night lock and sleep
+     * shifting follow one sleep protocol; Friday's Dhuhr gives way to one Jummah).
+     */
+    private val ONE_PER_FILE = setOf(
+        ProtocolKind.WALK, ProtocolKind.FRIENDS, ProtocolKind.CALL, ProtocolKind.NUDGE, ProtocolKind.SLEEP, ProtocolKind.JUMMAH,
+    )
 
     private val strict = Json { isLenient = false }
     private val decoder = Json {

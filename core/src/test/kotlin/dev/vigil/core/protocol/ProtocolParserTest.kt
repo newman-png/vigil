@@ -420,6 +420,9 @@ class ProtocolParserTest {
         assertError(replacingKind(noDone), "(test).short", "a call needs a done step")
         // The engine runs each of these once: a second one is an error.
         assertError(withProtocols(protocol(kind = "friends", trigger = "toggle:friends", lock = obj("type" to "pool"))), "(test).kind", "one per file")
+        // So are the wind-down (sleep shifting and the night lock follow one) and Jummah (Friday's Dhuhr gives way to one).
+        assertError(withProtocols(protocol(kind = "sleep", trigger = "time:bedtime-60", lock = obj("type" to "screen"))), "(test).kind", "one per file")
+        assertError(withProtocols(protocol(kind = "jummah", trigger = "slot:jummah")), "(test).kind", "one per file")
         // Nudges without lines show their first step: allowed, with a warning.
         val bare = protocol(kind = "nudge", lock = obj("type" to "screen"))
         assertOk(replacingKind(bare))
@@ -537,9 +540,9 @@ class ProtocolParserTest {
     fun stepFieldsForSleepAndMorning() {
         val todos = obj("text" to "Tomorrow.", "type" to "text", "lines" to 4, "todos" to true)
         val sleep = protocol(id = "s", kind = "sleep", lock = obj("type" to "screen"), steps = listOf(todos, step("Sleep.", "done")))
-        val file = assertOk(withProtocols(sleep))
+        val file = assertOk(replacingKind(sleep))
         assertTrue(file.find("s")!!.steps[0].todos)
-        assertError(withProtocols(protocol(kind = "sleep", steps = listOf(obj("text" to "x", "todos" to true)))), "steps[0].todos", "only a text step")
+        assertError(replacingKind(protocol(kind = "sleep", steps = listOf(obj("text" to "x", "todos" to true)))), "steps[0].todos", "only a text step")
         assertTrue(warnings(withProtocols(protocol(steps = listOf(todos, step("Done.", "done"))))).any { it.path.endsWith("steps[0].todos") })
         assertError(withProtocols(protocol(steps = listOf(obj("text" to "x", "todos" to "yes")))), "todos", "true or false")
         val walk = obj("text" to "Walk.", "type" to "timer", "min" to 15, "skip_on_class_days" to true)
@@ -555,13 +558,13 @@ class ProtocolParserTest {
         val arrival = obj("text" to "I'M AT UNI.", "arrival" to true)
         fun jummah(steps: List<JsonObject>, lock: JsonObject = obj("type" to "screen", "minutes" to 45, "done_after_min" to 15)) =
             protocol(id = "j2", kind = "jummah", trigger = "slot:jummah", lock = lock, steps = steps)
-        val ok = assertOk(withProtocols(jummah(listOf(obj("text" to "Leave.", "walking_on" to true), arrival, step("Done.", "done")))))
+        val ok = assertOk(replacingKind(jummah(listOf(obj("text" to "Leave.", "walking_on" to true), arrival, step("Done.", "done")))))
         assertTrue(ok.find("j2")!!.steps[0].walkingOn)
         assertTrue(ok.find("j2")!!.steps[1].arrival)
-        assertError(withProtocols(jummah(listOf(step(), step("Done.", "done")))), "(j2).steps", "exactly one arrival step")
-        assertError(withProtocols(jummah(listOf(arrival, arrival, step("Done.", "done")))), "(j2).steps", "exactly one arrival step")
-        assertError(withProtocols(jummah(listOf(step("Done.", "done"), arrival))), "(j2).steps", "done step after its arrival step")
-        assertError(withProtocols(jummah(listOf(arrival, step("Done.", "done")), lock = obj("type" to "screen"))), "(j2).lock.minutes", "needs minutes")
+        assertError(replacingKind(jummah(listOf(step(), step("Done.", "done")))), "(j2).steps", "exactly one arrival step")
+        assertError(replacingKind(jummah(listOf(arrival, arrival, step("Done.", "done")))), "(j2).steps", "exactly one arrival step")
+        assertError(replacingKind(jummah(listOf(step("Done.", "done"), arrival))), "(j2).steps", "done step after its arrival step")
+        assertError(replacingKind(jummah(listOf(arrival, step("Done.", "done")), lock = obj("type" to "screen"))), "(j2).lock.minutes", "needs minutes")
         assertError(withProtocols(protocol(kind = "morning", steps = listOf(arrival, step("Done.", "done")))), "steps[0].arrival", "only a jummah")
         // Re-enter: reset protocols only, and the last step.
         val reenter = obj("text" to "Re-enter.", "type" to "done", "reenter" to true)
@@ -574,7 +577,7 @@ class ProtocolParserTest {
         assertTrue(warnings(withProtocols(protocol(id = "r2", steps = listOf(obj("text" to "x", "optional" to true), step("Done.", "done"))))).any { it.path.endsWith("steps[0].optional") })
         assertError(withProtocols(protocol(steps = listOf(obj("text" to "x", "walking_on" to "yes")))), "walking_on", "true or false")
         // Jummah params: prep_todos is a list of texts; the reset's next_within_min is in range.
-        assertError(withProtocols(jummah(listOf(arrival, step("Done.", "done"))).let { JsonObject(it + ("params" to obj("prep_todos" to listOf(3)))) }), "prep_todos", "list of texts")
+        assertError(replacingKind(jummah(listOf(arrival, step("Done.", "done"))).let { JsonObject(it + ("params" to obj("prep_todos" to listOf(3)))) }), "prep_todos", "list of texts")
         assertError(withProtocols(protocol(id = "r2", extra = mapOf("params" to obj("next_within_min" to 300)))), "next_within_min", "from 0 to 240")
     }
 }

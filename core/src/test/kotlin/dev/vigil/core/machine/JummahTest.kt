@@ -231,6 +231,11 @@ class JummahTest {
         assertNull(sim.run("prayer-dhuhr"))
         assertEquals("window_closed", sim.lastOf(EntryType.SKIPPED)!!.reason)
         assertEquals("reset", sim.state.offer!!.protocol)
+        // The offer does not ask for a Dhuhr that does not come.
+        assertEquals(
+            "Jummah was missed. RESET brings the day back. Or NOT NOW: it costs nothing.",
+            sim.lastEffects<Effect.Notify>().single { it.kind == NotifyKind.OFFER }.text,
+        )
     }
 
     @Test
@@ -428,7 +433,16 @@ class JummahTest {
         assertEquals(listOf(true, false), sim.dnd())
         assertTrue(sim.of(EntryType.PENALTY).isEmpty())
         assertEquals(0, sim.state.missesInARow)
-        assertTrue(sim.entries.filter { it.run in setOf(leave.id, arrival.id, lock.id) }.all { it.test == true })
+        // The TEST lock ends with the lock (LEAVE, or its end): no CONFIRM afterwards, nothing "missed".
+        assertTrue(sim.state.runs.none { it.jummah != null })
+        sim.step(Input.TestJummah(JummahTestPart.LOCK))
+        val full = sim.jummah()
+        sim.after(45)
+        assertTrue(sim.state.runs.none { it.jummah != null })
+        assertEquals(listOf(true, false, true, false), sim.dnd())
+        sim.after(30)
+        assertTrue(sim.of(EntryType.MISSED).isEmpty())
+        assertTrue(sim.entries.filter { it.run in setOf(leave.id, arrival.id, lock.id, full.id) }.all { it.test == true })
     }
 
     @Test

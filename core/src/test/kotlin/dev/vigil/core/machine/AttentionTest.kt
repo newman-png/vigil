@@ -225,6 +225,64 @@ class AttentionTest {
     }
 
     @Test
+    fun leavingTheLeaveByTakeoverDoesNotStopItLeavingTheLockDoes() {
+        // LEAVE on the leave-by takeover (a bail-out, with its penalty): the lock still comes, and the reset follows it.
+        val sim = Sim("2026-10-23T08:00", file = full)
+        sim.at("2026-10-23T13:20")
+        val j = sim.state.runs.first { it.jummah != null }
+        sim.at("2026-10-23T13:21", Input.BailOut(j.id))
+        assertEquals(1, sim.of(EntryType.PENALTY).size)
+        sim.at("2026-10-23T14:35")
+        sim.at("2026-10-23T14:50", Input.Confirm(j.id))
+        assertTrue(sim.state.runs.none { it.jummah != null })
+        assertEquals("after:jummah", sim.attention()!!.reason)
+        // LEAVE on the Jummah lock itself: nothing follows it, like a prayer left before its minimum.
+        val left = Sim("2026-10-23T08:00", file = full)
+        left.at("2026-10-23T14:35")
+        val id = left.state.runs.first { it.jummah != null }.id
+        left.at("2026-10-23T14:40", Input.BailOut(id))
+        left.at("2026-10-23T14:50", Input.Confirm(id))
+        assertTrue(left.state.runs.none { it.jummah != null })
+        assertNull(left.attention())
+        assertTrue(left.state.day!!.deferred.isEmpty())
+    }
+
+    @Test
+    fun onceADayWhenJummahIsMissedOrDhuhrComesBack() {
+        // The Jummah lock ends unconfirmed: the reset follows it; the Dhuhr that the missed Jummah brings adds no second one.
+        val sim = Sim("2026-10-23T08:00", file = full)
+        sim.at("2026-10-23T14:35")
+        sim.at("2026-10-23T15:20")
+        sim.lookStarts()
+        sim.at("2026-10-23T15:23")
+        assertNull(sim.attention())
+        sim.at("2026-10-23T15:30")
+        assertEquals("jummah_missed", sim.run("prayer-dhuhr")!!.reason)
+        sim.at("2026-10-23T15:50")
+        assertEquals(RunPhase.OPEN, sim.run("prayer-dhuhr")!!.phase)
+        assertNull(sim.attention())
+        assertEquals(1, sim.of(EntryType.FIRED).count { it.protocol == "attention" })
+        // An open Dhuhr that comes back at a reset's re-entry: its second lock brings no second reset either.
+        val reset = Sim(file = full)
+        reset.at("2026-10-19T12:30", Input.Adhan(Prayer.DHUHR))
+        reset.at("2026-10-19T12:50")
+        reset.lookStarts()
+        reset.at("2026-10-19T12:53")
+        reset.at("2026-10-19T13:00", Input.Manual("reset"))
+        val id = reset.runId("reset")
+        reset.after(1, Input.StepDone(id, 1, ""))
+        reset.after(3, Input.StepDone(id, 2))
+        reset.after(5, Input.StepDone(id, 3))
+        reset.after(5, Input.StepDone(id, 4))
+        reset.step(Input.StepDone(id, 5))
+        assertEquals(RunPhase.ACTIVE, reset.run("prayer-dhuhr")!!.phase)
+        reset.after(20)
+        assertEquals(RunPhase.OPEN, reset.run("prayer-dhuhr")!!.phase)
+        assertNull(reset.attention())
+        assertEquals(1, reset.of(EntryType.FIRED).count { it.protocol == "attention" })
+    }
+
+    @Test
     fun quietSilencesItACallPausesIt() {
         val sim = Sim(file = full)
         sim.step(Input.Toggle(ToggleName.QUIET, true))

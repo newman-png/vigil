@@ -139,6 +139,27 @@ class InvariantTest {
         val prayers = s.runs.filter { it.prayer != null && !it.test }.groupBy { it.prayer }
         if (prayers.values.any { it.size > 1 }) broken("two open runs for one prayer")
         Machine.nextWake(s, env)?.let { if (!it.isAfter(now)) broken("next wake $it is not after now") }
+        // Nothing overdue after a step.
+        val noCall = s.callSince == null
+        for (r in s.runs) {
+            if (r.phase == RunPhase.ACTIVE && noCall && r.jummah == null) {
+                r.lockEndsAt?.let { if (it.isBefore(now)) broken("${r.id} ${r.protocol} lock overdue $it") }
+                val st = view.stepsOf(r).getOrNull(r.step)
+                if (st?.type == dev.vigil.core.protocol.StepType.TIMER) view.timerEnd(r, st)?.let { if (it.isBefore(now)) broken("${r.id} timer overdue $it") }
+            }
+            if (r.prayer != null && !r.confirmed && !r.test) view.windowEnd(r)?.let { if (it.isBefore(now)) broken("${r.id} window overdue") }
+            if (r.phase == RunPhase.NIGHT) r.lockEndsAt?.let { if (it.isBefore(now)) broken("night overdue") }
+            r.call?.let { if (!r.confirmed && noCall && it.dueAt.isBefore(now)) broken("${r.id} call overdue") }
+            r.promise?.let { if (r.phase == RunPhase.WAITING && it.dueAt.isBefore(now)) broken("${r.id} promise overdue") }
+            r.jummah?.let { j -> if (j.missedAt.isBefore(now) && !(j.part == dev.vigil.core.run.JummahPart.LOCK && r.phase == RunPhase.ACTIVE) && r.test == false) broken("${r.id} jummah overdue") }
+            if (r.phase == RunPhase.CARD) r.classEndsAt?.let { if (it.isBefore(now)) broken("card overdue") }
+        }
+        if (!view.suspended) for (d in day.deferred) if (d.due.plus(Machine.DEFER_LIMIT).isBefore(now)) broken("deferred overdue")
+        view.walkEnd()?.let { if (it.isBefore(now)) broken("walk overdue") }
+        view.friendsEnd()?.let { if (it.isBefore(now)) broken("friends overdue") }
+        s.pool.session?.let { if (it.inSince != null && !s.foregroundIsPool) broken("session in the pool but no pool app in front") }
+        if (s.offer != null && view.suspended) broken("offer while suspended")
+        s.wakeAlarm.nextRingAt?.let { if (it.plus(Machine.PLANNED_GRACE).isBefore(now)) broken("alarm ring-again overdue") }
         // The queries the app calls never throw.
         Machine.status(s, env)
         Machine.timeline(s, env)

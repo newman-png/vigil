@@ -119,6 +119,10 @@ class WalkTest {
         off.at("2026-10-19T09:00")
         assertFalse(off.walking())
         assertEquals(StartStatus.NOT_FIRED, Machine.timeline(off.state, off.env).single { it.start.protocolId == "walk" }.status)
+        // A row with an end: the commute ends there (not after commute_min), then the grace.
+        val ends = Sim("2026-10-19T07:00", file = file, times = commute(Slot(weekdays, "08:00", "08:30", label = "to uni")))
+        ends.at("2026-10-19T08:00")
+        assertEquals(rome("2026-10-19T08:45"), Machine.status(ends.state, ends.env).walkEndsAt)
     }
 
     @Test

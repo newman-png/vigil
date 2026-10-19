@@ -561,7 +561,7 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         } else {
             effects += Effect.Notify(runNotice(r), "${p.title}: FINISH ON VIGIL", currentStepText(r), silent = true, NotifyKind.RUN, r.id)
         }
-        fireAfter(r)
+        if (!r.afterFired) fireAfter(r)
     }
 
     private fun currentStepText(r: Run): String = stepsOf(r).getOrNull(r.step)?.text ?: ""
@@ -590,10 +590,16 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
                 s = s.copy(attention = AttentionMemory(s.attention.days + 1, day.key))
             }
             if (!r.bailed && r.kind !in NEUTRAL) recordOutcome(r, if (r.clean) RunOutcome.CLEAN else RunOutcome.DONE)
-            if (!r.afterFired && !r.bailed) fireAfter(r)
+            if (!r.afterFired && !leftEarly(r)) fireAfter(r)
         }
         promoteQueue()
     }
+
+    /**
+     * Left early (a bail-out): what waits for the run (`event:after:`) does not follow it. For Jummah only leaving its lock
+     * counts; leaving the leave-by takeover does not stop what follows the lock.
+     */
+    private fun leftEarly(r: Run): Boolean = r.jummah?.lockLeft ?: r.bailed
 
     private fun missRun(r: Run, why: String, at: Instant = now, detail: String? = null) {
         remove(r.id)
@@ -912,14 +918,17 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         startPrayer(prayer, p, "adhan")
     }
 
-    /** The run of [prayer] starts now ([reason] adhan, or jummah_missed): its window runs until the next prayer's adhan. */
-    private fun startPrayer(prayer: Prayer, p: Protocol, reason: String) {
+    /**
+     * The run of [prayer] starts now ([reason] adhan, or jummah_missed): its window runs until the next prayer's adhan.
+     * [afterFired]: what follows this prayer already followed another run today (a missed Jummah's lock).
+     */
+    private fun startPrayer(prayer: Prayer, p: Protocol, reason: String, afterFired: Boolean = false) {
         val (windowEnd, estimated) = estimateWindowEnd(prayer)
         val stage = stageOf(p)
         // Class rule at stage 3 too: the one notification is silent during a class.
         val inClass = stage >= 3 && dayTimes().classAt(now) != null
         val base = newRun(p, stage, reason, null, null, false)
-            .copy(prayer = prayer, windowEndsAt = windowEnd, windowEstimated = estimated, silent = inClass)
+            .copy(prayer = prayer, windowEndsAt = windowEnd, windowEstimated = estimated, silent = inClass, afterFired = afterFired)
         if (suspended) {
             s = s.copy(lastFired = s.lastFired + (p.id to now))
             val open = base.copy(phase = RunPhase.OPEN, lock = LockType.NONE)
@@ -1421,11 +1430,12 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
             }
             ToggleName.WALKING -> {
                 if (t.walking == on) return
-                // Without a step counter: a commute ends its length + commute_grace_min after its start, any other walk
-                // after manual_max_min.
+                // Without a step counter: a commute ends commute_grace_min after its end (the row's end, else its start +
+                // its minutes or commute_min), any other walk after manual_max_min.
                 val until = when {
                     !on -> null
-                    slot != null -> slot.start.plus(Duration.ofMinutes((slot.minutes ?: s.times.current.commuteMin).toLong() + walkParam("commute_grace_min")))
+                    slot != null -> (slot.end ?: slot.start.plus(Duration.ofMinutes((slot.minutes ?: s.times.current.commuteMin).toLong())))
+                        .plus(Duration.ofMinutes(walkParam("commute_grace_min").toLong()))
                     else -> now.plus(Duration.ofMinutes(walkParam("manual_max_min").toLong()))
                 }
                 s = s.copy(toggles = t.copy(walking = on, walkingSince = if (on) now else null, walkingUntil = until))
@@ -1675,6 +1685,12 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
             val shift = Duration.between(base, at).takeIf { !it.isNegative } ?: Duration.ZERO
             val stepStart = r.stepStartedAt?.let { if (it.isBefore(base)) it.plus(shift) else maxOf(it, at) }
             put(r.copy(lockEndsAt = r.lockEndsAt?.plus(shift), doneAfterAt = r.doneAfterAt?.plus(shift), stepStartedAt = stepStart))
+        }
+        // A call card's deadline that came during the call (it may have been that call) moves on by the call's length,
+        // like a lock: a call never ends a protocol, and DONE can still be tapped after it.
+        for (r in s.runs.filter { it.call != null && !it.confirmed }) {
+            val c = r.call ?: continue
+            if (c.dueAt.isAfter(since) && !c.dueAt.isAfter(at)) put(r.copy(call = c.copy(dueAt = c.dueAt.plus(Duration.between(since, at)))))
         }
         creditCall(since, at)
         if (s.callWrapped) effects += Effect.CancelNotify(WRAP_NOTICE)
@@ -1986,13 +2002,20 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         logRun(EntryType.JUMMAH_LOCK, r, at = end, reason = "ended", detail = "ended unconfirmed: CONFIRM by ${r.jummah?.missedAt?.let { hhmm(it) }}")
         toConfirm(r, "the Jummah lock ended")
         // Like a prayer whose lock ends: what follows the lock (the attention reset) starts.
-        run(r.id)?.let { if (!it.afterFired && !it.bailed) fireAfter(it) }
+        run(r.id)?.let { if (!it.afterFired && !leftEarly(it)) fireAfter(it) }
     }
 
     /** No lock and no screen any more: Do Not Disturb off, CONFIRM on home and in a notification until the missed time. */
     private fun toConfirm(r: Run, why: String) {
         val j = r.jummah ?: return
         val p = protocol(r) ?: return
+        // A TEST of the lock ends with the lock (its end, LEAVE): no CONFIRM and no "missed" after it.
+        if (j.only == JummahPart.LOCK) {
+            remove(r.id)
+            logRun(EntryType.DROPPED, r, reason = "test_over", detail = "the TEST lock is over: $why")
+            cancelRunNotices(r)
+            return
+        }
         if (j.dnd) dndOff(r, why)
         val c = r.copy(
             phase = RunPhase.OPEN, asking = false, silent = false, step = doneIndex(stepsOf(r)), stepStartedAt = now, lockEndsAt = null,
@@ -2050,7 +2073,7 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
             penalty(r)
             if (!r.bailed) recordOutcome(r, RunOutcome.BAILED)
         }
-        val bailed = r.copy(bailed = true)
+        val bailed = r.copy(bailed = true, jummah = if (j.part == JummahPart.LOCK) j.copy(lockLeft = true) else j)
         put(bailed)
         if (j.part == JummahPart.LEAVE) toTravel(bailed, null) else toConfirm(bailed, "the Jummah lock was left")
         promoteQueue()
@@ -2069,19 +2092,22 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         if (!r.test && !r.bailed) recordOutcome(r, RunOutcome.MISSED)
         promoteQueue()
         if (r.test) return
-        dhuhrAfterJummah()
+        dhuhrAfterJummah(afterFired = r.afterFired)
         resetProtocol?.let { offer(it, "jummah_missed") }
     }
 
-    /** Jummah was missed: today's Dhuhr runs after all, its window until Asr (not once Asr has come). */
-    private fun dhuhrAfterJummah() {
+    /**
+     * Jummah was missed: today's Dhuhr runs after all, its window until Asr (not once Asr has come). What follows Dhuhr
+     * (the attention reset, daily) does not come a second time when it already followed the Jummah lock ([afterFired]).
+     */
+    private fun dhuhrAfterJummah(afterFired: Boolean) {
         val p = file.prayerProtocol(Prayer.DHUHR) ?: return
         if (Prayer.ASR in day.adhans) {
             log(EntryType.SKIPPED, protocol = p.id, prayer = Prayer.DHUHR, reason = "window_closed", detail = "Jummah was missed after Asr came: the Dhuhr window is over")
             return
         }
         if (s.runs.any { it.prayer == Prayer.DHUHR && !it.test }) return
-        startPrayer(Prayer.DHUHR, p, "jummah_missed")
+        startPrayer(Prayer.DHUHR, p, "jummah_missed", afterFired)
     }
 
     /** TEST > JUMMAH: one part now as a preview (the card is only its notification). */
@@ -2315,10 +2341,13 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         effects += Effect.Notify(runNotice(r), "${p.title} ${who(r)}", text, silent = true, kind = NotifyKind.CALL, runId = r.id)
     }
 
-    /** A call run: missed at its deadline; the card comes back once after `return_after_min` (not during a call). */
+    /**
+     * A call run: missed at its deadline, but not while a call goes on (it may be this call: its end moves the deadline,
+     * see [endCall]); the card comes back once after `return_after_min` (not during a call).
+     */
     private fun settleCall(r: Run) {
         val c = r.call ?: return
-        if (!r.confirmed && !now.isBefore(c.dueAt)) {
+        if (!r.confirmed && !now.isBefore(c.dueAt) && s.callSince == null) {
             missCall(r, "deadline", c.dueAt)
             return
         }
@@ -2511,7 +2540,9 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         }
         s = s.copy(offer = Offer(p.id, now, reason))
         val text = if (reason == "jummah_missed") {
-            "Jummah was missed. Pray Dhuhr, then ${p.title} brings the day back. Or NOT NOW: it costs nothing."
+            // Dhuhr runs instead, unless Asr had already come.
+            val dhuhr = if (s.runs.any { it.prayer == Prayer.DHUHR && !it.test }) " Pray Dhuhr, then" else ""
+            "Jummah was missed.$dhuhr ${p.title} brings the day back. Or NOT NOW: it costs nothing."
         } else {
             "${reason.removePrefix("misses:")} missed or left in a row. ${p.title} brings the day back. Or NOT NOW: it costs nothing."
         }

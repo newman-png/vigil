@@ -404,8 +404,8 @@ enum class ProtocolKind(val json: String, val ladder: Set<Version>, val params: 
     ),
     /**
      * The walking switch (and every MY TIMES commute row, and Jummah's walking step): the pool is blocked until the switch
-     * goes off, or `still_end_min` without steps; without a step counter a commute ends `commute_grace_min` after its
-     * length and a manual walk after `manual_max_min`.
+     * goes off, or `still_end_min` without steps; without a step counter a commute ends `commute_grace_min` after the
+     * commute's end and a manual walk after `manual_max_min`.
      */
     @SerialName("walk") WALK(
         "walk", emptySet(),

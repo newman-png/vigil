@@ -291,7 +291,7 @@ Every kind below has its behaviour in code and its numbers in `params`. Params s
 | `reset` | short, minimal, single | `next_within_min` (60, 0-240) | M5, see [reset](#reset-and-its-offer). |
 
 Unlisted ranges for jummah are 0-120 (`card_before_end_min`, `lock_before_min`: 0-60; `missed_after_min`: 0-240). The
-walk, friends, call and nudge kinds may each appear once in the file (the engine runs one of each).
+walk, friends, call, nudge, sleep and jummah kinds may each appear once in the file (the engine runs one of each).
 
 Open runs (unconfirmed stage-3 reminders too) are missed when the day ends, except prayers: a prayer's window follows
 the adhans (only Isha's window closes with the day, so a Fajr that came before the 06:00 fallback stays open into the
@@ -404,7 +404,8 @@ Friday class that starts before the lock, else the lock itself.
    its window until Asr (not once Asr's adhan has come) and the reset is offered.
 
 No step-down ("I'M NOT OKAY" changes nothing). LEAVE on the leave-by takeover or the lock is a bail-out (the usual
-penalty, counted once); the run goes on (the lock still comes, CONFIRM still counts). LEAVE on the I'M AT UNI ask
+penalty, counted once); the run goes on (the lock still comes, CONFIRM still counts; what follows the lock, the
+attention reset, still follows it unless the lock itself was left). LEAVE on the I'M AT UNI ask
 closes it like NOT YET. The kill switch releases the screen and the phone; afterwards it goes on where the clock is.
 Calls extend the lock like any lock. A validation error: no `arrival` step, more than one, or no done step after it.
 
@@ -468,9 +469,11 @@ lock):
    stage 3 when the reminder is confirmed; Fridays: after the Jummah lock, at DONE or its end), it is triggered and
    waits (`deferred`): it starts `offset_min` later, once no MY TIMES class is in progress and no other protocol holds
    the screen. If it cannot start within 2 hours of that time, it is skipped (`skipped`, reason `too_late`): not a
-   miss. Not after Dhuhr was left before its minimum (a bail-out). Any attention protocol started by its trigger waits
-   like this; a manual or TEST start, the reset's offer and its re-entry start at once. A wait still open when the day
-   ends is `skipped` (reason `day_end`).
+   miss. Not after Dhuhr was left before its minimum (a bail-out), nor after the Jummah lock was left (leaving only
+   Jummah's leave-by takeover does not stop it). Once per run: a Dhuhr whose lock comes again at a reset's re-entry, or
+   the Dhuhr a missed Jummah brings after the Jummah lock had ended, brings no second one. Any attention protocol started
+   by its trigger waits like this; a manual or TEST start, the reset's offer and its re-entry start at once. A wait
+   still open when the day ends is `skipped` (reason `day_end`).
 2. **Steps**: face a wall or a window, phone face-down, then look at one spot: a timer that ends with a soft chime
    (`chime`; QUIET silences it). VIGIL's own sounds (white noise) stop when it starts.
 3. **Ramp**: a timer without `min` lasts `start_min` on the first `ramp_every_days` days the reset was completed in
@@ -525,8 +528,8 @@ observe the world, not scroll.
    own sounds and your files); nothing else is enforced beyond the pool.
 3. **Ends** when the switch goes off (home, STOP, I'M AT UNI), or after `still_end_min` without steps (the app sends the
    step counter's total; the count starts at the walk's start, so a walk never ends at once). Without a step counter or
-   its permission: an automatic commute ends at its start + the row's minutes (else `commute_min`) +
-   `commute_grace_min`, any other walk after `manual_max_min`. It also ends with the day. Journal: `walk_start` and
+   its permission: an automatic commute ends at the commute's end (the row's end, else its start + the row's minutes,
+   else `commute_min`) + `commute_grace_min`, any other walk after `manual_max_min`. It also ends with the day. Journal: `walk_start` and
    `walk_end` (minutes, reason), and `toggle`.
 4. A commute day counts as the morning walk (steps with `skip_on_class_days` are left out). No step-down.
 
@@ -552,7 +555,9 @@ calls row, each on its own (MOM and DAD are two runs). The row's `label` is who,
    card counts; any call the phone reports, also through other apps). When such a call ends the card comes back with
    DONE (`call` reason `called`). DONE (or CONFIRM on its notification) completes the run (`call` reason `done`,
    minutes = the longest call).
-3. **Missed** when not done by the deadline (`call` reason `missed`), or when the day ends first.
+3. **Missed** when not done by the deadline (`call` reason `missed`), or when the day ends first. A call going on at
+   the deadline (it may be this call) holds it: when the call ends, the deadline moves on by the call's length, like a
+   lock, so DONE can still be tapped.
 4. **Time to wrap up**: a call (any call) going on for the wrap-up minutes while a call card is up, or that started
    after today's first card appeared, gets a silent notification "TIME TO WRAP UP", once per call (`wrap_up`).
 5. **Step-down**: short = send a message instead: the card shows MESSAGE (WhatsApp, else the SMS app) and DONE unlocks
@@ -599,7 +604,8 @@ without `min` needs `lock.minutes` (except in attention protocols); `done_after_
 in study protocols, with `min`, at most one per version; `workout` only in gym protocols, at most one per version; an
 attention protocol's `max_min` at least its `start_min`; walk protocols with `toggle:walking` and a `pool` lock, friends
 with `toggle:friends` and a `pool` lock, call with `slot:call`, a `none` lock and a done step in every version, nudge
-with `manual` and a `screen` lock, and at most one protocol of each of these four kinds;
+with `manual` and a `screen` lock, and at most one protocol of each of these four kinds (and of the sleep and jummah
+kinds);
 every number in its range; package names that look like package names; each `apps_button` entry with exactly one key. Warnings: unknown fields and params, long titles and step texts,
 `min`/`lines` on step types that ignore them, a `none` lock with minutes, `done:`/`start:` references to protocols not
 in the file, an empty pool, an empty APPS button, a weekday entry that changes nothing, `todos` outside a sleep protocol,

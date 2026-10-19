@@ -92,6 +92,8 @@ data class JummahInfo(
     val dnd: Boolean = false,
     /** TEST: the one part this preview shows (leave, travel or lock); it ends with that part. Null for a real run. */
     val only: JummahPart? = null,
+    /** The Jummah lock was left (LEAVE): what follows the lock (the attention reset) does not follow this run. */
+    @SerialName("lock_left") val lockLeft: Boolean = false,
 )
 
 /** A 10-minute promise (design M5): exactly the user's line and its timer. */
