@@ -425,6 +425,72 @@
       ],
       "params": { "delays": [5, 10, 15, 30], "snooze_min_min": 2 },
       "stages": false
+    },
+    {
+      "id": "walk",
+      "_note": "I'M WALKING on home, and by itself at every MY TIMES commute row (for its minutes) and at Jummah's walking step. Only the pool is blocked: Maps, WhatsApp, calls and every other app stay usable. No prompts, no takeovers. Ends when the switch goes off (home, or STOP on its notification), after still_end_min without steps, or without a step counter at the commute's end + commute_grace_min (a manual walk: manual_max_min).",
+      "kind": "walk",
+      "title": "WALK",
+      "trigger": "toggle:walking",
+      "intensity": "subtle",
+      "lock": { "type": "pool" },
+      "steps": [
+        { "text": "Phone in your pocket.", "type": "check" },
+        { "text": "Pool blocked. Maps, WhatsApp and calls stay allowed; audio only from VIGIL.", "type": "check" },
+        { "text": "Walk. Look around: no prompts, no takeovers.", "type": "check" }
+      ],
+      "params": { "still_end_min": 10, "commute_grace_min": 15, "manual_max_min": 180 }
+    },
+    {
+      "id": "friends",
+      "_note": "I'M WITH FRIENDS on home: the pool is blocked with no wait (\"YOU'RE WITH FRIENDS\") until the switch goes off, cap_min at most. Calls, Maps, WhatsApp and the PoliTO app stay usable. Subtle and quiet: no takeover.",
+      "kind": "friends",
+      "title": "FRIENDS",
+      "trigger": "toggle:friends",
+      "intensity": "subtle",
+      "lock": { "type": "pool" },
+      "steps": [
+        { "text": "You're with friends. The pool is blocked; calls, Maps and WhatsApp stay allowed.", "type": "check" }
+      ],
+      "params": { "cap_min": 240 }
+    },
+    {
+      "id": "call",
+      "_note": "One run per MY TIMES calls row (label = who, start = the card, end = the deadline, 16:00 by default; minutes = wrap-up after, 20 by default). A full card with the name: CALL opens the dialer, NOT NOW closes it. DONE appears after a call of min_call_min since the card appeared; nothing done after return_after_min: the card comes back once. Not done by the deadline: missed. Short = send a message instead (DONE at once).",
+      "kind": "call",
+      "title": "CALL",
+      "trigger": "slot:call",
+      "intensity": "full",
+      "lock": { "type": "none" },
+      "steps": [
+        { "text": "Tap CALL. DONE appears after a call of 3 minutes.", "type": "done" }
+      ],
+      "short": [
+        { "text": "Send a message instead: tap MESSAGE, then DONE.", "type": "done" }
+      ],
+      "params": { "min_call_min": 3, "return_after_min": 30, "wrap_up_min": 20 }
+    },
+    {
+      "id": "nudge",
+      "_note": "Wellness nudges: per_day short takeovers at times that feel random (fixed per day), from wake + after_wake_min until the wind-down, at least min_gap_min apart, each seconds long; and a movement nudge after still_min without steps while the phone is in use. Only while the phone is in use and nothing else is going on (no run, class, QUIET, night lock, call, friends or walking): otherwise skipped. NOT OKAY or LEAVE end one at no cost; never a miss.",
+      "kind": "nudge",
+      "title": "NUDGE",
+      "trigger": "manual",
+      "intensity": "full",
+      "lock": { "type": "screen" },
+      "steps": [
+        { "text": "Drink a glass of water.", "type": "check" }
+      ],
+      "params": {
+        "nudges": ["Drink a glass of water.", "Look at something far away for 20 seconds.", "Stand up and stretch."],
+        "move_nudges": ["Stand up and walk for a minute."],
+        "seconds": 45,
+        "move_seconds": 60,
+        "per_day": 4,
+        "min_gap_min": 90,
+        "still_min": 90,
+        "after_wake_min": 90
+      }
     }
   ]
 }

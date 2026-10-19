@@ -402,7 +402,19 @@ enum class ProtocolKind(val json: String, val ladder: Set<Version>, val params: 
         "gym", ALL_LADDER,
         mapOf("rest_s" to ParamSpec.IntRange(10, 600, 90), "exercises" to ParamSpec.TextList),
     ),
-    @SerialName("walk") WALK("walk", emptySet(), mapOf("still_end_min" to ParamSpec.IntRange(1, 120, 10))),
+    /**
+     * The walking switch (and every MY TIMES commute row, and Jummah's walking step): the pool is blocked until the switch
+     * goes off, or `still_end_min` without steps; without a step counter a commute ends `commute_grace_min` after its
+     * length and a manual walk after `manual_max_min`.
+     */
+    @SerialName("walk") WALK(
+        "walk", emptySet(),
+        mapOf(
+            "still_end_min" to ParamSpec.IntRange(1, 120, 10),
+            "commute_grace_min" to ParamSpec.IntRange(0, 120, 15),
+            "manual_max_min" to ParamSpec.IntRange(10, 720, 180),
+        ),
+    ),
     /**
      * Spec: "short = 3 minutes, whatever the ramp says. There is no minimal version below that." It starts
      * `offset_min` after its trigger; its timer without `min` lasts the ramp length.
@@ -416,13 +428,36 @@ enum class ProtocolKind(val json: String, val ladder: Set<Version>, val params: 
             "ramp_every_days" to ParamSpec.IntRange(1, 30, 2),
         ),
     ),
+    /** The friends switch: the pool is blocked (no wait) until it goes off, `cap_min` at most. */
     @SerialName("friends") FRIENDS("friends", emptySet(), mapOf("cap_min" to ParamSpec.IntRange(10, 720, 240))),
+    /**
+     * One run per MY TIMES calls row: a full card at its start, DONE after a call of `min_call_min`, the card back once
+     * after `return_after_min`, missed at the row's deadline; "time to wrap up" after `wrap_up_min` (or the row's minutes).
+     */
     @SerialName("call") CALL(
         "call", setOf(Version.SHORT),
         mapOf(
             "min_call_min" to ParamSpec.IntRange(1, 60, 3),
             "return_after_min" to ParamSpec.IntRange(1, 240, 30),
             "wrap_up_min" to ParamSpec.IntRange(1, 120, 20),
+        ),
+    ),
+    /**
+     * Wellness nudges: `per_day` short takeovers at pseudo-random times from wake + `after_wake_min` to wind-down, at least
+     * `min_gap_min` apart, `seconds` long, with a line from `nudges`; and one from `move_nudges` (`move_seconds` long)
+     * after `still_min` without steps while the phone is in use.
+     */
+    @SerialName("nudge") NUDGE(
+        "nudge", emptySet(),
+        mapOf(
+            "nudges" to ParamSpec.TextList,
+            "move_nudges" to ParamSpec.TextList,
+            "seconds" to ParamSpec.IntRange(10, 120, 45),
+            "move_seconds" to ParamSpec.IntRange(10, 180, 60),
+            "per_day" to ParamSpec.IntRange(0, 12, 4),
+            "min_gap_min" to ParamSpec.IntRange(15, 600, 90),
+            "still_min" to ParamSpec.IntRange(15, 600, 90),
+            "after_wake_min" to ParamSpec.IntRange(0, 600, 90),
         ),
     ),
     @SerialName("promise") PROMISE(

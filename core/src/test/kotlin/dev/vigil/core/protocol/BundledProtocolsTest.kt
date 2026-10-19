@@ -68,7 +68,7 @@ class BundledProtocolsTest {
         assertEquals(
             listOf(
                 "prayer-fajr", "morning", "prayer-dhuhr", "attention", "lunch", "study", "prayer-asr", "gym", "prayer-maghrib",
-                "dinner", "prayer-isha", "sleep", "jummah", "reset", "promise",
+                "dinner", "prayer-isha", "sleep", "jummah", "reset", "promise", "walk", "friends", "call", "nudge",
             ),
             file.protocols.map { it.id },
         )

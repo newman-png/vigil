@@ -8,10 +8,10 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.graphics.drawable.Icon
+import android.net.Uri
 import android.util.Log
 import dev.vigil.R
 import dev.vigil.alarm.WakeAlarmActivity
-import dev.vigil.alarm.WhiteNoiseStopReceiver
 import dev.vigil.core.machine.Effect
 import dev.vigil.core.machine.NotifyKind
 import dev.vigil.core.run.JummahPart
@@ -20,11 +20,12 @@ import dev.vigil.takeover.TakeoverActivity
 import dev.vigil.ui.MainActivity
 
 /**
- * Every notification VIGIL posts: the always-on one (QUIET, LATER), the one behind a takeover, and the engine's notices
- * ([Effect.Notify]: heads-ups, class cards, CONFIRM and I'M AT UNI prompts, stage-3 reminders, runs without a screen
- * lock, window warnings, the reset offer, promises). Only a takeover that has just started, a stage-3 reminder or warning
- * that is not silent, and the reset offer may alert; everything else is posted on low-importance channels, which never
- * sound or light up a dark screen.
+ * Every notification VIGIL posts: the always-on one (QUIET, LATER), the one behind a takeover, VIGIL's sound (STOP), and
+ * the engine's notices ([Effect.Notify]: heads-ups, class cards, CONFIRM and I'M AT UNI prompts, stage-3 reminders, runs
+ * without a screen lock, window warnings, the reset offer, promises, the walking and friends switches with STOP, call
+ * cards, "time to wrap up"). Only a takeover that has just started, a stage-3 reminder or warning that is not silent, and
+ * the reset offer may alert; everything else is posted on low-importance channels, which never sound or light up a dark
+ * screen.
  */
 object Notifications {
     private const val TAG = "VigilNotify"
@@ -35,16 +36,16 @@ object Notifications {
     const val CHANNEL_CARDS = "cards"
     const val CHANNEL_REMINDERS = "reminders"
     const val CHANNEL_ALARM = "wake_alarm"
-    const val CHANNEL_NOISE = "white_noise"
+    const val CHANNEL_AUDIO = "audio"
     const val CHANNEL_OFFER = "offers"
 
-    /** v1 channels that no longer exist. */
-    private val OLD_CHANNELS = listOf("plan")
+    /** Channels that no longer exist (v1's plan, M2's white noise: now every sound is on [CHANNEL_AUDIO]). */
+    private val OLD_CHANNELS = listOf("plan", "white_noise")
 
     const val ID_SERVICE = 1
     const val ID_TAKEOVER = 2
     const val ID_ALARM = 3
-    const val ID_NOISE = 4
+    const val ID_AUDIO = 4
 
     /** Every engine notice is posted with this id and the core's notice id as its tag. */
     const val ID_NOTICE = 10
@@ -104,8 +105,8 @@ object Notifications {
             },
         )
         nm.createNotificationChannel(
-            NotificationChannel(CHANNEL_NOISE, "White noise", NotificationManager.IMPORTANCE_LOW).apply {
-                description = "Shown while white noise plays, with STOP."
+            NotificationChannel(CHANNEL_AUDIO, "Audio", NotificationManager.IMPORTANCE_LOW).apply {
+                description = "Shown while VIGIL plays white noise, the metronome or one of your files, with STOP."
                 setSound(null, null)
                 enableVibration(false)
                 setShowBadge(false)
@@ -182,16 +183,16 @@ object Notifications {
             .build()
     }
 
-    /** White noise is playing: STOP ends it. */
-    fun whiteNoise(context: Context): Notification {
+    /** VIGIL plays [title] (white noise, the metronome, a file): STOP ends it. */
+    fun audio(context: Context, title: String): Notification {
         val stop = PendingIntent.getBroadcast(
-            context, 4, Intent(context, WhiteNoiseStopReceiver::class.java),
+            context, 4, Intent(context, NoticeActionReceiver::class.java).setAction(NoticeActionReceiver.ACTION_AUDIO_STOP),
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
-        return Notification.Builder(context, CHANNEL_NOISE)
+        return Notification.Builder(context, CHANNEL_AUDIO)
             .setSmallIcon(R.drawable.ic_stat_eye)
-            .setContentTitle("VIGIL · WHITE NOISE")
-            .setContentText("Playing. It stops at the wake alarm, after 8 hours at the latest.")
+            .setContentTitle("VIGIL · $title")
+            .setContentText("Playing, also with the screen locked. The wake alarm stops it.")
             .setOngoing(true)
             .setShowWhen(false)
             .setContentIntent(openApp(context))
@@ -210,9 +211,10 @@ object Notifications {
             alerting -> CHANNEL_REMINDERS
             else -> CHANNEL_CARDS
         }
-        // A run without a screen lock that is still going (the morning): its takeover opens from the notice.
+        // A run without a screen lock that is still going (the morning, a call card): its takeover opens from the notice.
         val openable = notice.runId?.takeIf { id ->
-            notice.kind == NotifyKind.RUN && Vigil.state.value.runs.any { it.id == id && it.phase == RunPhase.ACTIVE }
+            (notice.kind == NotifyKind.RUN || notice.kind == NotifyKind.CALL) &&
+                Vigil.state.value.runs.any { it.id == id && it.phase == RunPhase.ACTIVE }
         }
         val builder = Notification.Builder(context, channel)
             .setSmallIcon(R.drawable.ic_stat_eye)
@@ -246,9 +248,29 @@ object Notifications {
             }
             // A promise stays while it runs (its pool lock holds until DONE).
             NotifyKind.PROMISE -> builder.setCategory(Notification.CATEGORY_REMINDER).setOngoing(true)
+            // Walking or friends: silent and ongoing while the switch is on, with STOP (the switch off, at no cost).
+            NotifyKind.SWITCH -> {
+                builder.setCategory(Notification.CATEGORY_STATUS).setOngoing(true)
+                notice.runId?.let { id -> builder.addAction(action(context, "STOP", stopIntent(context, id))) }
+            }
+            // A call card: CALL (or MESSAGE in the short version), and DONE once a call has unlocked it.
+            NotifyKind.CALL -> {
+                builder.setCategory(Notification.CATEGORY_REMINDER).setOngoing(true)
+                notice.runId?.let { id ->
+                    val view = Vigil.stepView(id)?.call
+                    if (view?.message == true) {
+                        builder.addAction(action(context, "MESSAGE", PendingIntent.getActivity(context, 8, Device.messageIntent(context), IMMUTABLE)))
+                    } else {
+                        val dial = Intent(Intent.ACTION_DIAL, Uri.parse("tel:")).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                        builder.addAction(action(context, "CALL", PendingIntent.getActivity(context, 9, dial, IMMUTABLE)))
+                    }
+                    if (view?.done == true) builder.addAction(action(context, "DONE", confirmIntent(context, id)))
+                }
+            }
         }
         val runId = notice.runId
-        val answerable = notice.kind != NotifyKind.HEADS_UP && notice.kind != NotifyKind.RUN && notice.kind != NotifyKind.CARD
+        val answerable = notice.kind != NotifyKind.HEADS_UP && notice.kind != NotifyKind.RUN && notice.kind != NotifyKind.CARD &&
+            notice.kind != NotifyKind.SWITCH && notice.kind != NotifyKind.CALL
         if (runId != null && answerable) {
             // Vigil.confirm for every one: a prayer or Jummah is confirmed, I'M AT UNI on the way to Jummah, a stage-3
             // reminder or a promise is done.
@@ -281,6 +303,20 @@ object Notifications {
         }
     }
 
+    private const val IMMUTABLE = PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT
+
+    private fun action(context: Context, label: String, intent: PendingIntent): Notification.Action =
+        Notification.Action.Builder(Icon.createWithResource(context, R.drawable.ic_stat_eye), label, intent).build()
+
+    /** STOP on a switch's notice: walking or friends off (a TEST run just ends). */
+    private fun stopIntent(context: Context, runId: String): PendingIntent = PendingIntent.getBroadcast(
+        context, runId.hashCode() + 1,
+        Intent(context, NoticeActionReceiver::class.java)
+            .setAction(NoticeActionReceiver.ACTION_STOP)
+            .putExtra(NoticeActionReceiver.EXTRA_RUN, runId),
+        IMMUTABLE,
+    )
+
     private fun confirmIntent(context: Context, runId: String): PendingIntent = PendingIntent.getBroadcast(
         context, runId.hashCode(),
         Intent(context, NoticeActionReceiver::class.java)
@@ -311,8 +347,9 @@ object Notifications {
 }
 
 /**
- * The buttons on engine notices: CONFIRM, DONE or I'M AT UNI ([Vigil.confirm] for its run), and START / NOT NOW on the
- * reset offer. The engine removes the notice when it applies.
+ * The buttons on engine notices: CONFIRM, DONE or I'M AT UNI ([Vigil.confirm] for its run), START / NOT NOW on the reset
+ * offer, STOP on a switch's notice ([Vigil.bailOut]: the switch off, at no cost) and STOP on VIGIL's sound. The engine
+ * removes the notice when it applies.
  */
 class NoticeActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
@@ -322,6 +359,8 @@ class NoticeActionReceiver : BroadcastReceiver() {
                 ACTION_CONFIRM -> intent.getStringExtra(EXTRA_RUN)?.let { Vigil.confirm(it) }
                 ACTION_OFFER_START -> Vigil.answerOffer(start = true)
                 ACTION_OFFER_NOT_NOW -> Vigil.answerOffer(start = false)
+                ACTION_STOP -> intent.getStringExtra(EXTRA_RUN)?.let { Vigil.bailOut(it) }
+                ACTION_AUDIO_STOP -> Vigil.stopAudio("stop")
             }
         } catch (e: Exception) {
             Log.e(TAG, "Handling ${intent.action} failed", e)
@@ -332,6 +371,8 @@ class NoticeActionReceiver : BroadcastReceiver() {
         const val ACTION_CONFIRM = "dev.vigil.action.CONFIRM"
         const val ACTION_OFFER_START = "dev.vigil.action.OFFER_START"
         const val ACTION_OFFER_NOT_NOW = "dev.vigil.action.OFFER_NOT_NOW"
+        const val ACTION_STOP = "dev.vigil.action.STOP"
+        const val ACTION_AUDIO_STOP = "dev.vigil.action.AUDIO_STOP"
         const val EXTRA_RUN = "run"
         private const val TAG = "VigilNotice"
     }

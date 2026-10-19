@@ -5,7 +5,6 @@ import dev.vigil.core.journal.Report
 import dev.vigil.core.journal.ReportMeta
 import dev.vigil.core.pool.BlockReason
 import dev.vigil.core.pool.PoolDecision
-import dev.vigil.core.protocol.BundledProtocols
 import dev.vigil.core.protocol.LockType
 import dev.vigil.core.protocol.StepType
 import dev.vigil.core.protocol.Version
@@ -22,7 +21,7 @@ import org.junit.Test
 
 /** Protocol 7: the gym (design M7), with the bundled `gym` protocol: logging, the rest timer, the pre-fill. */
 class GymTest {
-    private val full = BundledProtocols.file
+    private val full = M7_FILE
 
     /** Monday and Thursday at 18:00, a 60-minute workout. */
     private val times = MyTimes(gym = listOf(Slot(listOf("mon", "thu"), "18:00", minutes = 60)))

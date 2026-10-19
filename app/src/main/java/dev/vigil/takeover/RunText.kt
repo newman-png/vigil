@@ -68,9 +68,10 @@ internal const val STEP_DOWN_NOTE = "OKAY. THIS COSTS NOTHING."
 
 /**
  * True for runs whose "I'M NOT OKAY" says so when nothing changes (Jummah and the promise have no shorter version; the
- * attention reset none below its 3 minutes), so it still shows.
+ * attention reset none below its 3 minutes, a call none below its message), so it still shows.
  */
-internal fun saysNoStepDown(run: Run): Boolean = run.jummah != null || run.promise != null || run.kind == ProtocolKind.ATTENTION
+internal fun saysNoStepDown(run: Run): Boolean =
+    run.jummah != null || run.promise != null || run.call != null || run.kind == ProtocolKind.ATTENTION
 
 /** What "I'M NOT OKAY" says where there is no shorter version. */
 internal const val NO_STEP_DOWN_NOTE = "THERE IS NO SHORTER VERSION OF THIS ONE. IT STAYS AS IT IS."
@@ -153,6 +154,7 @@ internal fun endText(entry: Entry): String? = when (entry.type) {
         "window_closed" -> "THE WINDOW CLOSED.\nLOGGED AS MISSED."
         "next_adhan" -> "THE NEXT ADHAN CAME.\nLOGGED AS MISSED."
         "day_end" -> "THE DAY ENDED.\nLOGGED AS MISSED."
+        "deadline" -> "THE DEADLINE PASSED.\nLOGGED AS MISSED."
         else -> "LOGGED AS MISSED."
     }
     EntryType.BAILED -> "LEFT EARLY. LOGGED."

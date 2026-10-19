@@ -29,13 +29,13 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.input.pointer.pointerInput
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
-import dev.vigil.alarm.WhiteNoiseService
 import dev.vigil.core.common.WallClock
+import dev.vigil.core.machine.Effect
 import dev.vigil.core.protocol.BailOutConfig
 import dev.vigil.core.protocol.Protocol
 import dev.vigil.core.run.Run
+import dev.vigil.engine.Vigil
 import dev.vigil.engine.WhitelistApp
 import dev.vigil.ui.rememberNow
 import dev.vigil.ui.theme.Palette
@@ -177,13 +177,14 @@ internal fun NightScreen(
 }
 
 /**
- * WHITE NOISE ON / OFF: a tap starts or stops white noise made in code ([WhiteNoiseService]: it keeps playing with the
- * screen locked, stops at the wake alarm and after 8 hours). On the wind-down's lights-low step and the night lock.
+ * WHITE NOISE ON / OFF: a tap starts or stops white noise made in code (through the engine, like the AUDIO screen: it
+ * keeps playing with the screen locked, stops at the wake alarm and after 8 hours). On the wind-down's lights-low step
+ * and the night lock.
  */
 @Composable
 internal fun NoiseSwitch(dim: Boolean = false) {
-    val context = LocalContext.current
-    val playing by WhiteNoiseService.playing.collectAsState()
+    val state by Vigil.state.collectAsState()
+    val playing = state.audio?.sound == Effect.Audio.WHITE_NOISE
     val color = when {
         playing -> if (dim) TakeoverType.Dim else Palette.White
         else -> TakeoverType.Faint
@@ -192,7 +193,9 @@ internal fun NoiseSwitch(dim: Boolean = false) {
         if (playing) "WHITE NOISE · ON" else "WHITE NOISE · OFF",
         TakeoverType.Strip,
         Modifier
-            .clickable(remember { MutableInteractionSource() }, indication = null) { WhiteNoiseService.set(context, !playing) }
+            .clickable(remember { MutableInteractionSource() }, indication = null) {
+                if (playing) Vigil.stopAudio() else Vigil.playAudio(Effect.Audio.WHITE_NOISE)
+            }
             .padding(horizontal = 16.dp, vertical = 14.dp),
         color = color,
     )

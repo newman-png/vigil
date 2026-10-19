@@ -30,13 +30,17 @@ class InvariantTest {
         testProtocol("alpha"),
         testProtocol("timed", trigger = "time:10:00", steps = listOf(Step("Sun.", StepType.CHECK, min = 2), Step("Breathe.", StepType.TIMER, min = 3))),
         testProtocol("meal", trigger = "slot:meal", kind = ProtocolKind.MEAL, lock = Lock(LockType.POOL, 20, null)),
-        testProtocol("friends", trigger = "toggle:friends", kind = ProtocolKind.FRIENDS, lock = Lock(LockType.POOL)),
         testProtocol("free", trigger = "event:after:prayer-dhuhr", kind = ProtocolKind.ATTENTION, lock = Lock(LockType.SCREEN, 5, null)),
         // The whole bundled file: study, the attention reset, lunch, dinner and the gym run through these days too.
         base = dev.vigil.core.protocol.BundledProtocols.file,
     )
     private val file = file0.copy(pool = file0.pool.copy(windows = listOf(dev.vigil.core.protocol.FreeWindowConfig("day", "05:00", "23:30", 60), dev.vigil.core.protocol.FreeWindowConfig("x", "12:00", "next", 20))))
-    private val times = MyTimes(classes = listOf(Slot(listOf("tue", "fri"), "13:00", "14:30", label = "Analysis")))
+    private val times = MyTimes(
+        classes = listOf(Slot(listOf("tue", "fri"), "13:00", "14:30", label = "Analysis")),
+        // The M8 rows: two calls (mom, dad) and the commute on weekdays.
+        calls = listOf(Slot(listOf("mon", "wed", "fri", "sun"), "13:00", label = "MOM"), Slot(listOf("tue", "fri"), "15:00", "16:00", label = "DAD")),
+        commute = listOf(Slot(listOf("mon", "tue", "thu"), "08:00", minutes = 45), Slot(listOf("mon", "tue"), "17:00")),
+    )
 
     /** About 0.7 s per seed (eight days each); widen the range locally when hunting a bug. */
     @Test
@@ -120,6 +124,16 @@ class InvariantTest {
         if (Machine.dndWanted(s, env) != s.runs.any { it.jummah?.dnd == true && view.lockActive(it) }) broken("dndWanted disagrees")
         s.runs.filter { it.asking }.forEach { if (it.phase != RunPhase.ACTIVE && it.phase != RunPhase.OPEN) broken("${it.id} asks in phase ${it.phase}") }
         if (s.runs.count { it.promise != null } > 1) broken("two promises")
+        // Nothing timed gets stuck: a switch that is on ends by itself, a nudge within its seconds, a call by its deadline.
+        if (s.toggles.walking && view.walkEnd() == null) broken("walking without an end")
+        if (s.toggles.friends && view.friendsEnd() == null) broken("friends without an end")
+        s.runs.filter { it.kind == ProtocolKind.NUDGE }.forEach {
+            val end = it.lockEndsAt ?: broken("a nudge without an end")
+            if (Duration.between(it.firedAt, end) > Duration.ofMinutes(3)) broken("a nudge longer than 3 minutes")
+        }
+        s.runs.filter { it.call != null }.forEach { if (it.phase != RunPhase.ACTIVE && it.phase != RunPhase.REMINDER) broken("${it.id} a call card in phase ${it.phase}") }
+        if (s.runs.count { it.kind == ProtocolKind.NUDGE } > 1) broken("two nudges")
+        if (s.callSince == null && (s.callWrapAt != null || s.callWrapped)) broken("a wrap-up without a call")
         s.runs.filter { it.phase == RunPhase.WAITING }.forEach { if (it.promise == null) broken("${it.id} waits without a promise") }
         s.offer?.let { o -> if (s.runs.any { it.protocol == o.protocol && !it.test }) broken("an offer for a running protocol") }
         val prayers = s.runs.filter { it.prayer != null && !it.test }.groupBy { it.prayer }
@@ -137,7 +151,7 @@ class InvariantTest {
         val runs = sim.state.runs
         val run = runs.takeIf { it.isNotEmpty() }?.get(rnd.nextInt(runs.size))
         val prayer = Prayer.entries[rnd.nextInt(Prayer.entries.size)]
-        return when (rnd.nextInt(34)) {
+        return when (rnd.nextInt(35)) {
             0, 1, 2, 3, 4, 5 -> Input.Tick
             6 -> Input.Adhan(prayer)
             7 -> Input.Manual(listOf("alpha", "timed", "sleep", "meal", "prayer-${prayer.json}")[rnd.nextInt(5)], test = rnd.nextInt(6) == 0)
@@ -171,6 +185,14 @@ class InvariantTest {
             30 -> Input.Promise("Call the dentist", listOf(5, 10, 15, 30)[rnd.nextInt(4)], test = rnd.nextInt(5) == 0)
             31 -> if (run != null) (if (rnd.nextBoolean()) Input.Snooze(run.id) else Input.Dismiss(run.id)) else Input.Tick
             32 -> if (rnd.nextInt(4) == 0) Input.TestJummah(JummahTestPart.entries[rnd.nextInt(JummahTestPart.entries.size)]) else Input.Tick
+            // M8: the step counter, audio, TEST walk/friends/call/nudge.
+            33 -> when (rnd.nextInt(6)) {
+                0 -> Input.Steps(if (rnd.nextInt(5) == 0) null else 1000L + rnd.nextInt(50) * 20L)
+                1 -> Input.PlayAudio(listOf(Effect.Audio.WHITE_NOISE, Effect.Audio.METRONOME, "file:f1")[rnd.nextInt(3)], bpm = 30 + rnd.nextInt(200), loop = rnd.nextBoolean())
+                2 -> Input.StopAudio(if (rnd.nextBoolean()) "stop" else "ended")
+                3 -> Input.Manual(listOf("walk", "friends", "call", "nudge")[rnd.nextInt(4)], test = rnd.nextInt(3) == 0)
+                else -> Input.Steps(1000L + rnd.nextInt(50) * 20L)
+            }
             else -> Input.Tick
         }
     }

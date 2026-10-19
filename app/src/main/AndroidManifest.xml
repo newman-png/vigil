@@ -6,7 +6,8 @@
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
-    <!-- The wake alarm's sound and white noise keep playing with the screen locked (media playback services). -->
+    <!-- The wake alarm's sound and VIGIL's audio (white noise, the metronome, your files) keep playing with the screen
+         locked (media playback services). -->
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
     <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
@@ -19,6 +20,9 @@
     <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
     <!-- Call pause: the phone's call state (TelephonyCallback). Granted in SETUP; without it the audio mode is used. -->
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
+    <!-- The step counter (PHYSICAL ACTIVITY): a walk ends after 10 minutes without steps, and the movement nudge comes
+         after 90 still minutes. Granted in SETUP (or when I'M WALKING is first used); without it walks end by time. -->
+    <uses-permission android:name="android.permission.ACTIVITY_RECOGNITION" />
     <!-- Usage access is granted by the user in system settings (SETUP): the front app for a takeover coming back. -->
     <uses-permission
         android:name="android.permission.PACKAGE_USAGE_STATS"
@@ -125,22 +129,17 @@
                 android:value="Personal commitment device: runs the user's own daily protocols at their times and keeps the user's chosen distracting apps closed." />
         </service>
 
-        <!-- The wake alarm ringing (a tone made in code on the alarm stream, with vibration), and white noise for falling
-             asleep (made in code); both keep playing with the screen locked. -->
+        <!-- The wake alarm ringing (a tone made in code on the alarm stream, with vibration), and VIGIL's audio (white
+             noise and the metronome made in code, or one of your files); both keep playing with the screen locked. -->
         <service
             android:name=".alarm.WakeAlarmService"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
 
         <service
-            android:name=".alarm.WhiteNoiseService"
+            android:name=".audio.AudioService"
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
-
-        <!-- STOP on the white noise notification. -->
-        <receiver
-            android:name=".alarm.WhiteNoiseStopReceiver"
-            android:exported="false" />
 
         <!-- The engine's alarm, the wake alarm clock and the TEST screen's alarm. Reached only through VIGIL's own
              PendingIntents. -->
@@ -156,8 +155,8 @@
             android:name=".engine.QuietToggleReceiver"
             android:exported="false" />
 
-        <!-- CONFIRM / DONE / I'M AT UNI on the engine's notices (prayers, Jummah, stage-3 reminders, promises), and
-             START / NOT NOW on the reset offer. -->
+        <!-- CONFIRM / DONE / I'M AT UNI on the engine's notices (prayers, Jummah, stage-3 reminders, promises, call
+             cards), START / NOT NOW on the reset offer, STOP on the walking and friends notices and on VIGIL's audio. -->
         <receiver
             android:name=".engine.NoticeActionReceiver"
             android:exported="false" />

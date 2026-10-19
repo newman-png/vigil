@@ -124,6 +124,19 @@ data class GymInfo(
     @SerialName("rest_until") val restUntil: Instant? = null,
 )
 
+/** A call run (design M8): its deadline, its wrap-up minutes, and the calls made since its card appeared. */
+@Serializable
+data class CallInfo(
+    /** Not done by then (the MY TIMES row's end, 16:00 by default): missed. */
+    @SerialName("due_at") val dueAt: Instant,
+    /** "Time to wrap up" after this many minutes of a call (the row's minutes, 20 by default). */
+    @SerialName("wrap_up_min") val wrapUpMin: Int,
+    /** When its card first appeared: only calls after it count. */
+    @SerialName("card_at") val cardAt: Instant? = null,
+    /** The longest call since the card appeared, in seconds: DONE unlocks at `min_call_min`. */
+    @SerialName("call_s") val callS: Long = 0,
+)
+
 /** The MY TIMES slot a `slot:` trigger started a run for. */
 @Serializable
 data class SlotInfo(
@@ -146,7 +159,10 @@ data class Run(
     val stage: Int,
     val phase: RunPhase,
     val firedAt: Instant,
-    /** What started it: adhan, time, slot:<type>, manual, test, wake_alarm, after:<id>, misses:<n>, toggle:<name>. */
+    /**
+     * What started it: adhan, time, slot:<type>, manual, test, wake_alarm, after:<id>, misses:<n>, toggle:<name>,
+     * commute; a nudge: timed or still.
+     */
     val reason: String,
     /** The day key's weekday ("mon".."sun"): picks weekday step lists. */
     val weekday: String,
@@ -201,8 +217,9 @@ data class Run(
     /** It fired on a day with a MY TIMES class or commute: steps marked `skip_on_class_days` are left out. */
     val classDay: Boolean = false,
     /**
-     * Its full takeover is up without a screen lock (the I'M AT UNI ask, a promise that came due): it owns the screen
-     * until answered, yields to any screen lock and is never brought back once left.
+     * Its full takeover is up without a screen lock (the I'M AT UNI ask, a promise that came due, a call card): it owns
+     * the screen until answered, yields to any screen lock and is never brought back once left (a call card comes back
+     * once by its own rule).
      */
     val asking: Boolean = false,
     /** A Jummah run: its times and part. */
@@ -218,6 +235,8 @@ data class Run(
     val label: String? = null,
     /** A gym run: the sets logged and the rest timer. */
     val gym: GymInfo? = null,
+    /** A call run: its deadline and the calls made. */
+    val call: CallInfo? = null,
 ) {
     /** The single-step version, shown marked "minimum". */
     val isMinimum: Boolean get() = version == Version.SINGLE

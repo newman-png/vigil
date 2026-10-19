@@ -6,6 +6,7 @@ import dev.vigil.core.protocol.Protocol
 import dev.vigil.core.protocol.ProtocolFile
 import dev.vigil.core.protocol.ProtocolKind
 import dev.vigil.core.protocol.SlotType
+import dev.vigil.core.protocol.ToggleName
 import dev.vigil.core.protocol.Trigger
 import dev.vigil.core.run.JummahInfo
 import dev.vigil.core.times.DayTimes
@@ -18,7 +19,7 @@ enum class StartSource(val json: String) {
     /** A `time:<expr>` trigger. */
     TIME("time"),
 
-    /** A `slot:<type>` trigger and a MY TIMES row. */
+    /** A `slot:<type>` trigger and a MY TIMES row (also the walk protocol's commute rows). */
     SLOT("slot"),
 
     /** A prayer: its adhan today, or the estimate from the last adhan (+24 h). */
@@ -65,10 +66,10 @@ data class TimelineItem(
 )
 
 /**
- * The day's planned starts (design: timeline): every `time:` and `slot:` trigger resolved against MY TIMES for the day,
- * plus each prayer at its adhan (or its estimate), between the day's start and its latest end. DST-safe: local times
- * go through [DayTimes]; prayer estimates add whole 24-hour periods to the last adhan, which follows the sun across a
- * clock change.
+ * The day's planned starts (design: timeline): every `time:` and `slot:` trigger resolved against MY TIMES for the day
+ * (and the walk protocol at each MY TIMES commute row), plus each prayer at its adhan (or its estimate), between the
+ * day's start and its latest end. DST-safe: local times go through [DayTimes]; prayer estimates add whole 24-hour
+ * periods to the last adhan, which follows the sun across a clock change.
  */
 object Timeline {
     /**
@@ -100,6 +101,12 @@ object Timeline {
                 } else {
                     rows(file, p, t, times).forEach { out += PlannedStart(p.id, p.title, it.start, StartSource.SLOT, slot = it) }
                     next?.let { rows(file, p, t, it) }?.filter { early(it.start, next) }
+                        ?.forEach { out += PlannedStart(p.id, p.title, it.start, StartSource.SLOT, slot = it) }
+                }
+                // The walking switch also goes on by itself at every MY TIMES commute row.
+                is Trigger.Toggle -> if (p.kind == ProtocolKind.WALK && t.toggle == ToggleName.WALKING) {
+                    times.slots(SlotType.COMMUTE).forEach { out += PlannedStart(p.id, p.title, it.start, StartSource.SLOT, slot = it) }
+                    next?.slots(SlotType.COMMUTE)?.filter { early(it.start, next) }
                         ?.forEach { out += PlannedStart(p.id, p.title, it.start, StartSource.SLOT, slot = it) }
                 }
                 is Trigger.Adhan -> {

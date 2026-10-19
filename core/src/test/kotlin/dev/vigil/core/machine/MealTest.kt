@@ -3,7 +3,6 @@ package dev.vigil.core.machine
 import dev.vigil.core.journal.EntryType
 import dev.vigil.core.pool.BlockReason
 import dev.vigil.core.pool.PoolDecision
-import dev.vigil.core.protocol.BundledProtocols
 import dev.vigil.core.protocol.Intensity
 import dev.vigil.core.protocol.LockType
 import dev.vigil.core.protocol.ProtocolFile
@@ -24,7 +23,7 @@ import org.junit.Test
 
 /** Protocol 6: meals (design M7), with the bundled `lunch` and `dinner` protocols and the default MY TIMES meals. */
 class MealTest {
-    private val full = BundledProtocols.file
+    private val full = M7_FILE
 
     private fun Sim.blocks(): List<BlockReason> = (decision() as? PoolDecision.Blocked)?.blocks?.map { it.reason } ?: emptyList()
 

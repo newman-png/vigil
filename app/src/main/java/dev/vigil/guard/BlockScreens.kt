@@ -214,8 +214,8 @@ private fun untilText(block: Block, now: Instant, zone: ZoneId): String {
     return when (block.reason) {
         BlockReason.OUTSIDE_WINDOW, BlockReason.WINDOW_CAP ->
             if (until != null) "NEXT WINDOW ${WallClock.hhmm(until, zone)} · IN ${minutesText(now, until)}" else "NO MORE WINDOWS TODAY"
-        BlockReason.FRIENDS, BlockReason.WALKING ->
-            until?.let { "${minutesText(now, it)} · UNTIL ${WallClock.hhmm(it, zone)}" } ?: "UNTIL YOU SWITCH IT OFF"
+        BlockReason.FRIENDS -> until?.let { "${minutesText(now, it)} · UNTIL ${WallClock.hhmm(it, zone)}" } ?: "UNTIL YOU SWITCH IT OFF"
+        BlockReason.WALKING -> "UNTIL THE WALK ENDS: SWITCH IT OFF, OR STOP MOVING"
         else -> until?.let { "${minutesText(now, it)} · UNTIL ${WallClock.hhmm(it, zone)}" } ?: "UNTIL IT ENDS"
     }
 }

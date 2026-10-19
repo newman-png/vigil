@@ -43,6 +43,26 @@ object ProtocolParser {
     const val MAX_TITLE_CHARS = 30
     const val MAX_STEP_TEXT_CHARS = 160
 
+    /** The kinds whose behaviour needs one trigger (M8): the switches, the MY TIMES calls rows, the nudges' own times. */
+    private val KIND_TRIGGERS: Map<ProtocolKind, Pair<Trigger, String>> = mapOf(
+        ProtocolKind.WALK to (Trigger.Toggle(ToggleName.WALKING) to
+            "a walk protocol starts from the walking switch (and the MY TIMES commute rows): use toggle:walking."),
+        ProtocolKind.FRIENDS to (Trigger.Toggle(ToggleName.FRIENDS) to "a friends protocol starts from its switch: use toggle:friends."),
+        ProtocolKind.CALL to (Trigger.Slot(SlotType.CALL) to "a call protocol starts at each MY TIMES calls row: use slot:call."),
+        ProtocolKind.NUDGE to (Trigger.Manual to "nudges come at their own times (params): use manual."),
+    )
+
+    /** The lock each of those kinds needs. */
+    private val KIND_LOCKS: Map<ProtocolKind, Pair<LockType, String>> = mapOf(
+        ProtocolKind.WALK to (LockType.POOL to "the walking switch blocks the pool and nothing else: use \"pool\"."),
+        ProtocolKind.FRIENDS to (LockType.POOL to "the friends switch blocks the pool and nothing else: use \"pool\"."),
+        ProtocolKind.CALL to (LockType.NONE to "the call card locks nothing: use \"none\"."),
+        ProtocolKind.NUDGE to (LockType.SCREEN to "a nudge holds the screen for its seconds: use \"screen\"."),
+    )
+
+    /** Kinds the engine runs once (two would double every walk, card or nudge). */
+    private val ONE_PER_FILE = setOf(ProtocolKind.WALK, ProtocolKind.FRIENDS, ProtocolKind.CALL, ProtocolKind.NUDGE)
+
     private val strict = Json { isLenient = false }
     private val decoder = Json {
         ignoreUnknownKeys = true
@@ -262,6 +282,7 @@ object ProtocolParser {
 
         val seen = mutableSetOf<String>()
         val prayers = mutableMapOf<Prayer, String>()
+        val single = mutableMapOf<ProtocolKind, String>()
         val rawProtocols = root["protocols"] as? JsonArray
         file.protocols.forEachIndexed { i, p ->
             val path = "protocols[$i] (${p.id})"
@@ -271,6 +292,10 @@ object ProtocolParser {
             if (!seen.add(p.id)) ctx.error("$path.id", "\"${p.id}\" is used by more than one protocol.")
             val raw = rawProtocols?.getOrNull(i) as? JsonObject
             checkProtocol(p, path, ids, raw, ctx)
+            if (p.kind in ONE_PER_FILE) {
+                val other = single.put(p.kind, p.id)
+                if (other != null) ctx.error("$path.kind", "\"$other\" is already the ${p.kind.json} protocol; one per file.")
+            }
             val prayer = (p.parsedTrigger as? Trigger.Adhan)?.prayer
             if (prayer != null) {
                 val other = prayers.put(prayer, p.id)
@@ -374,7 +399,16 @@ object ProtocolParser {
                     if (trigger.protocolId !in ids) ctx.error("$path.trigger", "there is no protocol \"${trigger.protocolId}\".")
                     if (trigger.protocolId == p.id) ctx.error("$path.trigger", "a protocol cannot start after itself.")
                 }
+                KIND_TRIGGERS[p.kind]?.let { (wanted, why) ->
+                    if (trigger != wanted) ctx.error("$path.trigger", why)
+                }
             }
+        }
+        KIND_LOCKS[p.kind]?.let { (wanted, why) ->
+            if (p.lock.type != wanted) ctx.error("$path.lock.type", why)
+        }
+        if (p.kind == ProtocolKind.NUDGE && p.textListParam("nudges").isEmpty()) {
+            ctx.warn("$path.params.nudges", "no nudge lines: every nudge shows the first step's text.")
         }
 
         // Lock.
@@ -496,6 +530,7 @@ object ProtocolParser {
         }
         // Tapping done is what confirms a prayer: without it the steps would finish the run unconfirmed.
         if (doneCount == 0 && p.kind == ProtocolKind.PRAYER) ctx.error(path, "a prayer needs a done step (tapping it confirms the prayer).")
+        if (doneCount == 0 && p.kind == ProtocolKind.CALL) ctx.error(path, "a call needs a done step (DONE confirms the call once it unlocks).")
     }
 
     private fun checkParams(p: Protocol, raw: JsonObject?, path: String, ctx: Ctx) {

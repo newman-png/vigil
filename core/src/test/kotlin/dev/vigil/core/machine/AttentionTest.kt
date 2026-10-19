@@ -1,7 +1,6 @@
 package dev.vigil.core.machine
 
 import dev.vigil.core.journal.EntryType
-import dev.vigil.core.protocol.BundledProtocols
 import dev.vigil.core.protocol.Intensity
 import dev.vigil.core.protocol.Lock
 import dev.vigil.core.protocol.LockType
@@ -25,7 +24,7 @@ import org.junit.Test
 
 /** Protocol 9: the attention reset (design M6), with the bundled `attention` protocol after the Dhuhr lock. */
 class AttentionTest {
-    private val full = BundledProtocols.file
+    private val full = M7_FILE
 
     /** The bundled file with the attention reset's `offset_min` set to [offset]. */
     private fun withOffset(offset: Int): ProtocolFile {

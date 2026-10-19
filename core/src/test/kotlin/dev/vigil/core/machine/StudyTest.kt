@@ -3,7 +3,6 @@ package dev.vigil.core.machine
 import dev.vigil.core.journal.EntryType
 import dev.vigil.core.pool.BlockReason
 import dev.vigil.core.pool.PoolDecision
-import dev.vigil.core.protocol.BundledProtocols
 import dev.vigil.core.protocol.Intensity
 import dev.vigil.core.protocol.LockType
 import dev.vigil.core.protocol.Prayer
@@ -27,7 +26,7 @@ import org.junit.Test
 
 /** Protocol 5: the study block (design M6), with the bundled `study` protocol: rounds that fill the block. */
 class StudyTest {
-    private val full = BundledProtocols.file
+    private val full = M7_FILE
 
     /** Monday 16:00 to 17:40: a 100-minute block of Analysis. */
     private val times = MyTimes(study = listOf(Slot(listOf("mon"), "16:00", "17:40", label = "Analysis")))

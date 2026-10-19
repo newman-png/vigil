@@ -33,6 +33,7 @@ import java.time.Duration
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalTime
+import java.util.Random
 
 /** Read-only rules over a state at `env.now`, shared by the reducer ([Txn]) and the queries ([Machine]). */
 internal open class View(var s: MachineState, val env: MachineEnv) {
@@ -132,8 +133,108 @@ internal open class View(var s: MachineState, val env: MachineEnv) {
     /** Today's to-dos (written in last night's wind-down). */
     fun todosToday(): List<Todo> = s.todos[day.key] ?: emptyList()
 
-    /** When the walking switch turns itself off (no step detection yet), or null while it is off. */
-    fun walkingEnd(): Instant? = s.toggles.walkingSince?.takeIf { s.toggles.walking }?.plus(Machine.MAX_WALKING)
+    /** The file's walk protocol (the walking switch, the commute rows), or null. */
+    val walkProtocol: Protocol? get() = file.protocols.firstOrNull { it.kind == ProtocolKind.WALK }
+
+    /** The file's nudge protocol (wellness nudges), or null. */
+    val nudgeProtocol: Protocol? get() = file.protocols.firstOrNull { it.kind == ProtocolKind.NUDGE }
+
+    /** A walk param: from the walk protocol, else the kind's default. */
+    fun walkParam(name: String): Int = walkProtocol?.intParam(name) ?: kindDefault(ProtocolKind.WALK, name)
+
+    /**
+     * When the walking switch turns itself off, or null while it is off: `still_end_min` after the last step (never
+     * counted from before the walk began) when the phone counts steps, else [Toggles.walkingUntil].
+     */
+    fun walkEnd(): Instant? {
+        val t = s.toggles
+        val since = t.walkingSince?.takeIf { t.walking } ?: return null
+        if (s.steps.available) {
+            val last = maxOf(since, s.steps.lastStepAt ?: since)
+            return last.plus(Duration.ofMinutes(walkParam("still_end_min").toLong()))
+        }
+        return t.walkingUntil ?: since.plus(Duration.ofMinutes(walkParam("manual_max_min").toLong()))
+    }
+
+    /** True when call run [r]'s DONE may be tapped: after a call of `min_call_min` since its card appeared; the short version (a message) at once. */
+    fun callDone(r: Run): Boolean {
+        val c = r.call ?: return true
+        if (r.version != Version.FULL) return true
+        val p = protocol(r) ?: return true
+        return c.callS >= p.intParam("min_call_min") * 60L
+    }
+
+    /** When call run [r]'s card comes back (once, `return_after_min` after it appeared, stage 1, nothing done), or null. */
+    fun callReturnAt(r: Run): Instant? {
+        val c = r.call ?: return null
+        if (r.stage != 1 || r.phase != RunPhase.ACTIVE || r.asking || r.returned || r.confirmed) return null
+        val p = protocol(r) ?: return null
+        return c.cardAt?.plus(Duration.ofMinutes(p.intParam("return_after_min").toLong()))
+    }
+
+    /**
+     * Today's nudge span: from MY TIMES wake + `after_wake_min` to the planned wind-down (the sleep protocol's `time:`
+     * start, else bedtime - 60).
+     */
+    fun nudgeSpan(p: Protocol): Pair<Instant, Instant> {
+        val dt = dayTimes()
+        val start = dt.wake.plus(Duration.ofMinutes(p.intParam("after_wake_min").toLong()))
+        val end = (sleepProtocol?.parsedTrigger as? Trigger.Time)?.let { dt.resolve(it.expr) } ?: dt.bedtime.minus(Duration.ofMinutes(60))
+        return start to end
+    }
+
+    /**
+     * Today's timed nudges, in order: when and which line. Pseudo-random but fixed by the day key (a restart never
+     * reshuffles them): `per_day` (fewer when the span is too short) at least `min_gap_min` apart inside [nudgeSpan],
+     * the lines of `nudges` in turn from a random one (the first step's text when there are none).
+     */
+    fun nudgeTimes(p: Protocol): List<Pair<Instant, String>> {
+        val (start, end) = nudgeSpan(p)
+        val total = Duration.between(start, end).toMinutes()
+        if (total <= 0) return emptyList()
+        val gap = p.intParam("min_gap_min").toLong()
+        var n = p.intParam("per_day")
+        while (n > 0 && (n - 1) * gap > total) n--
+        if (n <= 0) return emptyList()
+        val free = total - (n - 1) * gap
+        val random = Random("${day.key}/${p.id}".hashCode().toLong())
+        val offsets = List(n) { (random.nextDouble() * (free + 1)).toLong().coerceAtMost(free) }.sorted()
+        val lines = p.textListParam("nudges").ifEmpty { listOf(p.steps.first().text) }
+        val first = random.nextInt(lines.size)
+        return offsets.mapIndexed { i, o -> start.plus(Duration.ofMinutes(o + i * gap)) to lines[(first + i) % lines.size] }
+    }
+
+    /**
+     * When the movement nudge is due: `still_min` after the last step (or the last nudge, or the span's start), once the
+     * phone has been in use for [Machine.IN_USE]. Null without a step counter or `move_nudges`, while the phone is not in
+     * use, or when that falls after the span.
+     */
+    fun moveNudgeAt(p: Protocol): Instant? {
+        if (!s.steps.available || p.textListParam("move_nudges").isEmpty()) return null
+        val unlocked = s.unlockedSince?.takeIf { s.screenOn && s.screenUnlocked } ?: return null
+        val (start, end) = nudgeSpan(p)
+        val from = listOfNotNull(start, s.steps.lastStepAt, day.moveFrom).max()
+        val at = maxOf(from.plus(Duration.ofMinutes(p.intParam("still_min").toLong())), unlocked.plus(Machine.IN_USE))
+        return at.takeIf { it.isBefore(end) }
+    }
+
+    /**
+     * Why a nudge cannot show now (it is then skipped, not queued), or null: VIGIL suspended, QUIET, a call, friends,
+     * walking, the night lock, a class, another protocol running (on the screen, waiting for it, or asking), or the
+     * phone not in use (screen off or locked: a nudge is for a break from the phone).
+     */
+    fun nudgeBlocked(): String? = when {
+        suspended -> "suspended"
+        s.toggles.quiet -> "quiet"
+        s.callSince != null -> "call"
+        s.toggles.friends -> "friends"
+        s.toggles.walking -> "walking"
+        nightRun() != null -> "night_lock"
+        dayTimes().classAt(now) != null -> "class"
+        s.runs.any { it.phase in BUSY || asking(it) } -> "busy"
+        !s.screenOn || !s.screenUnlocked -> "screen_off"
+        else -> null
+    }
 
     /** The latest moment the current day can last. */
     fun fallback(): Instant = DayRules.fallbackEnd(day.date, file.day, zone)
@@ -269,8 +370,11 @@ internal open class View(var s: MachineState, val env: MachineEnv) {
     /** The stage a protocol fires at now. */
     fun stageOf(p: Protocol): Int = if (pinned(p)) 1 else (s.stages[p.id]?.stage ?: 1)
 
-    /** Stays at stage 1: `stages: false`, and always Jummah and the promise (their rules have no lighter stages). */
-    fun pinned(p: Protocol): Boolean = !p.stages || p.kind == ProtocolKind.JUMMAH || p.kind == ProtocolKind.PROMISE
+    /**
+     * Stays at stage 1: `stages: false`, and always Jummah and the promise (their rules have no lighter stages), the
+     * switches (walk, friends) and the nudges (their outcomes count for nothing).
+     */
+    fun pinned(p: Protocol): Boolean = !p.stages || p.kind == ProtocolKind.JUMMAH || p.kind == ProtocolKind.PROMISE || p.kind in NEUTRAL
 
     /** True while the run's lock holds (active, a lock type, before its end on the run clock). */
     fun lockActive(r: Run): Boolean =
@@ -399,13 +503,15 @@ internal open class View(var s: MachineState, val env: MachineEnv) {
     /** Run locks, toggles and the night lock that block the pool, in design order. */
     fun lockBlocks(): List<Block> {
         val out = mutableListOf<Block>()
-        val locking = s.runs.filter { (it.lock == LockType.SCREEN || it.lock == LockType.POOL) && lockActive(it) } +
+        // The switches block the pool with their own reason below; a nudge never blocks it (it would end a session).
+        val locking = s.runs.filter { (it.lock == LockType.SCREEN || it.lock == LockType.POOL) && lockActive(it) && it.kind !in NEUTRAL } +
             s.runs.filter { it.phase == RunPhase.RETURNED }
         if (locking.isNotEmpty()) {
             val ends = locking.map { if (it.phase == RunPhase.RETURNED) windowEnd(it) else lockEndShown(it) }
             val until = if (ends.any { it == null }) null else ends.filterNotNull().maxOrNull()
             out += Block(BlockReason.RUN_LOCK, until, locking.joinToString(", ") { protocol(it)?.title ?: it.protocol })
         }
+        // Friends: refused with no wait ("YOU'RE WITH FRIENDS"); the switch goes off when the user says so.
         if (s.toggles.friends) out += Block(BlockReason.FRIENDS, null)
         if (s.toggles.walking) out += Block(BlockReason.WALKING, null)
         // Until the wake alarm is answered (its latest end is a safety limit, not the usual end).
@@ -461,7 +567,12 @@ internal open class View(var s: MachineState, val env: MachineEnv) {
         s.suspendedUntil?.let { c += it }
         s.callSince?.let { c += it.plus(Machine.MAX_CALL_PAUSE) }
         friendsEnd()?.let { c += it }
-        walkingEnd()?.let { c += it }
+        walkEnd()?.let { c += it }
+        s.callWrapAt?.let { c += it }
+        nudgeProtocol?.let { p ->
+            nudgeTimes(p).getOrNull(day.nudgesDue)?.let { c += it.first }
+            moveNudgeAt(p)?.let { c += it }
+        }
         if (alarmOn) {
             s.wakeAlarm.ringingSince?.let { c += it.plus(Duration.ofMinutes(alarmParam("ring_max_min").toLong())) }
             wakeAlarmAt()?.let { c += it }
@@ -497,6 +608,9 @@ internal open class View(var s: MachineState, val env: MachineEnv) {
                 j.askedAt?.let { c += it.plus(Duration.ofMinutes(p.intParam("arrive_repeat_min").toLong())) }
             }
             if (r.phase == RunPhase.WAITING) r.promise?.let { c += it.dueAt }
+            r.call?.let { c += it.dueAt }
+            callReturnAt(r)?.let { c += it }
+            if (r.test && r.kind in SWITCHES) c += r.firedAt.plus(Machine.TEST_SWITCH)
             if (r.phase == RunPhase.ACTIVE && s.callSince == null) {
                 r.lockEndsAt?.let { c += it }
                 val st = stepsOf(r).getOrNull(r.step)
@@ -522,6 +636,15 @@ internal open class View(var s: MachineState, val env: MachineEnv) {
         return c.filter { it.isAfter(now) }.minOrNull()
     }
 }
+
+/** Kinds whose outcomes count for nothing (no stages, no misses in a row) and whose runs never block the pool as a run lock. */
+internal val NEUTRAL = setOf(ProtocolKind.WALK, ProtocolKind.FRIENDS, ProtocolKind.NUDGE)
+
+/** The kinds started by a home switch: their run lasts while the switch is on. */
+internal val SWITCHES = setOf(ProtocolKind.WALK, ProtocolKind.FRIENDS)
+
+/** Phases of a run that is going on (a nudge waits for none of them to be left). */
+internal val BUSY = setOf(RunPhase.ACTIVE, RunPhase.QUEUED, RunPhase.PAUSED, RunPhase.RETURNED, RunPhase.CARD, RunPhase.NIGHT)
 
 /** The text of a study break when its rounds step has no `break_text`. */
 internal const val DEFAULT_BREAK_TEXT = "Break: stand up, drink water, look out a window. The phone stays locked."

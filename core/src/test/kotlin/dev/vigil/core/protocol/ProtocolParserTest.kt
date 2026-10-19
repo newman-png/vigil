@@ -77,6 +77,12 @@ class ProtocolParserTest {
     private fun withProtocols(vararg extra: JsonObject): JsonObject =
         with("protocols", JsonArray(base["protocols"]!! as JsonArray + extra.toList()))
 
+    /** The bundled file with [p] instead of its protocol of the same kind (the kinds the engine runs once). */
+    private fun replacingKind(p: JsonObject): JsonObject = with(
+        "protocols",
+        JsonArray((base["protocols"]!! as JsonArray).filter { it.jsonObject["kind"] != p["kind"] } + p),
+    )
+
     // ------------------------------------------------------------------ whole file
 
     @Test
@@ -231,6 +237,11 @@ class ProtocolParserTest {
                     id = "k$i", kind = k.json, trigger = "slot:jummah",
                     steps = listOf(step(), obj("text" to "I'M AT UNI.", "arrival" to true), step("Done.", "done")),
                 )
+                // The switches, the call card and the nudges each need their own trigger and lock.
+                ProtocolKind.WALK -> protocol(id = "k$i", kind = k.json, trigger = "toggle:walking", lock = obj("type" to "pool"))
+                ProtocolKind.FRIENDS -> protocol(id = "k$i", kind = k.json, trigger = "toggle:friends", lock = obj("type" to "pool"))
+                ProtocolKind.CALL -> protocol(id = "k$i", kind = k.json, trigger = "slot:call", lock = obj("type" to "none"))
+                ProtocolKind.NUDGE -> protocol(id = "k$i", kind = k.json, trigger = "manual", lock = obj("type" to "screen"))
                 else -> protocol(id = "k$i", kind = k.json, trigger = "manual")
             }
         }
@@ -377,8 +388,9 @@ class ProtocolParserTest {
         for (kind in listOf("jummah", "walk", "friends", "promise")) {
             assertError(withProtocols(protocol(kind = kind, extra = mapOf("short" to JsonArray(listOf(step()))))), "short", "no step-down ladder")
         }
-        assertOk(withProtocols(protocol(kind = "call", extra = mapOf("short" to JsonArray(listOf(step()))))))
-        assertError(withProtocols(protocol(kind = "call", extra = mapOf("minimal" to JsonArray(listOf(step()))))), "minimal", "may only define short")
+        fun call(extra: Map<String, JsonElement>) = protocol(kind = "call", trigger = "slot:call", lock = obj("type" to "none"), extra = extra)
+        assertOk(replacingKind(call(mapOf("short" to JsonArray(listOf(step("Message.", "done")))))))
+        assertError(replacingKind(call(mapOf("minimal" to JsonArray(listOf(step("Message.", "done")))))), "minimal", "may only define short")
         // Attention reset (spec): "short = 3 minutes ... There is no minimal version below that."
         assertOk(withProtocols(protocol(kind = "attention", extra = mapOf("short" to JsonArray(listOf(step()))))))
         assertError(withProtocols(protocol(kind = "attention", extra = mapOf("minimal" to JsonArray(listOf(step()))))), "minimal", "may only define short")
@@ -392,6 +404,26 @@ class ProtocolParserTest {
             JsonObject(it + ("protocols" to JsonArray(list)))
         }
         assertError(prayerShort, "protocols[2] (prayer-dhuhr).short", "prayer protocols have no step-down ladder")
+    }
+
+    @Test
+    fun theM8KindsNeedTheirTriggerLockAndOneProtocol() {
+        assertError(replacingKind(protocol(kind = "walk", lock = obj("type" to "pool"))), "trigger", "use toggle:walking")
+        assertError(replacingKind(protocol(kind = "walk", trigger = "toggle:walking")), "lock.type", "use \"pool\"")
+        assertError(replacingKind(protocol(kind = "friends", trigger = "toggle:walking", lock = obj("type" to "pool"))), "trigger", "use toggle:friends")
+        assertError(replacingKind(protocol(kind = "call", lock = obj("type" to "none"))), "trigger", "use slot:call")
+        assertError(replacingKind(protocol(kind = "call", trigger = "slot:call")), "lock.type", "use \"none\"")
+        assertError(replacingKind(protocol(kind = "nudge", trigger = "time:10:00", lock = obj("type" to "screen"))), "trigger", "use manual")
+        assertError(replacingKind(protocol(kind = "nudge", lock = obj("type" to "pool"))), "lock.type", "use \"screen\"")
+        // A call's every version needs its DONE step (it confirms the call once it unlocks).
+        val noDone = protocol(kind = "call", trigger = "slot:call", lock = obj("type" to "none"), extra = mapOf("short" to JsonArray(listOf(step()))))
+        assertError(replacingKind(noDone), "(test).short", "a call needs a done step")
+        // The engine runs each of these once: a second one is an error.
+        assertError(withProtocols(protocol(kind = "friends", trigger = "toggle:friends", lock = obj("type" to "pool"))), "(test).kind", "one per file")
+        // Nudges without lines show their first step: allowed, with a warning.
+        val bare = protocol(kind = "nudge", lock = obj("type" to "screen"))
+        assertOk(replacingKind(bare))
+        assertTrue(warnings(replacingKind(bare)).any { it.path.endsWith("params.nudges") })
     }
 
     @Test

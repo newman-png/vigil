@@ -48,13 +48,14 @@ import kotlinx.coroutines.withContext
 import java.time.Instant
 
 /**
- * Try things out: start any protocol now, a real alarm with the screen off, the wake alarm, what the pool would do for
- * a pool app, and the newest journal entries. Every protocol started here is a TEST preview (stage 1, journaled as a
+ * Try things out: start any protocol now (the walk, friends, a call card and a nudge have their own row), a real alarm
+ * with the screen off, the wake alarm, the AUDIO screen, what the pool would do for a pool app, and the newest journal
+ * entries. Every protocol started here is a TEST preview (stage 1, journaled as a
  * test, no stages, penalties, prayer memory or report counts). There are no kill switch buttons here: its only way in
  * is the 5-minute wait (seven taps on the HOME title or the takeover's eye).
  */
 @Composable
-fun TestScreen() {
+fun TestScreen(openAudio: () -> Unit) {
     val context = LocalContext.current
     val state by Vigil.state.collectAsState()
     val now = rememberNow(5_000L)
@@ -108,6 +109,31 @@ fun TestScreen() {
                 Type.Small,
             )
         }
+        val m8 = listOf(ProtocolKind.WALK to "WALK", ProtocolKind.FRIENDS to "FRIENDS", ProtocolKind.CALL to "CALL CARD", ProtocolKind.NUDGE to "NUDGE")
+            .mapNotNull { (kind, label) -> file.protocols.firstOrNull { it.kind == kind }?.let { it to label } }
+        if (m8.isNotEmpty()) {
+            Spacer(Modifier.height(12.dp))
+            Label("WALK · FRIENDS · CALL · NUDGE")
+            for (pair in m8.chunked(2)) {
+                Row(Modifier.fillMaxWidth().padding(vertical = 4.dp)) {
+                    pair.forEachIndexed { i, (p, label) ->
+                        if (i > 0) Spacer(Modifier.width(8.dp))
+                        PixelButton(label, { Vigil.startManual(p.id) }, Modifier.weight(1f))
+                    }
+                }
+            }
+            PixelText(
+                "TEST previews. The walk and friends show their notification for 2 minutes and block nothing (the switches on " +
+                    "HOME are the real thing). The call card is the real full card (CALL, NOT NOW, DONE after a 3-minute call); " +
+                    "it is missed after an hour. A nudge shows now, unless a protocol holds the screen.",
+                Type.Small,
+            )
+        }
+        Spacer(Modifier.height(12.dp))
+        Label("AUDIO")
+        PixelButton("OPEN AUDIO", openAudio, Modifier.fillMaxWidth())
+        PixelText("White noise, the metronome and your own files, with the screen locked too.", Type.Small)
+
         if (file.protocols.any { it.kind == ProtocolKind.PROMISE }) {
             Spacer(Modifier.height(12.dp))
             Label("10-MINUTE PROMISE")

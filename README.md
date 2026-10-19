@@ -20,7 +20,7 @@ VIGIL opens on **SETUP**.
 1. **Allow restricted settings.** Android greys out accessibility and notification access for apps installed from a file. Try to turn one of them on once, then open *App info › ⋮ (top right) › Allow restricted settings* and confirm. (The ⋮ menu only appears after that first try; **SETUP › RESTRICTED SETTINGS** has a button for App info.)
 2. **GUARD (ACCESSIBILITY):** turn on **VIGIL Guard** under Accessibility. It keeps the pool apps closed, and it only learns which app is in front, never what is on the screen.
 3. **NOTIFICATION ACCESS:** turn VIGIL on. It reads your adhan app's prayer notification, and other apps' call notifications, so a takeover never covers a WhatsApp call.
-4. Grant the other rows under **PERMISSIONS**: notifications, full-screen takeovers, display over other apps, battery unrestricted (*Settings › Apps › VIGIL › Battery › Unrestricted*), exact alarms, Do Not Disturb access (the Jummah lock silences the phone), usage access (lets a takeover come back when you leave it) and, optionally, phone (call pause).
+4. Grant the other rows under **PERMISSIONS**: notifications, full-screen takeovers, display over other apps, battery unrestricted (*Settings › Apps › VIGIL › Battery › Unrestricted*), exact alarms, Do Not Disturb access (the Jummah lock silences the phone), usage access (lets a takeover come back when you leave it) and, optionally, physical activity (the step counter: a walk ends when you stop moving) and phone (call pause).
 5. **ADHAN:** once your adhan app has posted a notification, tap it in the list. Check the result with **TEST TRIGGER**; the default phrase `time for` already matches "It's time for Isha".
 6. Tap **DONE**. **MY TIMES** opens: set your wake times, bedtime start and goal, classes and meals, then **SAVE**. The first save applies at once.
 7. In **TEST**, tap **FIRE IN 60 S (LOCK THE PHONE)** and lock the phone. A test preview of a prayer should take over the locked screen.
@@ -28,7 +28,7 @@ VIGIL opens on **SETUP**.
 
 ## What it does today
 
-M1 is the engine and the five prayers, M2 the sleep wind-down and the night lock, M3 the wake alarm and the morning routine, M4 Jummah, M5 the reset and the 10-minute promise, M6 the study block and the attention reset, M7 the gym and meals. The other protocols come with M8.
+M1 is the engine and the five prayers, M2 the sleep wind-down and the night lock, M3 the wake alarm and the morning routine, M4 Jummah, M5 the reset and the 10-minute promise, M6 the study block and the attention reset, M7 the gym and meals, M8 the walk and the commute, friends mode, the call protocol, audio and wellness nudges.
 
 ### Prayers
 
@@ -52,7 +52,7 @@ A prayer never waits behind another protocol: when its adhan comes, a protocol h
 - **GOING TO SLEEP** (the last step, or hold it on home): with Isha still unconfirmed it asks first (I PRAYED ISHA counts it). Before the day's own wake time it does nothing, and home says why.
 - **Night lock:** from GOING TO SLEEP (or the screen-off day end after wind-down) until you answer the wake alarm, two hours after it at the latest: a dark, silent, very dim screen with the time, SLEEP, the alarm time, tomorrow's first to-do, WHITE NOISE, CALL, APPS and LEAVE (the usual penalty). The pool is blocked. It shows when you use the phone and never lights up the screen by itself. Fajr takes the screen with its own takeover, and the night lock comes back after it.
 - **To-dos:** tomorrow's lines show on home with tick boxes, and the first one on the morning takeover. Unticked ones expire with their day.
-- **White noise** is made by the app (no sound file), keeps playing with the screen locked, has STOP in its notification, and stops at the wake alarm or after 8 hours.
+- **White noise** is made by the app (no sound file), keeps playing with the screen locked, has STOP in its notification, and stops at the wake alarm or after 8 hours (see [Audio](#audio)).
 
 ### Wake alarm and morning routine
 
@@ -112,6 +112,26 @@ At each MY TIMES gym time (FROM and the workout's minutes): *change clothes, sho
 
 The workout screen is made for sweaty hands: the exercise on top, pre-filled with the reps and weight you logged last time, **REPS**, **KG** and **REST** steppers and a big **LOG SET**. After each set a rest screen counts down (90 seconds, or the rest you set for that exercise, which is kept) and chimes at the end (silent under QUIET); **SKIP REST** goes back. The list shows every exercise with its last set and today's sets; **+ ADD EXERCISE** takes any name. **FINISH WORKOUT** (tap twice) logs it; forgotten, it ends by itself an hour after the planned minutes. The default exercises are a simple full-body list in `protocols.json`. NOT OKAY: a 20-minute session; then a 10-minute walk. Every set goes into the report and the CSV, with each exercise's progress.
 
+### Walk and commute
+
+**I'M WALKING** on home, or by itself at every MY TIMES commute time (and at Jummah's *walking on* step). The point is to look at the world, not the feed: only the pool is blocked; Google Maps, WhatsApp, calls and every other app stay usable. No prompts and no takeovers, just a silent notification **WALKING · POOL BLOCKED** with **STOP**. It ends when you switch it off, at I'M AT UNI, or after 10 minutes without steps (the phone's step counter, with the *physical activity* permission). Without a step counter a commute ends 15 minutes after its length, and any other walk after 3 hours. A commute day counts as the morning walk. The report shows each walk's minutes and why it ended.
+
+### Friends mode
+
+**I'M WITH FRIENDS** on home: the pool refuses with **YOU'RE WITH FRIENDS** and no wait, for up to 4 hours (then it switches itself off). Calls, Maps, WhatsApp and the PoliTO app stay usable. Quiet: no takeover, a silent notification with **STOP**.
+
+### Calls
+
+Each MY TIMES call (WHO, REMIND, BY) is its own: mom and dad are two. At the reminder time a full takeover shows the name big, with **CALL** (the dialer; VIGIL stores no contacts) and **NOT NOW**. **DONE** appears after a call of at least 3 minutes made after the card appeared (any call the phone reports, WhatsApp calls too); when such a call ends, the card comes back with DONE (also on its notification and on home). Nothing done after 30 minutes: the card comes back once. Not done by the deadline (16:00 when empty): missed. A call that goes on for 20 minutes (WRAP-UP) gets a silent **TIME TO WRAP UP**, once. NOT OKAY: send a message instead (**MESSAGE** opens WhatsApp, then DONE); there is nothing shorter.
+
+### Audio
+
+**AUDIO** on home: **WHITE NOISE**, a **METRONOME** (40 to 208 beats a minute, with -, +, -10, +10 or **TAP** to tap the beat) and **MY FILES**: **+ ADD** copies an audio file into VIGIL (it plays even if the original goes), each with **PLAY**, **RENAME** and **DELETE**, and **LOOP** for all of them. One sound at a time; it keeps playing with the screen locked, with **STOP** in its notification. White noise and the metronome are made by the app. The wake alarm and the attention reset stop VIGIL's sound; the journal records every start and stop.
+
+### Wellness nudges
+
+Up to four short takeovers a day at times that feel random (fixed for the day), at least 90 minutes apart, from 90 minutes after your wake time until the wind-down: *drink a glass of water*, *look at something far away for 20 seconds*, *stand up and stretch*. Each is one big line and a countdown of 45 seconds, then it ends by itself. After 90 minutes without steps while you use the phone, *stand up and walk for a minute* (60 seconds). Only while you use the phone and nothing else is going on (no protocol, class, QUIET, night lock, call, friends or walking); otherwise it is skipped. NOT OKAY or LEAVE end one at once; a nudge is never a miss and never costs anything.
+
 ### The takeover
 
 Black, a red slit with the heartbeat, the eye opens into silence, the protocol's title, then one step at a time. Hold anywhere above the bottom strip for 1.5 s to confirm a step once its lock is over; a timer step counts down and ends by itself; a text step is typed. The eye slowly fills with red as the run goes on.
@@ -162,23 +182,19 @@ A protocol moves up a stage after 10 clean completions in a row (the full versio
 
 ### Home
 
-The **VIGIL** title, the day (since when, and when it ends at the latest), the pool's status, flags (quiet, suspended, in a call, walking, the phone silent for Jummah), the prayers prayed and missed today (and Jummah), the next planned start, tonight's target bedtime and the next wake alarm (with missed nights in a row), a red **A PROTOCOL IS RUNNING · OPEN** (or **NIGHT LOCK**) while a takeover owns the screen, the reset offer (**START RESET** / **NOT NOW**), **LATER** and **RESET**, **START STUDY**, the running promise with **DONE**, today's Jummah (where it is, with **I'M AT UNI** or **CONFIRM**), an attention reset waiting to start, a running morning, meal or gym with **OPEN**, today's **TO-DOS** with tick boxes, open prayers with **CONFIRM**, and **TODAY**: the day's timeline (prayers at their adhan, `~` when estimated; study blocks with what to study, gym sessions with their minutes) with each protocol's stage and when it last fired. Below that:
+The **VIGIL** title, the day (since when, and when it ends at the latest), the pool's status, flags (quiet, suspended, in a call, walking, with friends, the phone silent for Jummah), the prayers prayed and missed today (and Jummah), the next planned start, tonight's target bedtime and the next wake alarm (with missed nights in a row), a red **A PROTOCOL IS RUNNING · OPEN** (or **NIGHT LOCK**) while a takeover owns the screen, the reset offer (**START RESET** / **NOT NOW**), **LATER** and **RESET**, **START STUDY**, the running promise with **DONE**, today's Jummah (where it is, with **I'M AT UNI** or **CONFIRM**), an attention reset waiting to start, today's call cards (with **DONE** once a call unlocked it), a running morning, meal or gym with **OPEN**, today's **TO-DOS** with tick boxes, open prayers with **CONFIRM**, and **TODAY**: the day's timeline (prayers at their adhan, `~` when estimated; study blocks with what to study, gym sessions with their minutes, commutes, calls) with each protocol's stage and when it last fired. Below that:
 
 | item | what it does |
 |---|---|
 | **QUIET** | Tap to make every takeover silent (no sound, vibration or Glyph), whatever its intensity. Also on the always-on notification. |
-| **WALKING** | Shows only while walking is on (Jummah's leave-by switches it on; it blocks the pool): tap to end it. It also ends by itself at I'M AT UNI, or after 3 hours. |
+| **I'M WALKING** | Tap to switch it on or off (see [Walk and commute](#walk-and-commute)); it says since when and when it ends by itself. The first tap asks for the step counter. |
+| **I'M WITH FRIENDS** | Tap to switch it on or off (see [Friends mode](#friends-mode)); it says until when (4 hours at most). |
 | **GOING TO SLEEP** | Hold 2 s: the day ends now and the night lock starts (CONFIRM ISHA first while Isha is open). |
-| **MY TIMES** | Your week: wake time per weekday (the wake alarm), bedtime start and goal (sleep shifting), classes, meals, study, gym, calls, commute and the Jummah time, with **+ ADD** rows and weekday chips. A change **applies from tomorrow** (only the very first save applies at once). Used so far: wake, bedtime, meals, classes, study, gym, commute (the morning walk and Jummah's leave-by) and the Jummah time; calls are for M8. |
+| **AUDIO** | White noise, the metronome and your own files (see [Audio](#audio)); it shows what plays. |
+| **MY TIMES** | Your week: wake time per weekday (the wake alarm), bedtime start and goal (sleep shifting), classes, meals, study, gym, calls, commute and the Jummah time, with **+ ADD** rows and weekday chips. A change **applies from tomorrow** (only the very first save applies at once). |
 | **SETUP** | Permissions (with the count missing, Do Not Disturb access included), restricted settings, battery, **POOL AND APPS** (the pool, the browsers found, the rules, the APPS button), **ADHAN**, **TAKEOVER** (switches for sound, vibration and the Glyph lights) and **SAFETY**. |
-| **TEST** | **START** any protocol as a test preview: stage 1, logged as a test, and left out of stages, penalties, prayer times and the report. **FIRE IN 60 S (LOCK THE PHONE)**: a real exact alarm starts a preview of the next prayer, to try the whole path with the screen off. **RING WAKE ALARM NOW**: the real wake alarm as a test; I'M UP starts a morning preview. **JUMMAH · EACH PART NOW**: the leave-by takeover, I'M AT UNI, the class-end card or the lock (with Do Not Disturb; LEAVE ends a preview at no cost). **1-MINUTE PROMISE**: a test promise due in a minute. **POOL CHECK**: what the pool would do right now for each pool app. **LAST EVENTS**: the newest 30 journal entries. |
-| **EXPORT** | A progress report (markdown: totals, gym progress per exercise, then each day's prayers, Jummah, pool use, protocols, bail-outs, resets with what derailed the day, promises kept, snoozed or left, study blocks with what you did, gym sets, app exits, late alarms and stage changes) and the whole journal as CSV (gym sets with exercise, reps and weight), through the share sheet. |
-
-## Coming next
-
-Each milestone adds its protocols to `protocols.json` (with core, app and tests) and ships through the same release.
-
-- **M8 Walk and commute, friends mode, calls, audio and wellness nudges** (coming): switches that block the pool, the daily call, white noise, a metronome and your own audio files.
+| **TEST** | **START** any protocol as a test preview: stage 1, logged as a test, and left out of stages, penalties, prayer times and the report. **FIRE IN 60 S (LOCK THE PHONE)**: a real exact alarm starts a preview of the next prayer, to try the whole path with the screen off. **RING WAKE ALARM NOW**: the real wake alarm as a test; I'M UP starts a morning preview. **JUMMAH · EACH PART NOW**: the leave-by takeover, I'M AT UNI, the class-end card or the lock (with Do Not Disturb; LEAVE ends a preview at no cost). **WALK · FRIENDS · CALL · NUDGE**: previews (the walk and friends show their notification for 2 minutes and block nothing; the call card is the real card; a nudge shows now). **OPEN AUDIO**. **1-MINUTE PROMISE**: a test promise due in a minute. **POOL CHECK**: what the pool would do right now for each pool app. **LAST EVENTS**: the newest 30 journal entries. |
+| **EXPORT** | A progress report (markdown: totals, gym progress per exercise, then each day's prayers, Jummah, pool use, protocols, bail-outs, resets with what derailed the day, promises kept, snoozed or left, study blocks with what you did, gym sets, walks and time with friends, calls done or missed, nudges, app exits, late alarms and stage changes) and the whole journal as CSV (gym sets with exercise, reps and weight), through the share sheet. |
 
 ## Changing the protocols
 
@@ -227,7 +243,7 @@ Five WAV files in [`app/src/main/res/raw/`](app/src/main/res/raw/). To swap one,
 | `drone.wav` | a slow sub-bass drone, looped | fades in once the eye is open (half as loud when full then subtle, and it fades out when the takeover turns subtle) |
 | `thud.wav` | a dry low thud with no tail | each confirmed step |
 
-Sounds play only while a takeover is at full intensity. Full takeovers use the alarm stream (heard with the ringer on vibrate); full-then-subtle ones follow the ringer like a notification. QUIET silences every takeover, the **SETUP › TAKEOVER** switches turn sound, vibration or the Glyph lights off for good, and completing or leaving a takeover is silence. The files are deterministic placeholders made by [`tools/assetgen/generate.py`](tools/assetgen/generate.py) (see [`tools/assetgen/README.md`](tools/assetgen/README.md)). The wake alarm's beeps and the white noise have no files: the app makes them as it plays them.
+Sounds play only while a takeover is at full intensity. Full takeovers use the alarm stream (heard with the ringer on vibrate); full-then-subtle ones follow the ringer like a notification. QUIET silences every takeover, the **SETUP › TAKEOVER** switches turn sound, vibration or the Glyph lights off for good, and completing or leaving a takeover is silence. The files are deterministic placeholders made by [`tools/assetgen/generate.py`](tools/assetgen/generate.py) (see [`tools/assetgen/README.md`](tools/assetgen/README.md)). The wake alarm's beeps, the white noise and the metronome have no files: the app makes them as it plays them.
 
 ## Audio licence
 

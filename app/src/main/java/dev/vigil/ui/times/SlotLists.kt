@@ -76,15 +76,15 @@ internal enum class SlotListSpec(
     ),
     CALLS(
         "calls", "CALLS", "CALL",
-        "Calls you commit to: who, when to remind you, and the deadline (16:00 when empty). WRAP-UP = minutes into " +
-            "a call before a quiet \"time to wrap up\" (20 when empty). Used by the call protocol once it is added.",
+        "Calls you commit to: who, when the call card comes, and the deadline (16:00 when empty). DONE unlocks after " +
+            "a 3-minute call. WRAP-UP = minutes into a call before a quiet \"time to wrap up\" (20 when empty).",
         "+ ADD CALL", "REMIND", endCaption = "BY", endPlaceholder = MyTimes.DEFAULT_CALL_DEADLINE,
         labelCaption = "WHO", labelPlaceholder = "e.g. Mom", minutesCaption = "WRAP-UP",
     ),
     COMMUTE(
         "commute", "COMMUTE", "COMMUTE",
-        "When you leave for uni or home. Walking mode starts by itself then (once the walk protocol is added). LENGTH = " +
-            "this trip's length when it differs from the usual commute below.",
+        "When you leave for uni or home. I'M WALKING goes on by itself then (the pool is blocked on the way; Maps and " +
+            "WhatsApp stay usable). LENGTH = this trip's length when it differs from the usual commute below.",
         "+ ADD COMMUTE", "LEAVE", labelCaption = "WHERE", labelPlaceholder = "e.g. to uni", minutesCaption = "LENGTH",
     ),
     ;

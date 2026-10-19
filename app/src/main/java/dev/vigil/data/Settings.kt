@@ -96,6 +96,21 @@ class Settings(context: Context) {
         get() = prefs.getInt("dnd_previous", 0)
         set(value) = edit { putInt("dnd_previous", value) }
 
+    /** PHYSICAL ACTIVITY (the step counter) was asked for once, when I'M WALKING was first used. */
+    var activityAsked: Boolean
+        get() = prefs.getBoolean("activity_asked", false)
+        set(value) = edit { putBoolean("activity_asked", value) }
+
+    /** The metronome's last speed on the AUDIO screen (beats per minute). */
+    var metronomeBpm: Int
+        get() = prefs.getInt("metronome_bpm", 100)
+        set(value) = edit { putInt("metronome_bpm", value) }
+
+    /** AUDIO > MY FILES: a file plays again from the start when it ends. */
+    var audioLoop: Boolean
+        get() = prefs.getBoolean("audio_loop", false)
+        set(value) = edit { putBoolean("audio_loop", value) }
+
     /** The newest process exit (ApplicationExitInfo timestamp, epoch ms) already journaled; 0 = none seen yet. */
     var lastExitSeenMs: Long
         get() = prefs.getLong("last_exit_seen_ms", 0)

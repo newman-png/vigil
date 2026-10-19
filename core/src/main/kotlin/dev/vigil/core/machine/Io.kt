@@ -141,6 +141,21 @@ sealed interface Input {
 
     /** TEST > JUMMAH: one part of Jummah as a preview now (the card is only its silent notification). */
     data class TestJummah(val part: JummahTestPart) : Input
+
+    /**
+     * The step counter's total (steps since the phone started), sent when it changes (batched) and when it is first read;
+     * null = the phone cannot count steps (no step counter, or no permission): walks then end by the time rules.
+     */
+    data class Steps(val total: Long?) : Input
+
+    /**
+     * AUDIO: play [sound] ([Effect.Audio.WHITE_NOISE], [Effect.Audio.METRONOME] at [bpm] 40-208, or `file:<id>` of a file
+     * the user added, [name] as they see it, again and again with [loop]). One sound at a time: it replaces any other.
+     */
+    data class PlayAudio(val sound: String, val bpm: Int? = null, val loop: Boolean = false, val name: String? = null) : Input
+
+    /** STOP (the AUDIO screen, the audio notification), or the sound ended by itself ([reason] `ended`). */
+    data class StopAudio(val reason: String = "stop") : Input
 }
 
 /** The parts of Jummah the TEST screen can fire. */
@@ -174,6 +189,18 @@ enum class NotifyKind {
 
     /** A 10-minute promise: its line, with DONE ([Input.Confirm]). */
     PROMISE,
+
+    /**
+     * A home switch is on (walking, friends): a silent, ongoing notice with STOP (the switch off; a TEST run: [Input.BailOut],
+     * at no cost).
+     */
+    SWITCH,
+
+    /**
+     * A call card's notice: who and by when, with CALL (the dialer; the short version: MESSAGE) and DONE once a call has
+     * unlocked it ([Machine.stepView]'s `canTap`; [Input.Confirm]).
+     */
+    CALL,
 }
 
 /** Something the Android layer must do after a step. */
@@ -222,14 +249,33 @@ sealed interface Effect {
     data class SetDnd(val on: Boolean) : Effect
 
     /**
-     * Audio control: [action] play/stop, [sound] `white_noise` ([WHITE_NOISE]; M8 adds more sounds and uploaded files).
-     * Stop without a [sound] stops every VIGIL sound (the attention reset: no sound while you look at one spot).
+     * Audio control: [action] play/stop, [sound] [WHITE_NOISE], [METRONOME] (at [bpm]) or `file:<id>` ([FILE_PREFIX]: a
+     * file the user added, played again from the start with [loop]). One sound plays at a time: PLAY replaces whatever
+     * plays. STOP without a [sound] stops every VIGIL sound (the attention reset, the wake alarm); with one, only that sound.
+     * Everything plays through a media-playback service, so it goes on with the screen locked.
      */
-    data class Audio(val action: String, val sound: String? = null) : Effect {
+    data class Audio(val action: String, val sound: String? = null, val bpm: Int? = null, val loop: Boolean = false) : Effect {
         companion object {
             const val PLAY = "play"
             const val STOP = "stop"
             const val WHITE_NOISE = "white_noise"
+            const val METRONOME = "metronome"
+            const val FILE_PREFIX = "file:"
+
+            /** The metronome's range, beats per minute. */
+            const val MIN_BPM = 40
+            const val MAX_BPM = 208
+            const val DEFAULT_BPM = 100
+
+            private val FILE_ID = Regex("^[A-Za-z0-9._-]{1,64}$")
+
+            /** [sound] if VIGIL may play it (white noise, the metronome, `file:<id>`), else null. */
+            fun valid(sound: String): String? = sound.takeIf {
+                it == WHITE_NOISE || it == METRONOME || (it.startsWith(FILE_PREFIX) && FILE_ID.matches(it.removePrefix(FILE_PREFIX)))
+            }
+
+            /** The id of a `file:<id>` sound, or null for the others. */
+            fun fileId(sound: String?): String? = sound?.takeIf { it.startsWith(FILE_PREFIX) }?.removePrefix(FILE_PREFIX)
         }
     }
 }

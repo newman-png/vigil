@@ -47,6 +47,16 @@ data class DayState(
     val jummah: String? = null,
     /** Attention resets triggered and waiting to start (offset, a class or another protocol on the screen). */
     val deferred: List<Deferred> = emptyList(),
+    /** When today's first call card appeared: a call that starts after it gets "time to wrap up". */
+    @SerialName("call_card_at") val callCardAt: Instant? = null,
+    /** The wrap-up minutes of today's latest call card. */
+    @SerialName("call_wrap_min") val callWrapMin: Int? = null,
+    /** How many of today's timed nudges came due (shown or skipped); the next one is this index. */
+    @SerialName("nudges_due") val nudgesDue: Int = 0,
+    /** The movement nudge counts stillness from here at the earliest (the last nudge, shown or skipped). */
+    @SerialName("move_from") val moveFrom: Instant? = null,
+    /** When the last nudge was shown today: the next timed one waits `min_gap_min` after it. */
+    @SerialName("nudged_at") val nudgedAt: Instant? = null,
 ) {
     val date: LocalDate get() = LocalDate.parse(key)
 
@@ -148,6 +158,36 @@ data class Toggles(
     val friends: Boolean = false,
     @SerialName("walking_since") val walkingSince: Instant? = null,
     @SerialName("friends_since") val friendsSince: Instant? = null,
+    /**
+     * Without a step counter the walk ends then: an automatic commute its length + `commute_grace_min` after its start, any
+     * other walk `manual_max_min` after it began. Null while walking is off.
+     */
+    @SerialName("walking_until") val walkingUntil: Instant? = null,
+)
+
+/** The step counter as the app reports it ([Input.Steps]): walks end, and the movement nudge comes, when steps stop. */
+@Serializable
+data class StepState(
+    /** The phone can count steps (a step counter and the permission); false until the app says so. */
+    val available: Boolean = false,
+    /** The counter's last total (steps since the phone started). */
+    val total: Long? = null,
+    /** When the total last grew (or the counter was first or newly read: no stillness is assumed before that). */
+    @SerialName("last_step_at") val lastStepAt: Instant? = null,
+)
+
+/** What VIGIL is playing ([Effect.Audio]): one sound at a time. */
+@Serializable
+data class AudioState(
+    /** `white_noise`, `metronome` or `file:<id>`. */
+    val sound: String,
+    val since: Instant,
+    /** The metronome's beats per minute. */
+    val bpm: Int? = null,
+    /** A file plays again from the start when it ends. */
+    val loop: Boolean = false,
+    /** A file's name as the user sees it (for the journal). */
+    val name: String? = null,
 )
 
 /**
@@ -194,6 +234,15 @@ data class MachineState(
     val offer: Offer? = null,
     val attention: AttentionMemory = AttentionMemory(),
     val gym: GymMemory = GymMemory(),
+    val steps: StepState = StepState(),
+    /** VIGIL's sound playing now (white noise, the metronome, a file), or null. */
+    val audio: AudioState? = null,
+    /** "Time to wrap up" is due then for the call in progress (once per call); null when none is. */
+    @SerialName("call_wrap_at") val callWrapAt: Instant? = null,
+    /** The call in progress already had its "time to wrap up". */
+    @SerialName("call_wrapped") val callWrapped: Boolean = false,
+    /** The phone has been unlocked (in use) since then; null while it is locked or off. */
+    @SerialName("unlocked_since") val unlockedSince: Instant? = null,
 ) {
     /**
      * The state as JSON. Nulls are written out: a field whose default is not null (a pool session's `inSince`) would

@@ -79,6 +79,14 @@ data class DaySummary(
     val gymSets: List<Entry> = emptyList(),
     /** Workouts finished. */
     val workouts: List<Entry> = emptyList(),
+    /** Walks that ended (minutes, reason). */
+    val walks: List<Entry> = emptyList(),
+    /** Minutes with the friends switch on (summed over the times it went off). */
+    val friendsMinutes: Int = 0,
+    /** Call protocol outcomes: `call` entries with reason done or missed (detail = who, minutes = the longest call). */
+    val calls: List<Entry> = emptyList(),
+    /** Wellness nudges shown. */
+    val nudges: Int = 0,
 )
 
 /** Facts written at the top of the report. */
@@ -170,6 +178,10 @@ object Report {
             study = list.filter { it.type == EntryType.STUDY },
             gymSets = list.filter { it.type == EntryType.GYM_SET },
             workouts = list.filter { it.type == EntryType.WORKOUT },
+            walks = list.filter { it.type == EntryType.WALK_END },
+            friendsMinutes = list.filter { it.type == EntryType.TOGGLE && it.reason == "friends" }.sumOf { it.minutes ?: 0 },
+            calls = list.filter { it.type == EntryType.CALL && (it.reason == "done" || it.reason == "missed") },
+            nudges = list.count { it.type == EntryType.NUDGE_SHOWN },
         )
     }
 
@@ -248,6 +260,17 @@ object Report {
         if (sets.isNotEmpty() || days.any { it.workouts.isNotEmpty() }) {
             sb.appendLine("- Gym: ${count(days.sumOf { it.workouts.size }, "workout")}, ${count(sets.size, "set")}")
         }
+        val walks = days.flatMap { it.walks }
+        val friends = days.sumOf { it.friendsMinutes }
+        if (walks.isNotEmpty() || friends > 0) {
+            sb.appendLine("- Walks: ${count(walks.size, "walk")}, ${duration(walks.sumOf { (it.minutes ?: 0) * 60L })}; with friends ${duration(friends * 60L)}")
+        }
+        val calls = days.flatMap { it.calls }
+        if (calls.isNotEmpty()) {
+            sb.appendLine("- Calls: ${calls.count { it.reason == "done" }} done, ${calls.count { it.reason == "missed" }} missed")
+        }
+        val nudges = days.sumOf { it.nudges }
+        if (nudges > 0) sb.appendLine("- Nudges: ${count(nudges, "nudge")} shown")
         sb.appendLine(
             "- Kill switch: ${days.sumOf { d -> d.killSwitch.count { it.reason == "suspended" } }} · " +
                 "speed bumps: ${days.sumOf { it.speedBumps.size }} · app exits: ${days.sumOf { it.appExits.size }} · " +
@@ -315,6 +338,17 @@ object Report {
             }
             listLine(sb, "Promises", d.promises.filter { it.reason != "promised" && it.reason != "due" }) {
                 "${time(it.ts)} \"${it.text ?: ""}\" ${it.reason?.replace('_', ' ') ?: ""}"
+            }
+            if (d.walks.isNotEmpty() || d.friendsMinutes > 0) {
+                val parts = listOfNotNull(
+                    d.walks.takeIf { it.isNotEmpty() }?.let { w -> "walks " + w.joinToString(", ") { "${time(it.ts)} ${it.minutes ?: 0} min (${walkText(it.reason)})" } },
+                    d.friendsMinutes.takeIf { it > 0 }?.let { "with friends $it min" },
+                )
+                sb.appendLine("- **Walks and friends** " + parts.joinToString(" · "))
+                sb.appendLine()
+            }
+            listLine(sb, "Calls", d.calls) {
+                "${it.detail ?: "?"} ${it.reason}" + (it.minutes?.let { m -> " ($m min call)" } ?: "") + " ${time(it.ts)}"
             }
             listLine(sb, "Study", d.study) {
                 "${time(it.ts)} ${it.detail?.let { w -> "$w, " } ?: ""}${it.minutes ?: 0} min" + (it.text?.let { t -> ": \"$t\"" } ?: "")
@@ -405,6 +439,16 @@ object Report {
     }
 
     private fun count(n: Int, word: String): String = if (n == 1) "1 $word" else "$n ${word}s"
+
+    /** Why a walk ended, for the report. */
+    private fun walkText(reason: String?): String = when (reason) {
+        "off" -> "switched off"
+        "still" -> "stopped moving"
+        "time" -> "time limit"
+        "arrived" -> "at uni"
+        "day_end" -> "day end"
+        else -> reason ?: "?"
+    }
 
     private fun missedText(reason: String): String = when (reason) {
         "late" -> "late"

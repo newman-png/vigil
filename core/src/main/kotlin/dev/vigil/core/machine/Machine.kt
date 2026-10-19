@@ -71,8 +71,17 @@ object Machine {
      */
     val MAX_CALL_PAUSE: Duration = Duration.ofHours(3)
 
-    /** The walking switch turns itself off after this long (until step detection ends a walk by itself). */
-    val MAX_WALKING: Duration = Duration.ofHours(3)
+    /** A TEST walk or friends run (a preview: no switch, nothing blocked) ends by itself after this long. */
+    val TEST_SWITCH: Duration = Duration.ofMinutes(2)
+
+    /** The movement nudge waits until the phone has been in use (unlocked) this long, so late step reports arrive first. */
+    val IN_USE: Duration = Duration.ofMinutes(1)
+
+    /** A timed nudge more than this late (the phone was off) is skipped. */
+    val NUDGE_GRACE: Duration = Duration.ofMinutes(10)
+
+    /** A call run without a MY TIMES row (a TEST card) is missed this long after it fired. */
+    val CALL_WITHOUT_ROW: Duration = Duration.ofMinutes(60)
 
     /** The night lock starts only when the wake alarm is due within this long (GOING TO SLEEP at night, not at 08:00). */
     val MAX_NIGHT: Duration = Duration.ofHours(16)
@@ -167,6 +176,8 @@ object Machine {
         val timerEnds = if (st.type == StepType.TIMER) v.timerEnd(r, st)?.plus(v.callShift(r)) else null
         val canTap = when (st.type) {
             StepType.TIMER -> !(r.stage == 1 && r.phase == RunPhase.ACTIVE)
+            // A call card's DONE: only once a call (or, short, a message) unlocked it.
+            StepType.DONE -> locked == null && v.callDone(r)
             else -> locked == null
         }
         // The wind-down's last step is GOING TO SLEEP: completing it ends the day (an open Isha is asked about first).
@@ -185,6 +196,13 @@ object Machine {
             round = v.roundOf(r, r.step),
             fallback = if (r.kind == ProtocolKind.MEAL && r.version != Version.FULL) p?.textListParam("fallback") ?: emptyList() else emptyList(),
             workout = if (st.type == StepType.WORKOUT) v.workoutView(r, st) else null,
+            call = r.call?.let { c ->
+                CallView(
+                    who = r.label?.ifBlank { null } ?: p?.title ?: r.protocol, dueAt = c.dueAt, done = v.callDone(r),
+                    message = r.version != Version.FULL, minCallMin = p?.intParam("min_call_min") ?: 3, longestCallS = c.callS,
+                    returned = r.returned,
+                )
+            },
         )
     }
 
@@ -260,6 +278,13 @@ object Machine {
             quiet = state.toggles.quiet,
             walking = state.toggles.walking,
             friends = state.toggles.friends,
+            walkingSince = state.toggles.walkingSince.takeIf { state.toggles.walking },
+            walkEndsAt = v.walkEnd(),
+            friendsSince = state.toggles.friendsSince.takeIf { state.toggles.friends },
+            friendsEndsAt = v.friendsEnd(),
+            stepsAvailable = state.steps.available,
+            audio = state.audio,
+            calls = state.runs.filter { it.call != null },
             suspendedUntil = state.suspendedUntil?.takeIf { it.isAfter(env.now) },
             callActive = state.callSince != null,
             activeRun = active,
@@ -339,6 +364,27 @@ data class StepView(
     val fallback: List<String> = emptyList(),
     /** The gym's workout step: the exercises, pre-filled, and the rest timer ([Input.LogSet], [Input.FinishWorkout]). */
     val workout: WorkoutView? = null,
+    /** A call card: who, by when, and whether DONE is unlocked. */
+    val call: CallView? = null,
+)
+
+/**
+ * A call card as the takeover shows it: [who] big, CALL (the dialer) or, in the short version ([message]), MESSAGE, NOT
+ * NOW ([Input.Dismiss]) and DONE once [done] ([Input.StepDone] on its done step, or [Input.Confirm]).
+ */
+data class CallView(
+    val who: String,
+    /** Not done by then: missed. */
+    val dueAt: Instant,
+    /** DONE may be tapped: a call of [minCallMin] minutes since the card appeared, or the short version (a message). */
+    val done: Boolean,
+    /** The short version: send a message instead. */
+    val message: Boolean,
+    val minCallMin: Int,
+    /** The longest call since the card appeared, in seconds. */
+    val longestCallS: Long,
+    /** The card came back (once, nothing was done after `return_after_min`). */
+    val returned: Boolean,
 )
 
 /** A study round ([isBreak] false) or the break after it: round [number] of [total]. */
@@ -378,6 +424,23 @@ data class HomeStatus(
     val quiet: Boolean,
     val walking: Boolean,
     val friends: Boolean,
+    /** The walking switch is on since then (null while off). */
+    val walkingSince: Instant? = null,
+    /**
+     * When the walk ends by itself if nothing changes: `still_end_min` after the last step with a step counter, else its
+     * time limit (null while off).
+     */
+    val walkEndsAt: Instant? = null,
+    /** The friends switch is on since then (null while off). */
+    val friendsSince: Instant? = null,
+    /** When the friends switch turns itself off (its cap), or null while off. */
+    val friendsEndsAt: Instant? = null,
+    /** The phone counts steps (step counter and permission), as the app last said. */
+    val stepsAvailable: Boolean = false,
+    /** VIGIL's sound playing now, or null. */
+    val audio: AudioState? = null,
+    /** Today's open call runs (a card up, dismissed, or a stage-3 reminder), each with its row's label and deadline. */
+    val calls: List<Run> = emptyList(),
     val suspendedUntil: Instant?,
     val callActive: Boolean,
     /** The run owning the screen. */

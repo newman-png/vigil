@@ -28,6 +28,7 @@ import dev.vigil.engine.Dnd
 import dev.vigil.engine.Vigil
 import dev.vigil.guard.Guard
 import dev.vigil.trigger.AdhanListener
+import dev.vigil.trigger.StepCounter
 import dev.vigil.trigger.TriggerSetup
 import dev.vigil.ui.components.PixelButton
 import dev.vigil.ui.components.PixelText
@@ -48,8 +49,8 @@ class SetupItem(
 )
 
 /** Everything Android must allow: the base items (the Guard first) and each trigger's own (notification access, ...). */
-fun permissionItems(context: Context, requestNotifications: () -> Unit): List<SetupItem> =
-    baseItems(context, requestNotifications) + TriggerSetup.items(context)
+fun permissionItems(context: Context, requestNotifications: () -> Unit, requestActivity: () -> Unit = {}): List<SetupItem> =
+    baseItems(context, requestNotifications, requestActivity) + TriggerSetup.items(context)
 
 /** How many required permissions are missing (the home screen's SETUP hint). */
 fun missingPermissions(context: Context): Int =
@@ -67,10 +68,11 @@ fun SetupScreen(
     refreshKey: Int,
     firstRun: Boolean,
     requestNotifications: () -> Unit,
+    requestActivity: () -> Unit,
     onDone: () -> Unit,
 ) {
     val context = LocalContext.current
-    val items = remember(refreshKey, requestNotifications) { permissionItems(context, requestNotifications) }
+    val items = remember(refreshKey, requestNotifications) { permissionItems(context, requestNotifications, requestActivity) }
     val missing = items.count { it.granted == false && !it.optional }
     val state by Vigil.state.collectAsState()
     val settingsVersion by Graph.settings.version.collectAsState()
@@ -206,7 +208,7 @@ private fun BatterySection(batteryOk: Boolean) {
     )
 }
 
-private fun baseItems(context: Context, requestNotifications: () -> Unit): List<SetupItem> {
+private fun baseItems(context: Context, requestNotifications: () -> Unit, requestActivity: () -> Unit): List<SetupItem> {
     val pkg = context.packageName
     val packageUri = Uri.parse("package:$pkg")
     val nm = context.getSystemService(NotificationManager::class.java)
@@ -268,5 +270,14 @@ private fun baseItems(context: Context, requestNotifications: () -> Unit): List<
             Dnd.hasAccess(context),
             "OPEN",
         ) { open(Dnd.accessIntent()) },
+        SetupItem(
+            "PHYSICAL ACTIVITY",
+            "Ends a walk when you stop moving (10 minutes without steps), and lets the movement nudge come after 90 still " +
+                "minutes. VIGIL reads only the step count. Without it a walk ends by its time (a commute's end, or 3 hours)." +
+                if (StepCounter.present(context)) "" else " This phone has no step counter.",
+            StepCounter.permitted(context),
+            "ALLOW",
+            optional = true,
+        ) { requestActivity() },
     )
 }

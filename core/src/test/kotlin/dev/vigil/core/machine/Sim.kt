@@ -25,12 +25,17 @@ fun rome(local: String): Instant = LocalDateTime.parse(local).atZone(ROME).toIns
 /** The protocol kinds that arrived with M6 and M7 (study block, attention reset, meals, gym). */
 val M6_M7_KINDS = setOf(ProtocolKind.STUDY, ProtocolKind.ATTENTION, ProtocolKind.MEAL, ProtocolKind.GYM)
 
+/** The protocol kinds that arrived with M8 (walk, friends, call, wellness nudges). */
+val M8_KINDS = setOf(ProtocolKind.WALK, ProtocolKind.FRIENDS, ProtocolKind.CALL, ProtocolKind.NUDGE)
+
 /**
- * The bundled file without its M6/M7 protocols: the tests of the earlier rules (prayers, pool, sleep, Jummah, reset,
- * promise) use it, so lunch, dinner and the attention reset after Dhuhr do not run through them. The M6/M7 tests and
- * the invariant walk use the whole [BundledProtocols.file].
+ * The bundled file without its M6/M7 and M8 protocols: the tests of the earlier rules (prayers, pool, sleep, Jummah,
+ * reset, promise) use it, so lunch, dinner, the attention reset after Dhuhr and the nudges do not run through them.
  */
-val M5_FILE: ProtocolFile = BundledProtocols.file.copy(protocols = BundledProtocols.file.protocols.filter { it.kind !in M6_M7_KINDS })
+val M5_FILE: ProtocolFile = BundledProtocols.file.copy(protocols = BundledProtocols.file.protocols.filter { it.kind !in M6_M7_KINDS + M8_KINDS })
+
+/** The bundled file without its M8 protocols (the M6/M7 tests: no nudge comes in between). The M8 tests and the invariant walk use the whole file. */
+val M7_FILE: ProtocolFile = BundledProtocols.file.copy(protocols = BundledProtocols.file.protocols.filter { it.kind !in M8_KINDS })
 
 /**
  * Drives [Machine] like the Android layer would: keeps the state, collects every entry and effect. Starts the first

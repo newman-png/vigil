@@ -37,7 +37,9 @@ import dev.vigil.Graph
 import dev.vigil.engine.Vigil
 import dev.vigil.service.VigilService
 import dev.vigil.takeover.TakeoverActivity
+import dev.vigil.trigger.StepCounter
 import dev.vigil.trigger.TriggerSetup
+import dev.vigil.ui.audio.AudioScreen
 import dev.vigil.ui.components.scanlines
 import dev.vigil.ui.home.HomeActions
 import dev.vigil.ui.home.HomeScreen
@@ -47,9 +49,9 @@ import dev.vigil.ui.theme.Palette
 import dev.vigil.ui.times.MyTimesScreen
 
 /**
- * VIGIL's own screens: HOME and the places it leads (MY TIMES, SETUP, TEST; QUIET, GOING TO SLEEP and EXPORT act right
- * on HOME). Back always returns HOME. Takeovers, the pool's wait and block screens and the kill switch's wait have
- * their own activities.
+ * VIGIL's own screens: HOME and the places it leads (MY TIMES, SETUP, TEST, AUDIO; QUIET, the walking and friends
+ * switches, GOING TO SLEEP and EXPORT act right on HOME). Back always returns HOME. Takeovers, the pool's wait and block
+ * screens and the kill switch's wait have their own activities.
  */
 class MainActivity : ComponentActivity() {
     private enum class Screen(val key: String) {
@@ -57,6 +59,7 @@ class MainActivity : ComponentActivity() {
         MY_TIMES("times"),
         SETUP("setup"),
         TEST("test"),
+        AUDIO("audio"),
     }
 
     /** Bumped on every resume so permission statuses are re-read after visiting system settings. */
@@ -134,6 +137,16 @@ class MainActivity : ComponentActivity() {
             VigilService.start(this)
         }
 
+        // PHYSICAL ACTIVITY: the step counter (a walk ends when you stop moving). Denied for good: VIGIL's app info.
+        val activityPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (!granted && !shouldShowRequestPermissionRationale(Manifest.permission.ACTIVITY_RECOGNITION)) {
+                TriggerSetup.open(this, TriggerSetup.appInfoIntent(this), Intent(Settings.ACTION_SETTINGS))
+            }
+            resumeTick++
+            StepCounter.sync(this)
+        }
+        val requestActivity = { activityPermission.launch(Manifest.permission.ACTIVITY_RECOGNITION) }
+
         BackHandler(enabled = screen != Screen.HOME) { screen = Screen.HOME }
 
         // Black, white and red only: text selection and cursor handles too (Compose's default is blue).
@@ -163,6 +176,8 @@ class MainActivity : ComponentActivity() {
                                     openSetup = { screen = Screen.SETUP },
                                     openTest = { screen = Screen.TEST },
                                     openTakeover = { startActivity(TakeoverActivity.intent(this@MainActivity)) },
+                                    openAudio = { screen = Screen.AUDIO },
+                                    requestActivity = requestActivity,
                                 ),
                             )
                             Screen.MY_TIMES -> MyTimesScreen(onSaved = { screen = Screen.HOME })
@@ -170,9 +185,11 @@ class MainActivity : ComponentActivity() {
                                 refreshKey = resumeTick,
                                 firstRun = !Graph.settings.setupDone,
                                 requestNotifications = { notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS) },
+                                requestActivity = requestActivity,
                                 onDone = ::setupFinished,
                             )
-                            Screen.TEST -> TestScreen()
+                            Screen.TEST -> TestScreen(openAudio = { screen = Screen.AUDIO })
+                            Screen.AUDIO -> AudioScreen()
                         }
                     }
                 }

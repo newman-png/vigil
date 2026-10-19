@@ -23,6 +23,7 @@ import dev.vigil.core.protocol.StepType
 import dev.vigil.core.protocol.ToggleName
 import dev.vigil.core.protocol.Trigger
 import dev.vigil.core.protocol.Version
+import dev.vigil.core.run.CallInfo
 import dev.vigil.core.run.GymInfo
 import dev.vigil.core.run.GymSet
 import dev.vigil.core.run.JummahInfo
@@ -157,6 +158,7 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
     fun advance() {
         ensureDay()
         expireSuspension()
+        settleWrapUp()
         expireCall()
         settleToggles()
         settleRuns()
@@ -169,6 +171,7 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         settlePool()
         settleHeadsUps()
         fireDue()
+        settleNudges()
         settleRuns()
         if (regateDue) {
             regateDue = false
@@ -199,16 +202,31 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
 
     /**
      * "I'm with friends" turns itself off at its cap (spec: "Ends when you switch it off, or after the 4-hour cap");
-     * "I'm walking" after [Machine.MAX_WALKING], until step detection can tell that a walk is over.
+     * "I'm walking" when the steps stop for `still_end_min` ("or when you stop moving for 10 minutes"), or without a step
+     * counter by the time rules ([View.walkEnd]).
      */
     private fun settleToggles() {
         friendsEnd()?.let { end ->
-            if (!now.isBefore(end)) setToggle(ToggleName.FRIENDS, false, at = end, detail = "off (the ${friendsCapMin()}-minute cap)")
+            if (!now.isBefore(end)) setToggle(ToggleName.FRIENDS, false, at = end, detail = "off (the ${friendsCapMin()}-minute cap)", why = "cap")
         }
-        walkingEnd()?.let { end ->
-            if (!now.isBefore(end)) {
-                setToggle(ToggleName.WALKING, false, at = end, detail = "off (by itself after ${Machine.MAX_WALKING.toHours()} hours)")
+        val since = s.toggles.walkingSince
+        walkEnd()?.let { end ->
+            if (now.isBefore(end) || since == null) return@let
+            if (s.steps.available) {
+                setToggle(ToggleName.WALKING, false, at = end, detail = "off (no steps for ${walkParam("still_end_min")} minutes)", why = "still")
+            } else {
+                setToggle(ToggleName.WALKING, false, at = end, detail = "off (by itself after ${span(since, end)})", why = "time")
             }
+        }
+    }
+
+    /** "3 hours", "1 hour" or "75 minutes". */
+    private fun span(from: Instant, to: Instant): String {
+        val m = Duration.between(from, to).toMinutes()
+        return when {
+            m == 60L -> "1 hour"
+            m > 0 && m % 60 == 0L -> "${m / 60} hours"
+            else -> "$m minutes"
         }
     }
 
@@ -249,6 +267,9 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         // Closing the day's runs starts nothing: no `event:misses` reset offer and no `event:after` protocol at GOING TO
         // SLEEP (or in the night the day ended in). Those triggers are skipped; the miss count starts again.
         dayEnding = true
+        // The switches end with the day (their runs complete; nothing waiting for them starts now).
+        if (s.toggles.walking) setToggle(ToggleName.WALKING, false, at = at, detail = "off (the day ended)", why = "day_end")
+        if (s.toggles.friends) setToggle(ToggleName.FRIENDS, false, at = at, detail = "off (the day ended)", why = "day_end")
         closeRunsAtDayEnd(at)
         dayEnding = false
         for (w in day.deferred) {
@@ -348,6 +369,9 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
                     logRun(EntryType.DROPPED, r, at = at, reason = "day_end", detail = "the promise expired with the day")
                     cancelRunNotices(r)
                 }
+                r.kind == ProtocolKind.NUDGE -> endNudge(r, "day_end", at)
+                r.kind in SWITCHES -> complete(r, at)
+                r.call != null -> missCall(r, "day_end", at)
                 r.prayer == Prayer.ISHA -> if (r.confirmed) complete(r) else missPrayer(r, "day_end", at)
                 r.prayer != null -> Unit
                 // An unconfirmed stage-3 reminder is a miss like any other: without it a protocol at stage 3 could
@@ -402,6 +426,20 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         if (r.jummah != null) {
             settleJummah(id)
             return
+        }
+        when {
+            r.kind == ProtocolKind.NUDGE -> {
+                settleNudge(r)
+                return
+            }
+            r.kind in SWITCHES -> {
+                settleSwitch(r)
+                return
+            }
+            r.call != null -> {
+                settleCall(r)
+                return
+            }
         }
         r.promise?.let { promise ->
             if (r.phase == RunPhase.WAITING && !now.isBefore(promise.dueAt)) promiseDue(r)
@@ -465,7 +503,7 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         val st = steps[r.step]
         logRun(EntryType.STEP_DONE, r, at = at, step = r.step, detail = st.text, text = text, reason = if (auto) "timer" else null)
         if (st.todos && text != null && r.kind == ProtocolKind.SLEEP && !r.test) setTodos(r, st, text)
-        if (st.walkingOn && !r.test) setToggle(ToggleName.WALKING, true, detail = "on (${title(r)}: ${st.text})")
+        if (st.walkingOn && !r.test) setToggle(ToggleName.WALKING, true, detail = "on (${title(r)}: ${st.text})", why = "jummah")
         if (st.reenter && !r.test) reenter(r)
         var next = r.copy(
             step = r.step + 1,
@@ -494,7 +532,7 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         }
         put(next)
         // Without a screen lock its notification shows the current step (the morning card).
-        if (next.lock != LockType.SCREEN && next.phase == RunPhase.ACTIVE) notifyRun(next)
+        if (next.call != null) notifyCall(next) else if (next.lock != LockType.SCREEN && next.phase == RunPhase.ACTIVE) notifyRun(next)
         return next
     }
 
@@ -542,13 +580,16 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
                 text = r.texts.values.filter { it.isNotBlank() }.joinToString(" / ").ifEmpty { null },
             )
         }
+        r.call?.let { c ->
+            logRun(EntryType.CALL, r, at = at, reason = "done", minutes = c.callS.takeIf { it > 0 }?.let { WallClock.minutesCeil(it) }, detail = who(r))
+        }
         if (!r.test) {
             updateDay { it.copy(completed = it.completed + (r.protocol to at)) }
             // The attention ramp counts the days it was done in full, once a day.
             if (r.kind == ProtocolKind.ATTENTION && r.version == Version.FULL && s.attention.lastDay != day.key) {
                 s = s.copy(attention = AttentionMemory(s.attention.days + 1, day.key))
             }
-            if (!r.bailed) recordOutcome(r, if (r.clean) RunOutcome.CLEAN else RunOutcome.DONE)
+            if (!r.bailed && r.kind !in NEUTRAL) recordOutcome(r, if (r.clean) RunOutcome.CLEAN else RunOutcome.DONE)
             if (!r.afterFired && !r.bailed) fireAfter(r)
         }
         promoteQueue()
@@ -558,7 +599,7 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         remove(r.id)
         logRun(EntryType.MISSED, r, at = at, reason = why, detail = detail)
         cancelRunNotices(r)
-        if (!r.test && !r.bailed) recordOutcome(r, RunOutcome.MISSED)
+        if (!r.test && !r.bailed && r.kind !in NEUTRAL) recordOutcome(r, RunOutcome.MISSED)
         promoteQueue()
     }
 
@@ -667,23 +708,37 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
             log(EntryType.SKIPPED, protocol = p.id, reason = "needs_text", detail = "a promise starts from LATER: one line and its minutes")
             return null
         }
-        if (!test) {
+        // Each MY TIMES calls row is a run of its own (mom and dad): only the same row is "already running".
+        val call = p.kind == ProtocolKind.CALL
+        if (!test && !call) {
             // A run left unfinished after its lock (or an unconfirmed reminder) does not hold the protocol: its next
             // start (lunch after breakfast, the second study block, tonight's wind-down) replaces it, as a miss.
             val replaceable = s.runs.filter { it.protocol == p.id && !it.test && it.prayer == null && it.jummah == null && it.phase in REPLACEABLE }
             for (old in replaceable) missRun(old, "replaced", detail = "the next start of this protocol came before it was finished")
         }
-        if (!test && s.runs.any { it.protocol == p.id && !it.test && it.phase != RunPhase.NIGHT }) {
+        // A walk or friends run lasts while its switch is on: any start of it (home, a commute row, the reset's re-entry)
+        // turns the switch on, which starts the run.
+        val switch = switchOf(p.kind)?.takeIf { p.parsedTrigger == Trigger.Toggle(it) }
+        if (switch != null && !test && !switchOn(switch)) {
+            setToggle(switch, true, detail = if (reason == "commute") "on (the ${planned?.let { hhmm(it) } ?: ""} commute)" else "on ($reason)",
+                why = if (reason == "commute") "commute" else "switch", slot = slot)
+            return s.runs.firstOrNull { it.protocol == p.id && !it.test }
+        }
+        val sameRow = { r: Run -> !call || (r.slot?.start == slot?.start && r.slot?.label == slot?.label) }
+        if (!test && s.runs.any { it.protocol == p.id && !it.test && it.phase != RunPhase.NIGHT && sameRow(it) }) {
             log(EntryType.SKIPPED, protocol = p.id, reason = "already_running", scheduled = planned)
             return null
         }
+        if (p.kind == ProtocolKind.NUDGE) return nudgeNow(p, reason, test)
         // Started by any way (home, the offer's START): the offer is answered.
         if (!test && s.offer?.protocol == p.id) clearOffer("started", "started ($reason)")
         if (p.kind == ProtocolKind.JUMMAH) return startJummah(p, reason, planned, test, if (test) JummahPart.LEAVE else null)
         val r = newRun(p, if (test) 1 else stageOf(p), reason, planned, slot, test).copy(
             lengthMin = lengthFor(p, slot, minutes),
-            label = label?.trim()?.take(MAX_LABEL_CHARS)?.ifEmpty { null } ?: slot?.label?.ifBlank { null },
+            label = label?.trim()?.take(MAX_LABEL_CHARS)?.ifEmpty { null } ?: slot?.label?.ifBlank { null }
+                ?: if (call && test) "TEST" else null,
             gym = if (p.kind == ProtocolKind.GYM) GymInfo() else null,
+            call = if (call) CallInfo(dueAt = slot?.end ?: now.plus(Machine.CALL_WITHOUT_ROW), wrapUpMin = slot?.minutes ?: p.intParam("wrap_up_min")) else null,
         )
         place(r, p)
         return r
@@ -710,6 +765,8 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
      */
     private fun place(r: Run, p: Protocol) {
         if (!r.test) s = s.copy(lastFired = s.lastFired + (p.id to now))
+        // A nudge gives way to any protocol that needs the screen.
+        if (r.lock == LockType.SCREEN && r.stage < 3) screenHolder()?.takeIf { it.kind == ProtocolKind.NUDGE }?.let { endNudge(it, "gave_way") }
         // Thursday's wind-down puts the Jummah prep onto Friday's to-dos.
         if (p.kind == ProtocolKind.SLEEP && !r.test) addPrepTodos()
         // An asking takeover (I'M AT UNI, a promise) gives way to any screen lock.
@@ -723,7 +780,8 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
                 logRun(EntryType.FIRED, r, reason = r.reason, scheduled = r.planned, detail = "stage 3: one notification")
                 val text = if (r.prayer != null) "Time to pray. Tap CONFIRM when done." else currentStepText(r)
                 val id = r.prayer?.let { prayerNotice(it) } ?: runNotice(r)
-                effects += Effect.Notify(id, p.title, text, silent = s.toggles.quiet || r.silent, NotifyKind.REMINDER, r.id)
+                val title = if (r.call != null) "${p.title} ${who(r)}" else p.title
+                effects += Effect.Notify(id, title, text, silent = s.toggles.quiet || r.silent, NotifyKind.REMINDER, r.id)
             }
             r.lock == LockType.SCREEN && owner != null && !prayerFirst -> {
                 add(r.copy(phase = RunPhase.QUEUED))
@@ -749,6 +807,11 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
      */
     private fun yieldScreenToPrayer() {
         val owner = s.runs.firstOrNull { it.lock == LockType.SCREEN && lockActive(it) && !it.prayerLike } ?: return
+        // A nudge is not paused: it simply ends.
+        if (owner.kind == ProtocolKind.NUDGE) {
+            endNudge(owner, "gave_way")
+            return
+        }
         put(owner.copy(phase = RunPhase.PAUSED, pausedAt = runNow))
         logRun(EntryType.PAUSED, owner, detail = "a prayer took the screen; it goes on after the prayer's lock")
     }
@@ -774,6 +837,10 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
             activateJummah(id)
             return
         }
+        if (r.call != null) {
+            activateCall(id)
+            return
+        }
         val lockEnd = p.lock.minutes?.takeIf { r.lock != LockType.NONE }?.let { now.plus(Duration.ofMinutes(it.toLong())) }
         val doneAfter = if (r.stage == 1) p.lock.doneAfterMin?.let { now.plus(Duration.ofMinutes(it.toLong())) } else null
         var a = r.copy(
@@ -785,8 +852,10 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         put(a)
         if (!r.test) recordStart(p.id)
         // The attention reset: no sound while you look at one spot.
-        if (p.kind == ProtocolKind.ATTENTION) effects += Effect.Audio(Effect.Audio.STOP)
-        if (a.lock == LockType.SCREEN) {
+        if (p.kind == ProtocolKind.ATTENTION) stopAudio("attention")
+        if (a.kind in SWITCHES) {
+            notifySwitch(a)
+        } else if (a.lock == LockType.SCREEN) {
             effects += Effect.ShowTakeover(a.id)
         } else {
             effects += Effect.Notify(runNotice(a), runTitle(a, p), currentStepText(a), silent = true, NotifyKind.RUN, a.id)
@@ -951,9 +1020,16 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
             if (item.source == StartSource.ADHAN || item.key in day.handled) continue
             val p = file.find(item.protocolId) ?: continue
             // Jummah still starts late (the phone was off at leave-by): it joins at the part that is due, until missed.
-            val until = (if (p.kind == ProtocolKind.JUMMAH) jummahToday()?.missedAt else null) ?: item.at.plus(Machine.PLANNED_GRACE)
+            val late = when (p.kind) {
+                ProtocolKind.JUMMAH -> jummahToday()?.missedAt
+                // A call card comes until its deadline, a commute walk until the commute's end.
+                ProtocolKind.CALL, ProtocolKind.WALK -> item.slot?.end
+                else -> null
+            }
+            val until = late ?: item.at.plus(Machine.PLANNED_GRACE)
             if (item.at.isAfter(now) || now.isAfter(until)) continue
-            val reason = (p.parsedTrigger as? Trigger.Slot)?.let { "slot:${it.type.json}" } ?: "time"
+            // A walk protocol's planned starts are the MY TIMES commute rows: the walking switch goes on.
+            val reason = if (p.kind == ProtocolKind.WALK) "commute" else (p.parsedTrigger as? Trigger.Slot)?.let { "slot:${it.type.json}" } ?: "time"
             val r = fire(p, reason, item.at, item.slot?.let(::slotInfo))
             // A Jummah skipped while VIGIL is suspended starts once the suspension is over.
             if (r == null && suspended && p.kind == ProtocolKind.JUMMAH) continue
@@ -1170,6 +1246,7 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
             }
             Input.RingWakeAlarmTest -> {
                 log(EntryType.WAKE_ALARM, protocol = morningProtocol?.id, reason = "test", detail = "TEST ring", test = true)
+                stopAudio("wake_alarm")
                 effects += Effect.RingWakeAlarm(now, 1, now.plus(ringMax()), test = true)
             }
             is Input.TodoDone -> onTodo(input.index, input.done)
@@ -1185,10 +1262,13 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
                 // unlocked phone is in use: a wake that shows just the lock screen (a notification lighting it up,
                 // lifting the phone in bed) pauses the count while the screen is on but does not start it again.
                 if (!input.on) {
-                    s = s.copy(screenOn = false, screenUnlocked = false, screenOffSince = s.screenOffSince ?: now)
+                    s = s.copy(screenOn = false, screenUnlocked = false, screenOffSince = s.screenOffSince ?: now, unlockedSince = null)
                     onForeground(null, false)
                 } else {
-                    s = s.copy(screenOn = true, screenUnlocked = input.unlocked, screenOffSince = s.screenOffSince.takeIf { !input.unlocked })
+                    s = s.copy(
+                        screenOn = true, screenUnlocked = input.unlocked, screenOffSince = s.screenOffSince.takeIf { !input.unlocked },
+                        unlockedSince = if (input.unlocked) s.unlockedSince ?: now else null,
+                    )
                     // The wake alarm was never answered: the first unlock after it is waking up.
                     if (input.unlocked && s.wakeAlarm.morningAtUnlock != null) wakeUp("unlock")
                 }
@@ -1227,6 +1307,9 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
                 EntryType.DND, reason = "no_access",
                 detail = "Do Not Disturb access is not granted (SETUP): the lock shows, the phone is not silenced",
             )
+            is Input.Steps -> onSteps(input.total)
+            is Input.PlayAudio -> playAudio(input.sound, input.bpm, input.loop, input.name, "audio")
+            is Input.StopAudio -> stopAudio(input.reason.take(MAX_REASON_CHARS))
         }
     }
 
@@ -1315,7 +1398,19 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
 
     private fun onToggle(name: ToggleName, on: Boolean) = setToggle(name, on)
 
-    private fun setToggle(name: ToggleName, on: Boolean, at: Instant = now, detail: String = if (on) "on" else "off") {
+    /**
+     * A home switch changes at [at]. Walking and friends start their protocols when they go on ([slot]: the commute row
+     * that switched walking on) and complete them when they go off. [why] is the walk's journal reason: switch, commute or
+     * jummah when it starts; off, still, time, arrived, cap or day_end when it ends.
+     */
+    private fun setToggle(
+        name: ToggleName,
+        on: Boolean,
+        at: Instant = now,
+        detail: String = if (on) "on" else "off",
+        why: String = if (on) "switch" else "off",
+        slot: SlotInfo? = null,
+    ) {
         val t = s.toggles
         when (name) {
             ToggleName.QUIET -> {
@@ -1326,20 +1421,51 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
             }
             ToggleName.WALKING -> {
                 if (t.walking == on) return
-                s = s.copy(toggles = t.copy(walking = on, walkingSince = if (on) now else null))
+                // Without a step counter: a commute ends its length + commute_grace_min after its start, any other walk
+                // after manual_max_min.
+                val until = when {
+                    !on -> null
+                    slot != null -> slot.start.plus(Duration.ofMinutes((slot.minutes ?: s.times.current.commuteMin).toLong() + walkParam("commute_grace_min")))
+                    else -> now.plus(Duration.ofMinutes(walkParam("manual_max_min").toLong()))
+                }
+                s = s.copy(toggles = t.copy(walking = on, walkingSince = if (on) now else null, walkingUntil = until))
             }
             ToggleName.FRIENDS -> {
                 if (t.friends == on) return
                 s = s.copy(toggles = t.copy(friends = on, friendsSince = if (on) now else null))
             }
         }
-        log(EntryType.TOGGLE, at = at, reason = name.json, detail = detail)
+        val since = if (name == ToggleName.WALKING) t.walkingSince else t.friendsSince
+        val minutes = if (on) null else since?.let { WallClock.minutesCeil(it, at) }
+        log(EntryType.TOGGLE, at = at, reason = name.json, detail = detail, minutes = minutes)
+        if (name == ToggleName.WALKING) {
+            if (on) {
+                val ends = if (s.steps.available) "ends after ${walkParam("still_end_min")} minutes without steps" else
+                    "no step counter: ends at ${s.toggles.walkingUntil?.let { hhmm(it) }} at the latest"
+                log(EntryType.WALK_START, protocol = walkProtocol?.id, reason = why, detail = ends)
+            } else {
+                log(EntryType.WALK_END, at = at, protocol = walkProtocol?.id, reason = why, minutes = minutes, detail = detail)
+            }
+        }
         val started = file.protocols.filter { (it.parsedTrigger as? Trigger.Toggle)?.toggle == name }
         if (on) {
-            started.forEach { fire(it, "toggle:${name.json}") }
+            started.forEach { fire(it, if (why == "commute") "commute" else "toggle:${name.json}", planned = slot?.start, slot = slot) }
         } else {
-            started.forEach { p -> s.runs.filter { it.protocol == p.id }.forEach { complete(it) } }
+            started.forEach { p -> s.runs.filter { it.protocol == p.id && !it.test }.forEach { complete(it, at) } }
         }
+    }
+
+    /** The home switch that starts and ends runs of [kind] (walk, friends), or null. */
+    private fun switchOf(kind: ProtocolKind): ToggleName? = when (kind) {
+        ProtocolKind.WALK -> ToggleName.WALKING
+        ProtocolKind.FRIENDS -> ToggleName.FRIENDS
+        else -> null
+    }
+
+    private fun switchOn(name: ToggleName): Boolean = when (name) {
+        ToggleName.QUIET -> s.toggles.quiet
+        ToggleName.WALKING -> s.toggles.walking
+        ToggleName.FRIENDS -> s.toggles.friends
     }
 
     private fun onManual(id: String, test: Boolean, minutes: Int?, label: String?) {
@@ -1358,6 +1484,8 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
     private fun onStepDone(runId: String, index: Int, text: String?) {
         val r = run(runId) ?: return
         if (r.phase != RunPhase.ACTIVE && r.phase != RunPhase.RETURNED && r.phase != RunPhase.OPEN) return
+        // A walk or friends run ends with its switch, a nudge with its seconds: their steps are only shown.
+        if (r.kind in NEUTRAL) return
         val steps = stepsOf(r)
         if (index != r.step || index !in steps.indices) return
         val st = steps[index]
@@ -1370,7 +1498,7 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
             StepType.TIMER -> if (forced) return
             // A to-dos step takes up to its lines (at least one); an optional one may stay empty; others need every line.
             StepType.TEXT -> if (nonBlankLines(text) < (if (st.optional) 0 else if (st.todos) 1 else st.lines ?: 1)) return
-            StepType.DONE -> if (forced && r.doneAfterAt != null && runNow.isBefore(r.doneAfterAt)) return
+            StepType.DONE -> if ((forced && r.doneAfterAt != null && runNow.isBefore(r.doneAfterAt)) || !callDone(r)) return
             // Rounds never reach a run as such (they become timers); a workout step is finished like FINISH WORKOUT.
             StepType.ROUNDS -> return
             StepType.WORKOUT -> {
@@ -1395,8 +1523,15 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
 
     private fun onConfirm(runId: String) {
         val r = run(runId) ?: return
+        // A nudge ends by itself when its seconds are over (DONE on its screen comes after that).
+        if (r.kind == ProtocolKind.NUDGE) return
         if (r.promise != null) {
             keepPromise(r)
+            return
+        }
+        // A call card: DONE once a call (or, short, a message) unlocked it.
+        if (r.call != null && r.phase != RunPhase.REMINDER) {
+            if (r.phase == RunPhase.ACTIVE && callDone(r)) complete(r.copy(confirmed = true))
             return
         }
         val j = r.jummah
@@ -1432,6 +1567,11 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
 
     private fun onNotOkay(runId: String) {
         val r = run(runId) ?: return
+        // NOT OKAY on a nudge ends it, at no cost.
+        if (r.kind == ProtocolKind.NUDGE) {
+            endNudge(r, "not_okay")
+            return
+        }
         if (r.phase != RunPhase.ACTIVE && r.phase != RunPhase.QUEUED) return
         val p = protocol(r) ?: return
         if (p.kind == ProtocolKind.PRAYER) {
@@ -1450,8 +1590,8 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         val length = if (r.kind == ProtocolKind.STUDY) (studyBlock(r, p) - roundMinutesSpent(r)).coerceAtLeast(0) else r.lengthMin
         val moved = r.copy(version = next, step = 0, stepStartedAt = now, steppedDown = true, lengthMin = length)
         put(moved)
-        logRun(EntryType.STEPPED_DOWN, moved, detail = if (next == Version.SINGLE) "minimum" else null)
-        if (moved.lock != LockType.SCREEN && moved.phase == RunPhase.ACTIVE) notifyRun(moved)
+        logRun(EntryType.STEPPED_DOWN, moved, detail = if (next == Version.SINGLE) "minimum" else if (moved.call != null) "a message instead" else null)
+        if (moved.call != null) notifyCall(moved) else if (moved.lock != LockType.SCREEN && moved.phase == RunPhase.ACTIVE) notifyRun(moved)
     }
 
     private fun onBailOut(runId: String) {
@@ -1465,6 +1605,16 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         }
         if (r.jummah != null) {
             bailJummah(r)
+            return
+        }
+        // A nudge is left at no cost; a switch's run (its notification's STOP) turns the switch off, a TEST one just ends.
+        if (r.kind == ProtocolKind.NUDGE) {
+            endNudge(r, "left")
+            return
+        }
+        val switch = switchOf(r.kind)
+        if (switch != null) {
+            if (r.test) complete(r) else setToggle(switch, false)
             return
         }
         r.promise?.let { logRun(EntryType.PROMISE, r, reason = "bailed", text = it.text) }
@@ -1507,7 +1657,9 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
     private fun onCall(on: Boolean) {
         if (on) {
             if (s.callSince != null) return
-            s = s.copy(callSince = now)
+            // A nudge never stays over a call.
+            s.runs.filter { it.kind == ProtocolKind.NUDGE }.forEach { endNudge(it, "call") }
+            s = s.copy(callSince = now, callWrapped = false, callWrapAt = wrapAtFor(now))
             val paused = s.runs.filter { it.phase == RunPhase.ACTIVE }.map { it.protocol }
             log(EntryType.CALL_PAUSE, detail = paused.joinToString(", ").ifEmpty { null })
             return
@@ -1524,7 +1676,9 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
             val stepStart = r.stepStartedAt?.let { if (it.isBefore(base)) it.plus(shift) else maxOf(it, at) }
             put(r.copy(lockEndsAt = r.lockEndsAt?.plus(shift), doneAfterAt = r.doneAfterAt?.plus(shift), stepStartedAt = stepStart))
         }
-        s = s.copy(callSince = null)
+        creditCall(since, at)
+        if (s.callWrapped) effects += Effect.CancelNotify(WRAP_NOTICE)
+        s = s.copy(callSince = null, callWrapAt = null, callWrapped = false)
         val length = Duration.between(since, at).seconds.coerceAtLeast(0)
         log(EntryType.CALL_RESUME, at = at, minutes = WallClock.minutesCeil(length), seconds = length, detail = detail)
     }
@@ -1541,6 +1695,12 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
                 endNight(r, "kill_switch")
                 continue
             }
+            if (r.kind == ProtocolKind.NUDGE) {
+                endNudge(r, "kill_switch")
+                continue
+            }
+            // A switch stays on (the pool is open anyway while suspended), and its run with it.
+            if (r.kind in SWITCHES && !r.test) continue
             // Like a prayer, Jummah stays open (no screen, the phone's sound back) and goes on once the suspension ends.
             val j = r.jummah
             if (j != null && !r.test) {
@@ -1748,7 +1908,7 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
             else -> "on time"
         }
         logRun(EntryType.ARRIVED, r, minutes = late, detail = detail)
-        if (!r.test && s.toggles.walking) setToggle(ToggleName.WALKING, false, detail = "off (arrived at uni)")
+        if (!r.test && s.toggles.walking) setToggle(ToggleName.WALKING, false, detail = "off (arrived at uni)", why = "arrived")
         val arrived = r.copy(
             phase = RunPhase.OPEN, asking = false, step = arrivalIndex(stepsOf(r)) + 1, stepStartedAt = now, lockEndsAt = null,
             doneAfterAt = null, jummah = j.copy(part = JummahPart.TRAVEL, arrived = true),
@@ -2011,6 +2171,7 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         put(r.copy(asking = false))
         val j = r.jummah
         when {
+            r.call != null -> logRun(EntryType.CALL_CARD, r, reason = "not_now", detail = who(r), until = r.call.dueAt)
             r.promise != null -> logRun(EntryType.PROMISE, r, reason = "on_it", text = r.promise.text, detail = "the pool stays locked until DONE")
             j != null -> logRun(EntryType.ARRIVAL_CHECK, r, reason = "not_yet", detail = "asks again at ${hhmm((j.askedAt ?: now).plus(askRepeat(r)))}")
         }
@@ -2074,6 +2235,264 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
     /** 5 x 80 kg, or 12 reps for body weight. */
     private fun setText(set: GymSet): String =
         if (set.weight == 0.0) "${set.reps} reps" else "${set.reps} x ${kg(set.weight)} kg"
+
+    // ------------------------------------------------------------------ walk, friends, calls, audio, nudges (design M8)
+
+    /**
+     * A walk or friends run lasts while its switch is on (the switch completes it when it goes off). A TEST one (a
+     * preview: no switch, nothing blocked) ends by itself after [Machine.TEST_SWITCH].
+     */
+    private fun settleSwitch(r: Run) {
+        if (r.test) {
+            val end = r.firedAt.plus(Machine.TEST_SWITCH)
+            if (!now.isBefore(end)) complete(r, end)
+            return
+        }
+        val switch = switchOf(r.kind)?.takeIf { protocol(r)?.parsedTrigger == Trigger.Toggle(it) } ?: return
+        if (!switchOn(switch)) complete(r)
+    }
+
+    /** The switch's silent, ongoing notice with STOP: what is blocked and when it ends by itself. */
+    private fun notifySwitch(r: Run) {
+        val (title, text) = when {
+            r.test -> "TEST · ${title(r)}" to "A preview: nothing is blocked. It ends in ${Machine.TEST_SWITCH.toMinutes()} minutes."
+            r.kind == ProtocolKind.WALK -> "WALKING · POOL BLOCKED" to
+                if (s.steps.available) "Maps, WhatsApp and calls stay usable. Ends after ${walkParam("still_end_min")} minutes without steps."
+                else "Maps, WhatsApp and calls stay usable. Ends by ${walkEnd()?.let { hhmm(it) } ?: "itself"} at the latest."
+            else -> "WITH FRIENDS · POOL BLOCKED" to "Calls, Maps and WhatsApp stay usable. Ends by ${friendsEnd()?.let { hhmm(it) } ?: "itself"}."
+        }
+        effects += Effect.Notify(runNotice(r), title, text, silent = true, kind = NotifyKind.SWITCH, runId = r.id)
+    }
+
+    /**
+     * The step counter's total (null = no step counter or no permission: walks end by the time rules). A new total, or
+     * the first one, counts as a step now: no stillness is assumed before the counter was read.
+     */
+    private fun onSteps(total: Long?) {
+        val st = s.steps
+        if (total == null) {
+            if (st.available || st.total != null) s = s.copy(steps = StepState())
+            return
+        }
+        val moved = !st.available || st.total != total
+        s = s.copy(steps = StepState(available = true, total = total, lastStepAt = if (moved) now else st.lastStepAt ?: now))
+    }
+
+    /** Who a call run is for: its MY TIMES row's label (MOM), else the protocol's title. */
+    private fun who(r: Run): String = r.label?.ifBlank { null } ?: title(r)
+
+    /**
+     * A call run's card appears: a full-intensity takeover without a lock (an asking takeover: it yields to any screen
+     * lock and is not brought back once left, except once after `return_after_min`), and its notification.
+     */
+    private fun activateCall(id: String) {
+        val r = run(id) ?: return
+        val c = r.call ?: return
+        val a = r.copy(
+            phase = RunPhase.ACTIVE, asking = true, startedAt = r.startedAt ?: now, stepStartedAt = now,
+            call = c.copy(cardAt = c.cardAt ?: now),
+        )
+        put(a)
+        if (!r.test) {
+            recordStart(r.protocol)
+            updateDay { it.copy(callCardAt = it.callCardAt ?: now, callWrapMin = c.wrapUpMin) }
+        }
+        logRun(EntryType.CALL_CARD, a, reason = "card", detail = who(a), until = c.dueAt)
+        notifyCall(a)
+        // A call already going on when the card appears gets its "time to wrap up" too.
+        val since = s.callSince
+        if (since != null && s.callWrapAt == null && !s.callWrapped) s = s.copy(callWrapAt = since.plus(Duration.ofMinutes(c.wrapUpMin.toLong())))
+    }
+
+    private fun notifyCall(r: Run) {
+        val c = r.call ?: return
+        val p = protocol(r) ?: return
+        val text = when {
+            r.version != Version.FULL -> "Send a message instead (MESSAGE), then DONE."
+            callDone(r) -> "Call done: tap DONE."
+            else -> "By ${hhmm(c.dueAt)}. DONE appears after a call of ${p.intParam("min_call_min")} minutes."
+        }
+        effects += Effect.Notify(runNotice(r), "${p.title} ${who(r)}", text, silent = true, kind = NotifyKind.CALL, runId = r.id)
+    }
+
+    /** A call run: missed at its deadline; the card comes back once after `return_after_min` (not during a call). */
+    private fun settleCall(r: Run) {
+        val c = r.call ?: return
+        if (!r.confirmed && !now.isBefore(c.dueAt)) {
+            missCall(r, "deadline", c.dueAt)
+            return
+        }
+        val back = callReturnAt(r) ?: return
+        if (now.isBefore(back) || s.callSince != null) return
+        val returned = r.copy(asking = true, returned = true)
+        put(returned)
+        logRun(EntryType.CALL_CARD, returned, reason = "returned", detail = who(r), until = c.dueAt)
+        effects += Effect.ShowTakeover(r.id)
+    }
+
+    /** Not done by its deadline (or the day ended first): missed, like any run. */
+    private fun missCall(r: Run, why: String, at: Instant) {
+        val c = r.call ?: return
+        logRun(EntryType.CALL, r, at = at, reason = "missed", detail = who(r), minutes = c.callS.takeIf { it > 0 }?.let { WallClock.minutesCeil(it) })
+        missRun(r, why, at, detail = "${who(r)}: not done by ${hhmm(minOf(c.dueAt, at))}")
+    }
+
+    /**
+     * A call from [since] to [at] ended: each call card that was up counts the part after it appeared (the longest one
+     * is kept). A call long enough unlocks DONE: the card comes back with it.
+     */
+    private fun creditCall(since: Instant, at: Instant) {
+        for (r in s.runs.filter { it.call != null && it.phase == RunPhase.ACTIVE }) {
+            val c = r.call ?: continue
+            val card = c.cardAt ?: continue
+            val length = Duration.between(maxOf(since, card), at).seconds
+            if (length <= c.callS) continue
+            val before = callDone(r)
+            val longer = r.copy(call = c.copy(callS = length))
+            put(longer)
+            if (!before && callDone(longer)) {
+                logRun(EntryType.CALL, longer, at = at, reason = "called", detail = who(r), minutes = WallClock.minutesCeil(length))
+                put(longer.copy(asking = true))
+                notifyCall(longer)
+                effects += Effect.ShowTakeover(r.id)
+            }
+        }
+    }
+
+    /**
+     * When "time to wrap up" is due for a call starting at [start]: while a call card is up, its wrap-up minutes; else,
+     * after today's first call card appeared, the latest card's. Null otherwise.
+     */
+    private fun wrapAtFor(start: Instant): Instant? {
+        val active = s.runs.filter { it.call != null && it.phase == RunPhase.ACTIVE }.mapNotNull { it.call?.wrapUpMin }.minOrNull()
+        val minutes = active ?: day.callWrapMin?.takeIf { day.callCardAt?.let { card -> !start.isBefore(card) } == true } ?: return null
+        return start.plus(Duration.ofMinutes(minutes.toLong()))
+    }
+
+    /** "Time to wrap up": a silent notification once per call, when it has gone on for the wrap-up minutes. */
+    private fun settleWrapUp() {
+        val at = s.callWrapAt ?: return
+        val since = s.callSince ?: return
+        if (s.callWrapped || now.isBefore(at)) return
+        s = s.copy(callWrapped = true, callWrapAt = null)
+        val m = WallClock.minutesCeil(since, at)
+        log(EntryType.WRAP_UP, at = at, minutes = m)
+        effects += Effect.Notify(WRAP_NOTICE, "TIME TO WRAP UP", "$m minutes on the call.", silent = true, kind = NotifyKind.CARD)
+    }
+
+    /**
+     * Plays [sound] (one at a time: it replaces any other). The same sound again only updates it (the metronome's new
+     * speed) without a journal line; the effect is sent all the same, so a sound lost with the app comes back.
+     */
+    private fun playAudio(sound: String, bpm: Int?, loop: Boolean, name: String?, reason: String) {
+        val ok = Effect.Audio.valid(sound) ?: return
+        val beats = if (ok == Effect.Audio.METRONOME) (bpm ?: Effect.Audio.DEFAULT_BPM).coerceIn(Effect.Audio.MIN_BPM, Effect.Audio.MAX_BPM) else null
+        val repeat = Effect.Audio.fileId(ok) != null && loop
+        val label = name?.trim()?.take(MAX_LABEL_CHARS)?.ifEmpty { null }
+        val old = s.audio
+        if (old != null && old.sound == ok) {
+            s = s.copy(audio = old.copy(bpm = beats, loop = repeat, name = label ?: old.name))
+        } else {
+            if (old != null) logAudioStop(old, "replaced")
+            s = s.copy(audio = AudioState(ok, now, beats, repeat, label))
+            log(EntryType.AUDIO_START, reason = reason, detail = audioName(ok, beats, label))
+        }
+        effects += Effect.Audio(Effect.Audio.PLAY, ok, beats, repeat)
+    }
+
+    /**
+     * Stops VIGIL's sound ([only]: just that sound, if it is the one playing). The effect is always sent: the app may
+     * still play something the state does not know of (a sound started before an update).
+     */
+    private fun stopAudio(reason: String, only: String? = null) {
+        val a = s.audio
+        if (a != null && (only == null || a.sound == only)) {
+            logAudioStop(a, reason)
+            s = s.copy(audio = null)
+        }
+        effects += Effect.Audio(Effect.Audio.STOP, only)
+    }
+
+    private fun logAudioStop(a: AudioState, reason: String) {
+        log(EntryType.AUDIO_STOP, reason = reason, minutes = WallClock.minutesCeil(a.since, now), detail = audioName(a.sound, a.bpm, a.name))
+    }
+
+    /** white_noise, metronome 100 bpm, or the file's name. */
+    private fun audioName(sound: String, bpm: Int?, name: String?): String = when {
+        sound == Effect.Audio.METRONOME -> "metronome ${bpm ?: Effect.Audio.DEFAULT_BPM} bpm"
+        Effect.Audio.fileId(sound) != null -> name ?: sound
+        else -> sound
+    }
+
+    /**
+     * Today's timed nudges as they come due (each once: shown, or skipped when something else is going on, the phone is
+     * not in use, another nudge came less than `min_gap_min` ago, or it is late), then the movement nudge after
+     * `still_min` without steps while the phone is in use.
+     */
+    private fun settleNudges() {
+        val p = nudgeProtocol ?: return
+        val times = nudgeTimes(p)
+        while (day.nudgesDue < times.size) {
+            val (at, line) = times[day.nudgesDue]
+            if (now.isBefore(at)) break
+            updateDay { it.copy(nudgesDue = it.nudgesDue + 1, moveFrom = now) }
+            val gap = Duration.ofMinutes(p.intParam("min_gap_min").toLong())
+            val why = when {
+                Duration.between(at, now) > Machine.NUDGE_GRACE -> "late"
+                else -> nudgeBlocked() ?: day.nudgedAt?.takeIf { Duration.between(it, now) < gap }?.let { "gap" }
+            }
+            if (why == null) showNudge(p, "timed", line, p.intParam("seconds"))
+            else log(EntryType.NUDGE_SKIPPED, protocol = p.id, reason = why, scheduled = at, detail = line)
+        }
+        val move = moveNudgeAt(p) ?: return
+        if (now.isBefore(move)) return
+        updateDay { it.copy(moveFrom = now) }
+        val lines = p.textListParam("move_nudges")
+        val line = lines[Math.floorMod(now.epochSecond / 60, lines.size.toLong()).toInt()]
+        val why = nudgeBlocked()
+        if (why == null) showNudge(p, "still", line, p.intParam("move_seconds"))
+        else log(EntryType.NUDGE_SKIPPED, protocol = p.id, reason = why, detail = line)
+    }
+
+    /** A nudge from a button (TEST): now, unless another protocol holds the screen. */
+    private fun nudgeNow(p: Protocol, reason: String, test: Boolean): Run? {
+        val holder = screenHolder()
+        if (holder != null) {
+            log(EntryType.NUDGE_SKIPPED, protocol = p.id, reason = "busy", detail = "${title(holder)} holds the screen", test = test)
+            return null
+        }
+        val lines = p.textListParam("nudges").ifEmpty { listOf(p.steps.first().text) }
+        return showNudge(p, reason, lines[Math.floorMod(now.epochSecond / 60, lines.size.toLong()).toInt()], p.intParam("seconds"), test)
+    }
+
+    /** A nudge takes the screen for [seconds] with [line]; it ends by itself (never a miss, never a penalty). */
+    private fun showNudge(p: Protocol, reason: String, line: String, seconds: Int, test: Boolean = false): Run {
+        val r = newRun(p, 1, reason, null, null, test).copy(
+            phase = RunPhase.ACTIVE, lock = LockType.SCREEN, startedAt = now, lockStartedAt = now, stepStartedAt = now,
+            lockEndsAt = now.plusSeconds(seconds.toLong()), label = line,
+        )
+        add(r)
+        if (!test) updateDay { it.copy(nudgedAt = now) }
+        log(EntryType.NUDGE_SHOWN, protocol = p.id, run = r.id, reason = reason, detail = line, seconds = seconds.toLong(), test = test)
+        return r
+    }
+
+    /** A nudge's seconds are over. */
+    private fun settleNudge(r: Run) {
+        val end = r.lockEndsAt ?: return
+        if (!now.isBefore(end)) endNudge(r, "time", end)
+    }
+
+    /** A nudge ends ([reason] time, not_okay, left, gave_way, call, kill_switch, day_end): no outcome, no cost. */
+    private fun endNudge(r: Run, reason: String, at: Instant = now) {
+        remove(r.id)
+        log(
+            EntryType.NUDGE_DONE, at = at, protocol = r.protocol, run = r.id, reason = reason, detail = r.label,
+            seconds = Duration.between(r.firedAt, at).seconds.coerceAtLeast(0), test = r.test,
+        )
+        cancelRunNotices(r)
+        promoteQueue()
+    }
 
     // ------------------------------------------------------------------ the reset and its offer (design M5)
 
@@ -2260,7 +2679,7 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
             EntryType.NIGHT_LOCK, at = at, protocol = p.id, run = id, stage = stage, reason = reason.json, until = end,
             detail = "until the wake alarm is answered (${hhmm(end)} at the latest)",
         )
-        if (p.boolParam("white_noise")) effects += Effect.Audio(Effect.Audio.PLAY, Effect.Audio.WHITE_NOISE)
+        if (p.boolParam("white_noise")) playAudio(Effect.Audio.WHITE_NOISE, null, false, null, "night_lock")
     }
 
     /** The night lock is over ([reason] wake, unlock, timeout, left, kill_switch, day_end). */
@@ -2271,9 +2690,7 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
             minutes = WallClock.minutesCeil(r.firedAt, at),
         )
         cancelRunNotices(r)
-        if (reason == "wake" || reason == "unlock" || reason == "timeout") {
-            effects += Effect.Audio(Effect.Audio.STOP, Effect.Audio.WHITE_NOISE)
-        }
+        if (reason == "wake" || reason == "unlock" || reason == "timeout") stopAudio("wake", only = Effect.Audio.WHITE_NOISE)
     }
 
     /**
@@ -2311,6 +2728,8 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
 
     private fun ring(key: String, scheduled: Instant, n: Int) {
         val stop = now.plus(ringMax())
+        // The alarm, not white noise (or anything else VIGIL plays).
+        stopAudio("wake_alarm")
         s = s.copy(wakeAlarm = s.wakeAlarm.copy(ringingFor = key, scheduled = scheduled, ringingSince = now, rings = n, nextRingAt = null))
         log(EntryType.WAKE_ALARM, protocol = morningProtocol?.id, scheduled = scheduled, detail = "ring $n of ${alarmParam("max_rings")}")
         effects += Effect.RingWakeAlarm(scheduled, n, stop)
@@ -2418,6 +2837,12 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
 
         const val OFFER_NOTICE = "offer"
         const val JUMMAH_CARD_NOTICE = "jummah-card"
+
+        /** "Time to wrap up" during a call. */
+        const val WRAP_NOTICE = "wrap-up"
+
+        /** A StopAudio reason is cut to this many characters. */
+        private const val MAX_REASON_CHARS = 24
 
         fun headsUpNotice(prayer: Prayer) = "heads-up-${prayer.json}"
 

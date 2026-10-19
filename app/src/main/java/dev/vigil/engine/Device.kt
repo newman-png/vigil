@@ -119,6 +119,16 @@ object Device {
         return packageName == defaultDialer(context) || packageName in CALL_PACKAGES
     }
 
+    /**
+     * MESSAGE (a call card's short version: send a message instead): WhatsApp when it is installed, else the phone's
+     * messaging app. No contact is stored, so it opens the app, not a chat.
+     */
+    fun messageIntent(context: Context): Intent =
+        (context.packageManager.getLaunchIntentForPackage(WHATSAPP) ?: Intent.makeMainSelectorActivity(Intent.ACTION_MAIN, Intent.CATEGORY_APP_MESSAGING))
+            .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+
+    private const val WHATSAPP = "com.whatsapp"
+
     /** The default phone app, or null when there is none (or it cannot be read). */
     fun defaultDialer(context: Context): String? = try {
         context.getSystemService(TelecomManager::class.java)?.defaultDialerPackage

@@ -42,6 +42,7 @@ import dev.vigil.core.protocol.LockType
 import dev.vigil.core.protocol.ProtocolKind
 import dev.vigil.core.run.Run
 import dev.vigil.core.run.RunPhase
+import dev.vigil.engine.Device
 import dev.vigil.engine.Vigil
 import dev.vigil.engine.WhitelistApp
 import dev.vigil.guard.GuardScreens
@@ -240,6 +241,32 @@ class TakeoverActivity : ComponentActivity() {
                 }
                 return@Box
             }
+            if (ticket.kind == ProtocolKind.NUDGE) {
+                key(ticketKey, generation) {
+                    val file = remember { Vigil.file() }
+                    val fx = remember {
+                        val s = Graph.settings
+                        TakeoverFx(this@TakeoverActivity, tierFor(Vigil.intensity(ticket)), Vigil.isSilent(ticket), s.soundEnabled, s.vibrationEnabled, s.glyphEnabled)
+                    }
+                    DisposableEffect(Unit) {
+                        this@TakeoverActivity.fx = fx
+                        fx.start()
+                        onDispose {
+                            if (this@TakeoverActivity.fx === fx) this@TakeoverActivity.fx = null
+                            fx.release()
+                        }
+                    }
+                    // One big line and its seconds: drink water, look far away, stand up.
+                    NudgeScreen(
+                        initial = ticket,
+                        live = owner?.takeIf { takeoverKey(it) == ticketKey },
+                        takeover = file.takeover,
+                        fx = fx,
+                        callbacks = callbacks(onIntroSeen = { rememberIntroSeen(ticketKey) }, onFinished = onFinished),
+                    )
+                }
+                return@Box
+            }
             if (ticket.kind == ProtocolKind.ATTENTION) {
                 key(ticketKey, generation) {
                     val file = remember { Vigil.file() }
@@ -335,7 +362,11 @@ class TakeoverActivity : ComponentActivity() {
         override fun confirm(runId: String) = Vigil.confirm(runId)
         override fun notOkay(runId: String) = Vigil.notOkay(runId)
         override fun bailOut(runId: String) = Vigil.bailOut(runId)
-        override fun dismiss(runId: String) = Vigil.dismiss(runId)
+        override fun dismiss(runId: String) {
+            // A call card opened from its notification is closed too (NOT NOW), not shown again at once.
+            if (requested == runId) requested = null
+            Vigil.dismiss(runId)
+        }
         override fun snooze(runId: String) = Vigil.snooze(runId)
         override fun snoozeMinutes(runId: String): Int? = run(runId)?.let { Vigil.snoozeMinutes(it) }
         override fun goingToSleep(ishaPrayed: Boolean) = Vigil.goingToSleep(ishaPrayed)
@@ -343,6 +374,10 @@ class TakeoverActivity : ComponentActivity() {
         override fun call() {
             fx?.pause()
             openDialer()
+        }
+        override fun message() {
+            fx?.pause()
+            openMessages()
         }
         override fun apps(): List<WhitelistApp> = Vigil.whitelistApps()
         override fun openApp(app: WhitelistApp) = this@TakeoverActivity.openApp(app)
@@ -394,6 +429,25 @@ class TakeoverActivity : ComponentActivity() {
             })
         } else {
             launch(app)
+        }
+    }
+
+    /**
+     * MESSAGE on a call card's short version: WhatsApp (or the messaging app) opens; on a locked phone after unlocking.
+     * The card is an asking takeover, so it does not come back over it.
+     */
+    private fun openMessages() {
+        val intent = Device.messageIntent(this)
+        val keyguard = getSystemService(KeyguardManager::class.java)
+        val open = { runCatching { startActivity(intent) }.onFailure { Log.w(TAG, "Could not open the messages: ${it.message}") } }
+        if (keyguard?.isKeyguardLocked == true) {
+            keyguard.requestDismissKeyguard(this, object : KeyguardManager.KeyguardDismissCallback() {
+                override fun onDismissSucceeded() {
+                    open()
+                }
+            })
+        } else {
+            open()
         }
     }
 

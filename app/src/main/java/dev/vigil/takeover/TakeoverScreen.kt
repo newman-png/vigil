@@ -45,6 +45,7 @@ import dev.vigil.R
 import dev.vigil.core.common.WallClock
 import dev.vigil.core.journal.Entry
 import dev.vigil.core.journal.EntryType
+import dev.vigil.core.machine.CallView
 import dev.vigil.core.machine.StepView
 import dev.vigil.core.protocol.BailOutConfig
 import dev.vigil.core.protocol.Intensity
@@ -62,6 +63,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.withContext
+import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
 
@@ -111,6 +113,9 @@ internal interface TakeoverCallbacks {
 
     /** CALL was tapped: the takeover steps aside and the dialer opens. Never blocked. */
     fun call()
+
+    /** MESSAGE on a call card's short version: WhatsApp (or the messaging app) opens. */
+    fun message()
 
     /** The APPS button's apps, resolved on this phone. Blocking: called off the main thread. */
     fun apps(): List<WhitelistApp>
@@ -194,9 +199,11 @@ private fun timingFor(tier: Int): Timing = when {
  * full then subtle turns subtle after [TakeoverConfig.fullSeconds]. Both count from [shownSinceMs] (elapsed realtime),
  * when this takeover first appeared. Silence (QUIET) is the activity's business: it builds [fx] silent or mutes it.
  *
- * A promise that came due shows exactly its line with DONE, SNOOZE (once) and ON IT instead of its step; Jummah's
- * I'M AT UNI step also offers NOT YET, and its lock says until when the phone is silent; a reset's last step says what
- * re-entering does. Jummah and the promise have no shorter version: NOT OKAY only says so.
+ * A promise that came due shows exactly its line with DONE, SNOOZE (once) and ON IT instead of its step; a call card
+ * shows who to call big, with CALL (or MESSAGE in its short version), DONE once a call has unlocked it, and NOT NOW;
+ * Jummah's I'M AT UNI step also offers NOT YET, and its lock says until when the phone is silent; a reset's last step
+ * says what re-entering does. Jummah, the promise and a call's short version have no shorter version: NOT OKAY only
+ * says so.
  *
  * [initial] is the run as it was when this takeover appeared; [live] is the same run as the engine has it now while
  * it owns the screen, or null once it does not. [steps] are [live]'s steps (its version on its weekday); [todo] is a
@@ -233,8 +240,12 @@ internal fun TakeoverScreen(
     val last = remember { arrayOf(initial) }
     if (live != null) last[0] = live
     val run = live ?: last[0]
-    val title = protocol?.title ?: initial.protocol
-    val checklist = run.stage >= 2
+    // A call card says who: CALL MOM.
+    val title = (protocol?.title ?: initial.protocol) + (initial.label?.takeIf { initial.call != null }?.let { " $it" } ?: "")
+    // A call card is answered with its own words (CALL, DONE, NOT NOW), never as a checklist.
+    val checklist = run.stage >= 2 && run.call == null
+    // A call card's short version: DONE shows once MESSAGE was tapped.
+    var messaged by rememberSaveable { mutableStateOf(false) }
 
     fun sinceShown(): Long = SystemClock.elapsedRealtime() - shownSinceMs
 
@@ -396,10 +407,10 @@ internal fun TakeoverScreen(
     val reentry = remember { arrayOfNulls<String>(1) }
     current?.reentry?.let { reentry[0] = it }
     val holdable = current != null && current.canTap && current.step.type != StepType.TEXT && current.step.type != StepType.WORKOUT
-    // A promise is answered with its own words (DONE, SNOOZE, ON IT), never by holding.
+    // A promise or a call card is answered with its own words (DONE, SNOOZE, ON IT; CALL, DONE, NOT NOW), never by holding.
     val canHold by rememberUpdatedState(
         phase == Phase.STEP && stepVisible && holdable && !checklist && !ended && !appsOpen && !askIsha && live != null &&
-            run.promise == null,
+            run.promise == null && run.call == null,
     )
     val onConfirm by rememberUpdatedState({ confirmHeld() })
 
@@ -772,7 +783,21 @@ internal fun TakeoverScreen(
                                     }
                                     Spacer(Modifier.height(20.dp))
                                     val promise = run.promise
-                                    if (promise != null) {
+                                    val call = current?.call
+                                    if (call != null && current != null) {
+                                        val step = current
+                                        CallQuestion(
+                                            view = call,
+                                            messaged = messaged,
+                                            onCall = { cb.call() },
+                                            onMessage = {
+                                                messaged = true
+                                                cb.message()
+                                            },
+                                            onDone = { finishStep(step.index, step.step.type, null) },
+                                            onNotNow = { closeAsking(notNowText(run, protocol)) { cb.dismiss(it) } },
+                                        )
+                                    } else if (promise != null) {
                                         val snooze = cb.snoozeMinutes(run.id)
                                         PromiseQuestion(
                                             line = promise.text,
@@ -851,8 +876,8 @@ internal fun TakeoverScreen(
                 holds = holds,
                 stepDown = canStepDown(run, protocol) || saysNoStepDown(run),
                 apps = !ended,
-                // The I'M AT UNI ask locks nothing: NOT YET closes it.
-                leave = !(run.jummah != null && run.asking),
+                // The I'M AT UNI ask and a call card lock nothing: NOT YET and NOT NOW close them.
+                leave = !(run.jummah != null && run.asking) && run.call == null,
                 onCall = { cb.call() },
                 onApps = { appsOpen = true },
                 onNotOkay = { notOkay() },
@@ -895,6 +920,50 @@ private fun PromiseQuestion(line: String, snoozeMinutes: Int?, onDone: () -> Uni
         if (snoozeMinutes != null) QuestionChoice("SNOOZE $snoozeMinutes MIN", TakeoverType.Dim, onSnooze)
         QuestionChoice("ON IT", TakeoverType.Dim, onOnIt)
     }
+}
+
+/**
+ * A call card: who to call, big; until when; CALL (the dialer; no contact is stored) or, in the short version, MESSAGE;
+ * DONE once a call of the minimum length has unlocked it (in the short version once MESSAGE was tapped); NOT NOW.
+ */
+@Composable
+private fun CallQuestion(
+    view: CallView,
+    messaged: Boolean,
+    onCall: () -> Unit,
+    onMessage: () -> Unit,
+    onDone: () -> Unit,
+    onNotNow: () -> Unit,
+) {
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+        TakeoverText(view.who, TakeoverType.Timer)
+        Spacer(Modifier.height(8.dp))
+        TakeoverText("BY ${WallClock.hhmm(view.dueAt, ZoneId.systemDefault())}", TakeoverType.Small)
+        Spacer(Modifier.height(24.dp))
+        if (view.message) QuestionChoice("MESSAGE", Palette.White, onMessage) else QuestionChoice("CALL", Palette.White, onCall)
+        if (view.done && (!view.message || messaged)) QuestionChoice("DONE", Palette.White, onDone)
+        QuestionChoice("NOT NOW", TakeoverType.Dim, onNotNow)
+        Spacer(Modifier.height(12.dp))
+        val hint = when {
+            view.message && !messaged -> "SEND A MESSAGE INSTEAD. DONE COMES AFTER MESSAGE."
+            view.message -> "SENT IT? TAP DONE."
+            view.done -> "CALLED. TAP DONE."
+            view.longestCallS > 0 -> "LONGEST CALL ${(view.longestCallS + 59) / 60} MIN. DONE COMES AFTER ${view.minCallMin} MIN."
+            else -> "DONE COMES AFTER A CALL OF ${view.minCallMin} MIN."
+        }
+        TakeoverText(hint, TakeoverType.Small)
+        if (view.returned) TakeoverText("IT CAME BACK: NOTHING DONE YET.", TakeoverType.Small)
+    }
+}
+
+/** What NOT NOW on a call card says: when it comes back (once), or that its notification keeps it until the deadline. */
+private fun notNowText(run: Run, protocol: Protocol?): String {
+    val c = run.call ?: return "NOT NOW."
+    val zone = ZoneId.systemDefault()
+    val back = c.cardAt?.plus(Duration.ofMinutes((protocol?.intParam("return_after_min") ?: 30).toLong()))
+        ?.takeIf { run.stage == 1 && !run.returned && !run.confirmed && it.isAfter(Instant.now()) }
+    return if (back != null) "NOT NOW.\nIT COMES BACK ONCE AT ${WallClock.hhmm(back, zone)}." else
+        "NOT NOW.\nIT STAYS ON ITS NOTIFICATION UNTIL ${WallClock.hhmm(c.dueAt, zone)}."
 }
 
 /**
@@ -943,6 +1012,7 @@ private fun lineBelowTitle(run: Run): String? = when {
     run.jummah?.part == JummahPart.LOCK -> "THE PHONE IS SILENT"
     run.jummah?.part == JummahPart.TRAVEL -> "ARE YOU AT UNI?"
     run.promise != null -> "YOU SAID YOU WOULD"
+    run.call != null -> "TIME TO CALL"
     run.phase == RunPhase.RETURNED -> run.windowEndsAt
         ?.let { "NOT CONFIRMED. THE WINDOW CLOSES AT ${WallClock.hhmm(it, ZoneId.systemDefault())}" }
         ?: "NOT CONFIRMED YET"

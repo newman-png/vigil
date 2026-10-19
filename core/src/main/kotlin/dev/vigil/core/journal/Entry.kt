@@ -114,6 +114,16 @@ object EntryType {
     const val STUDY = "study"
     const val GYM_SET = "gym_set"
     const val WORKOUT = "workout"
+    const val WALK_START = "walk_start"
+    const val WALK_END = "walk_end"
+    const val CALL_CARD = "call_card"
+    const val CALL = "call"
+    const val WRAP_UP = "wrap_up"
+    const val AUDIO_START = "audio_start"
+    const val AUDIO_STOP = "audio_stop"
+    const val NUDGE_SHOWN = "nudge_shown"
+    const val NUDGE_DONE = "nudge_done"
+    const val NUDGE_SKIPPED = "nudge_skipped"
 
     val DESCRIPTIONS: Map<String, String> = linkedMapOf(
         DAY_START to "A day started (day = its key; reason = how the previous day ended, or first_start).",
@@ -153,7 +163,8 @@ object EntryType {
         CALL_PAUSE to "A call connected: protocol timers and locks are paused.",
         CALL_RESUME to "The call ended: timers and locks were extended by its length (minutes/seconds). Detail when no end " +
             "was reported and the pause ended by itself after 3 hours.",
-        TOGGLE to "A home switch changed (reason = walking or friends, detail on/off; friends also goes off at its cap).",
+        TOGGLE to "A home switch changed (reason = walking or friends, detail on/off; minutes = how long it was on). Friends " +
+            "goes off by itself at its cap, walking when the steps stop (or by the time rules), both when the day ends.",
         QUIET to "QUIET mode switched (detail on/off): takeovers are silent while it is on.",
         ADHAN to "The adhan notification arrived for prayer.",
         HEADS_UP to "The subtle heads-up before a prayer (scheduled = the expected adhan).",
@@ -206,6 +217,27 @@ object EntryType {
             "of that exercise so far.",
         WORKOUT to "A workout was finished (FINISH WORKOUT, or by itself an hour after its planned minutes): minutes in the " +
             "workout, detail = sets and exercises.",
+        WALK_START to "A walk started: the walking switch went on (reason switch = home, commute = a MY TIMES commute row, " +
+            "jummah = leaving for Jummah). The pool is blocked until it ends.",
+        WALK_END to "A walk ended (minutes; reason off = the switch or STOP, still = no steps for still_end_min, time = no step " +
+            "counter: the commute's length + its grace, or the most a manual walk lasts, arrived = I'M AT UNI, day_end).",
+        CALL_CARD to "A call card (detail = who, until = its deadline): reason card = it appeared, returned = it came back " +
+            "once, not_now = NOT NOW.",
+        CALL to "A call protocol (detail = who): reason called = a call long enough to unlock DONE ended (minutes), done = " +
+            "DONE (minutes = the longest call; version short = a message instead), missed = not done by its deadline.",
+        WRAP_UP to "\"Time to wrap up\": a call went on for the wrap-up minutes (silent notification, once per call).",
+        AUDIO_START to "VIGIL started a sound (detail = white_noise, metronome with its bpm, or a file's name; reason = who " +
+            "asked: audio = the AUDIO screen or a WHITE NOISE switch, night_lock = the night lock started).",
+        AUDIO_STOP to "VIGIL's sound stopped (minutes it played; reason stop, ended = it ended by itself, replaced = another " +
+            "sound started, attention = an attention reset, wake_alarm, wake = the night ended, lost = the app was " +
+            "restarted and the sound with it).",
+        NUDGE_SHOWN to "A wellness nudge took the screen (detail = its line, seconds; reason timed = one of the day's nudges, " +
+            "still = no steps for still_min while the phone was in use, test). Never a miss, never a penalty.",
+        NUDGE_DONE to "A nudge ended (reason time = its seconds were over, not_okay, left, gave_way = another protocol took " +
+            "the screen, call, kill_switch, day_end; seconds it showed).",
+        NUDGE_SKIPPED to "A nudge did not show at its time (detail = its line; reason suspended, quiet, call, friends, walking, " +
+            "night_lock, class, busy = another run, screen_off = the phone not in use, gap = another nudge came less than " +
+            "min_gap_min ago, late = the phone was off). Skipped, not queued.",
     )
 }
 

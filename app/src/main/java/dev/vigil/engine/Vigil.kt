@@ -12,7 +12,7 @@ import dev.vigil.Graph
 import dev.vigil.core.common.WallClock
 import dev.vigil.alarm.WakeAlarmClock
 import dev.vigil.alarm.WakeAlarmService
-import dev.vigil.alarm.WhiteNoiseService
+import dev.vigil.audio.AudioService
 import dev.vigil.core.journal.Entry
 import dev.vigil.core.journal.EntryType
 import dev.vigil.core.journal.Report
@@ -44,6 +44,7 @@ import dev.vigil.service.VigilService
 import dev.vigil.takeover.TakeoverActivity
 import dev.vigil.takeover.TakeoverLauncher
 import dev.vigil.trigger.AlarmScheduler
+import dev.vigil.trigger.StepCounter
 import kotlinx.coroutines.flow.StateFlow
 import java.time.Duration
 import java.time.Instant
@@ -323,6 +324,24 @@ object Vigil {
         exec(Input.Toggle(name, on))
     }
 
+    /** The step counter's total, or null: the phone cannot count steps (no sensor, or PHYSICAL ACTIVITY not allowed). */
+    fun onSteps(total: Long?) {
+        exec(Input.Steps(total))
+    }
+
+    /**
+     * AUDIO: play [sound] (white noise, the metronome at [bpm], or `file:<id>` named [name], again and again with
+     * [loop]); it replaces whatever plays.
+     */
+    fun playAudio(sound: String, bpm: Int? = null, loop: Boolean = false, name: String? = null) {
+        exec(Input.PlayAudio(sound, bpm, loop, name))
+    }
+
+    /** STOP (the AUDIO screen, the notification), or the sound ended by itself ([reason] `ended`). */
+    fun stopAudio(reason: String = "stop") {
+        exec(Input.StopAudio(reason))
+    }
+
     /**
      * Starts [protocolId] now. [test] true (the default, for the TEST screen) runs a preview: stage 1, journaled as a
      * test, no stages, memory, penalties or report counts. [test] false is a real manual start (a prayer then counts
@@ -374,6 +393,8 @@ object Vigil {
             Log.e(TAG, "Could not journal the exit reasons", e)
         }
         exec(Input.Tick)
+        // A new process plays nothing: a sound the engine still has as playing stopped with the old one.
+        if (state.value.audio != null && AudioService.playing.value == null) guard("Audio") { exec(Input.StopAudio("lost")) }
         // Do Not Disturb is never left on by VIGIL once no Jummah lock needs it (the process may have died in one).
         guard("Do Not Disturb") { Dnd.sync(context, Machine.dndWanted(state.value, Graph.env())) }
         VigilService.start(context)
@@ -469,6 +490,8 @@ object Vigil {
             val shown = outcome.effects.any { it is Effect.ShowTakeover }
             if (owner == null && (shown || Machine.activeRun(before, env) != null)) TakeoverLauncher.onClosed(app)
         }
+        // Walking switched on or off: the step counter reports at once during a walk, batched otherwise.
+        if (outcome.state.toggles.walking != before.toggles.walking) main.post { guard("Steps") { StepCounter.sync(app) } }
         guard("Alarm") { scheduleAlarm(outcome.state, env) }
         guard("Wake alarm") { WakeAlarmClock.sync(app, Machine.wakeAlarmAt(outcome.state, env)) }
         guard("Status") {
@@ -491,19 +514,17 @@ object Vigil {
             is Effect.PoolGate -> Unit
             is Effect.Kick -> kick(context, effect)
             is Effect.RingWakeAlarm -> {
-                // The alarm, not white noise.
-                WhiteNoiseService.stop(context)
+                // The alarm, not white noise (or anything else VIGIL plays).
+                AudioService.stop(context)
                 WakeAlarmService.ring(context, effect.stopAt, effect.test)
             }
             Effect.StopWakeAlarm -> WakeAlarmService.stop(context)
             // Without Do Not Disturb access the lock shows all the same; the engine journals it (after this step).
             is Effect.SetDnd -> if (!Dnd.set(context, effect.on) && effect.on) main.post { guard("Do Not Disturb journal") { exec(Input.DndNoAccess) } }
-            is Effect.Audio -> when {
-                // Stop without a sound: every VIGIL sound (the attention reset). White noise is the only one so far.
-                effect.sound == null && effect.action == Effect.Audio.STOP -> WhiteNoiseService.stop(context)
-                effect.sound != Effect.Audio.WHITE_NOISE -> Log.i(TAG, "Only white noise is part of this version (M8): ${effect.action} ${effect.sound}")
-                effect.action == Effect.Audio.PLAY -> WhiteNoiseService.start(context)
-                else -> WhiteNoiseService.stop(context)
+            // One sound at a time through the media-playback service; STOP without a sound stops whatever plays.
+            is Effect.Audio -> {
+                val sound = effect.sound
+                if (effect.action == Effect.Audio.PLAY && sound != null) AudioService.play(context, sound, effect.bpm, effect.loop) else AudioService.stop(context, sound)
             }
         }
     }

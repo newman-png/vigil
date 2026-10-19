@@ -17,11 +17,12 @@ import dev.vigil.engine.Notifications
 import dev.vigil.engine.Vigil
 import dev.vigil.trigger.AdhanListener
 import dev.vigil.trigger.CallWatcher
+import dev.vigil.trigger.StepCounter
 
 /**
- * Keeps VIGIL's process alive so triggers are noticed and a takeover can come back. It turns screen on/off/unlock
- * and calls into engine inputs and runs a short periodic tick (the engine's heartbeat); all decisions stay in the
- * engine. It enters the foreground in onCreate and in every onStartCommand, and no failure inside escapes.
+ * Keeps VIGIL's process alive so triggers are noticed and a takeover can come back. It turns screen on/off/unlock,
+ * calls and the step counter into engine inputs and runs a short periodic tick (the engine's heartbeat); all decisions
+ * stay in the engine. It enters the foreground in onCreate and in every onStartCommand, and no failure inside escapes.
  */
 class VigilService : Service() {
     private val handler = Handler(Looper.getMainLooper())
@@ -100,6 +101,7 @@ class VigilService : Service() {
         if (receiverRegistered) runCatching { unregisterReceiver(screenReceiver) }
         receiverRegistered = false
         runCatching { CallWatcher.stop(this) }
+        runCatching { StepCounter.stop(this) }
         super.onDestroy()
     }
 
@@ -126,6 +128,7 @@ class VigilService : Service() {
             Log.e(TAG, "Could not watch the screen", e)
         }
         guard("Call watch") { CallWatcher.start(this) }
+        guard("Step counter") { StepCounter.sync(this) }
         // Not yet seen as present: when the service starts on a phone already in use (after a reboot, an update or a
         // restart), the first tick handles it like an unlock, so a waiting takeover comes back. The engine learns the
         // screen state now (it may have changed while VIGIL was not running).
@@ -147,8 +150,9 @@ class VigilService : Service() {
         guard("Call check") { CallWatcher.check(this) }
         if (ticks % SLOW_TICKS == 0L) {
             guard("Listener check") { AdhanListener.ensureBound(this) }
-            // READ_PHONE_STATE may have been granted since the service started.
+            // READ_PHONE_STATE (or PHYSICAL ACTIVITY) may have been granted since the service started.
             guard("Call watch") { CallWatcher.start(this) }
+            guard("Step counter") { StepCounter.sync(this) }
         }
         val nowPresent = Device.isPresent(this)
         val wasPresent = present

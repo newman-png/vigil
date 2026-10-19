@@ -30,9 +30,11 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import dev.vigil.Graph
+import dev.vigil.core.machine.Effect
 import dev.vigil.core.machine.HomeStatus
 import dev.vigil.core.protocol.LockType
 import dev.vigil.core.protocol.Prayer
+import dev.vigil.core.protocol.ProtocolKind
 import dev.vigil.core.protocol.ToggleName
 import dev.vigil.core.run.JummahPart
 import dev.vigil.core.run.Run
@@ -43,6 +45,7 @@ import dev.vigil.core.timeline.TimelineItem
 import dev.vigil.data.ReportExporter
 import dev.vigil.engine.Vigil
 import dev.vigil.guard.GuardScreens
+import dev.vigil.trigger.StepCounter
 import dev.vigil.ui.Format
 import dev.vigil.ui.components.ChoiceChips
 import dev.vigil.ui.components.Label
@@ -61,13 +64,16 @@ import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
 
-/** Where the home screen leads. QUIET, GOING TO SLEEP and EXPORT act right here, so they have no action. */
+/** Where the home screen leads. QUIET, the switches, GOING TO SLEEP and EXPORT act right here, so they have no action. */
 class HomeActions(
     val openMyTimes: () -> Unit,
     val openSetup: () -> Unit,
     val openTest: () -> Unit,
     /** Opens the takeover of the run that owns the screen (it does not come back by itself over VIGIL's own screens). */
     val openTakeover: () -> Unit,
+    val openAudio: () -> Unit,
+    /** Asks for PHYSICAL ACTIVITY (the step counter), the first time I'M WALKING is used. */
+    val requestActivity: () -> Unit,
 )
 
 /**
@@ -75,8 +81,9 @@ class HomeActions(
  * night lock) owns the screen, the reset offer (START RESET / NOT NOW), LATER and RESET, START STUDY (a block of 50,
  * 100 or 150 minutes), the running promise and today's Jummah, an attention reset waiting to start, a running morning,
  * meal or gym to open, today's to-dos with tick boxes, prayers waiting for CONFIRM and today's timeline (study blocks
- * with what to study, with when each protocol last fired); then QUIET, GOING TO SLEEP (CONFIRM ISHA first when Isha is
- * still open), MY TIMES, SETUP, TEST and EXPORT.
+ * with what to study, with when each protocol last fired), today's call cards; then QUIET, I'M WALKING and I'M WITH
+ * FRIENDS (each with when it ends), GOING TO SLEEP (CONFIRM ISHA first when Isha is still open), AUDIO, MY TIMES,
+ * SETUP, TEST and EXPORT.
  * Everything shown comes from the engine ([Vigil.status], [Vigil.timeline]); nothing is decided here.
  *
  * [refreshKey] changes on every resume, so the permission count is re-read after a visit to system settings;
@@ -248,10 +255,13 @@ fun HomeScreen(refreshKey: Int, laterRequest: Int, actions: HomeActions) {
             val title = (Vigil.file().find(w.protocol)?.title ?: w.protocol).uppercase()
             PixelText("WAITING: $title FROM ${Format.clock(w.due, zone)} · ONCE NO CLASS OR TAKEOVER IS ON", Type.Label)
         }
+        // Today's call cards (a stage-3 one is under OPEN): who, by when, the card again, and DONE once unlocked.
+        for (r in status.calls.filter { it.phase == RunPhase.ACTIVE }) CallRow(r, zone)
         // A run without a screen lock (the morning): its takeover opens from here, like from its notification. The
-        // promise has its own row above.
+        // promise, the call cards and the switches have their own rows.
         val others = status.runs.filter {
-            it.id != owner?.id && it.promise == null && (it.phase == RunPhase.ACTIVE || it.phase == RunPhase.QUEUED)
+            it.id != owner?.id && it.promise == null && it.call == null && it.kind != ProtocolKind.WALK && it.kind != ProtocolKind.FRIENDS &&
+                (it.phase == RunPhase.ACTIVE || it.phase == RunPhase.QUEUED)
         }
         for (r in others) {
             val openable = r.phase == RunPhase.ACTIVE && r.lock != LockType.SCREEN
@@ -301,10 +311,37 @@ fun HomeScreen(refreshKey: Int, laterRequest: Int, actions: HomeActions) {
             hintColor = if (status.quiet) Palette.White else Palette.Dim,
             onClick = { Vigil.setQuiet(!status.quiet) },
         )
-        // Walking is switched on by Jummah's leave-by (it blocks the pool on the way): here it can be ended by hand.
-        if (status.walking) {
-            Item("WALKING", hint = "ON · TAP TO END", hintColor = Palette.White, onClick = { Vigil.setToggle(ToggleName.WALKING, false) })
-        }
+        // The switches: on, the pool is blocked (no wait while with friends); each says when it ends by itself.
+        SwitchItem(
+            "I'M WALKING",
+            on = status.walking,
+            hint = when {
+                !status.walking -> "OFF · BLOCKS THE POOL WHILE YOU WALK"
+                status.stepsAvailable -> "ON SINCE ${status.walkingSince?.let { Format.clock(it, zone) } ?: "-"} · ENDS " +
+                    "${status.walkEndsAt?.let { Format.clock(it, zone) } ?: "-"} IF YOU STOP MOVING · TAP TO END"
+                else -> "ON · ENDS BY ${status.walkEndsAt?.let { Format.clock(it, zone) } ?: "-"} (NO STEP COUNTER) · TAP TO END"
+            },
+            onClick = {
+                // The first time: ask for the step counter, so the walk can end when you stop moving.
+                if (!status.walking && !Graph.settings.activityAsked && StepCounter.present(context) && !StepCounter.permitted(context)) {
+                    Graph.settings.activityAsked = true
+                    actions.requestActivity()
+                }
+                Vigil.setToggle(ToggleName.WALKING, !status.walking)
+            },
+        )
+        SwitchItem(
+            "I'M WITH FRIENDS",
+            on = status.friends,
+            hint = if (status.friends) {
+                val until = status.friendsEndsAt
+                "ON SINCE ${status.friendsSince?.let { Format.clock(it, zone) } ?: "-"} · UNTIL ${until?.let { Format.clock(it, zone) } ?: "-"}" +
+                    (until?.let { " (${left(nowAt, it)} LEFT)" } ?: "") + " · TAP TO END"
+            } else {
+                "OFF · BLOCKS THE POOL, NO WAIT"
+            },
+            onClick = { Vigil.setToggle(ToggleName.FRIENDS, !status.friends) },
+        )
         HoldItem(
             "GOING TO SLEEP",
             hint = if (status.sleepTapIgnored != null) "NOT BEFORE TODAY'S WAKE TIME" else "HOLD 2 S · ENDS THE DAY",
@@ -342,6 +379,18 @@ fun HomeScreen(refreshKey: Int, laterRequest: Int, actions: HomeActions) {
             )
             Spacer(Modifier.height(12.dp))
         }
+        Item(
+            "AUDIO",
+            hint = status.audio?.let { a ->
+                when {
+                    a.sound == Effect.Audio.WHITE_NOISE -> "WHITE NOISE"
+                    a.sound == Effect.Audio.METRONOME -> "METRONOME ${a.bpm ?: Effect.Audio.DEFAULT_BPM}"
+                    else -> (a.name ?: "A FILE").uppercase()
+                } + " · PLAYING"
+            } ?: "WHITE NOISE · METRONOME · FILES",
+            hintColor = if (status.audio != null) Palette.White else Palette.Dim,
+            onClick = actions.openAudio,
+        )
         Item(
             "MY TIMES",
             hint = if (state.times.pending != null) "CHANGED · FROM TOMORROW" else if (!state.times.edited) "NOT SET" else null,
@@ -534,6 +583,47 @@ private fun JummahRow(r: Run, zone: ZoneId) {
             PixelButton(button, { Vigil.confirm(r.id) })
         }
     }
+}
+
+/** A call card of today: who, by when, and DONE once a call has unlocked it; a tap opens the card again. */
+@Composable
+private fun CallRow(r: Run, zone: ZoneId) {
+    val context = LocalContext.current
+    val c = r.call ?: return
+    val view = Vigil.stepView(r.id)?.call
+    Spacer(Modifier.height(12.dp))
+    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f).tap { Vigil.openTakeover(context, r.id) }) {
+            PixelText("${title(r)} ${(r.label ?: "").uppercase()}".trim() + " · OPEN", Type.Body)
+            val state = when {
+                view != null && view.done && view.message -> "A MESSAGE INSTEAD"
+                view?.done == true -> "CALLED · TAP DONE"
+                else -> "BY ${Format.clock(c.dueAt, zone)} · DONE AFTER A CALL OF ${view?.minCallMin ?: 3} MIN"
+            }
+            PixelText(state, Type.Label, color = if (view?.done == true) Palette.White else Palette.Dim)
+        }
+        if (view?.done == true) {
+            Spacer(Modifier.width(12.dp))
+            PixelButton("DONE", { Vigil.confirm(r.id) })
+        }
+    }
+}
+
+/** A switch of HOME: its name big, and under it whether it is on and when it ends. */
+@Composable
+private fun SwitchItem(label: String, on: Boolean, hint: String, onClick: () -> Unit) {
+    Line()
+    Column(Modifier.fillMaxWidth().tap(onClick = onClick).padding(vertical = 20.dp)) {
+        PixelText(label, Type.Item, color = if (on) Palette.White else Palette.Dim)
+        Spacer(Modifier.height(4.dp))
+        PixelText(hint, Type.Label, color = if (on) Palette.White else Palette.Dim)
+    }
+}
+
+/** 2 H 10 MIN, 45 MIN: the time left until [until]. */
+private fun left(now: Instant, until: Instant): String {
+    val m = ((Duration.between(now, until).seconds + 59) / 60).coerceAtLeast(0)
+    return if (m >= 60) "${m / 60} H ${m % 60} MIN" else "$m MIN"
 }
 
 /** One planned start: time, title, stage pips, what happened, and when that protocol last fired. */
