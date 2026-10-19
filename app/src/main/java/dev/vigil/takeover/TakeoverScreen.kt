@@ -784,7 +784,7 @@ internal fun TakeoverScreen(
                                     Spacer(Modifier.height(20.dp))
                                     val promise = run.promise
                                     val call = current?.call
-                                    if (call != null && current != null) {
+                                    if (call != null) {
                                         val step = current
                                         CallQuestion(
                                             view = call,

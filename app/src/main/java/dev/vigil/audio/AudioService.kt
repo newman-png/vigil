@@ -21,6 +21,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import java.util.Random
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.PI
 import kotlin.math.exp
 import kotlin.math.max
@@ -47,6 +48,7 @@ class AudioService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (pendingStarts.decrementAndGet() <= 0) pendingStarts.set(0)
         val sound = intent?.getStringExtra(EXTRA_SOUND)?.let { Effect.Audio.valid(it) }
         val bpm = intent?.getIntExtra(EXTRA_BPM, Effect.Audio.DEFAULT_BPM) ?: Effect.Audio.DEFAULT_BPM
         val loop = intent?.getBooleanExtra(EXTRA_LOOP, false) ?: false
@@ -61,7 +63,8 @@ class AudioService : Service() {
             false
         }
         if (!entered || sound == null) {
-            stopSelf()
+            // Only this start's: a newer one on its way plays (or stops) after it.
+            stopSelf(startId)
             return START_NOT_STICKY
         }
         val now = _playing.value
@@ -136,7 +139,8 @@ class AudioService : Service() {
         } catch (e: Exception) {
             Log.e(TAG, "Could not tell the engine", e)
         }
-        stopSelf()
+        // A start on its way decides instead (stopping now, before it is in the foreground, would crash VIGIL).
+        if (pendingStarts.get() == 0) stopSelf()
     }
 
     private fun title(sound: String?, bpm: Int): String = when {
@@ -162,28 +166,55 @@ class AudioService : Service() {
         /** What plays now, or null. */
         val playing: StateFlow<Playing?> = _playing.asStateFlow()
 
+        /**
+         * Starts sent to the service that it has not received yet. Android kills the app when such a service is stopped
+         * before it entered the foreground, so meanwhile a STOP goes to the service as a start without a sound.
+         */
+        private val pendingStarts = AtomicInteger(0)
+
+        /** The sound of the newest PLAY the service has not received yet. */
+        @Volatile
+        private var pendingSound: String? = null
+
         /** Plays [sound] (replacing whatever plays): the engine's [Effect.Audio] PLAY. */
         fun play(context: Context, sound: String, bpm: Int?, loop: Boolean) {
             val intent = Intent(context, AudioService::class.java)
                 .putExtra(EXTRA_SOUND, sound)
                 .putExtra(EXTRA_BPM, bpm ?: Effect.Audio.DEFAULT_BPM)
                 .putExtra(EXTRA_LOOP, loop)
-            try {
-                context.startForegroundService(intent)
-            } catch (e: ForegroundServiceStartNotAllowedException) {
-                Log.w(TAG, "Could not start the audio: ${e.message}")
-            } catch (e: IllegalStateException) {
-                Log.w(TAG, "Could not start the audio: ${e.message}")
-            } catch (e: SecurityException) {
-                Log.w(TAG, "Could not start the audio: ${e.message}")
-            }
+            pendingSound = sound
+            send(context, intent)
         }
 
         /** Stops VIGIL's sound ([only]: just that sound, when it is the one playing): the engine's STOP. */
         fun stop(context: Context, only: String? = null) {
-            val now = _playing.value
-            if (only != null && now != null && now.sound != only) return
+            val starting = pendingStarts.get() > 0
+            val now = (if (starting) pendingSound else null) ?: _playing.value?.sound
+            if (only != null && now != null && now != only) return
+            // A start still on its way: a start without a sound follows it, which enters the foreground and stops.
+            if (starting && send(context, Intent(context, AudioService::class.java))) {
+                pendingSound = null
+                return
+            }
             runCatching { context.stopService(Intent(context, AudioService::class.java)) }
+        }
+
+        /** Starts the service with [intent]; false when Android did not allow it. */
+        private fun send(context: Context, intent: Intent): Boolean {
+            pendingStarts.incrementAndGet()
+            val why = try {
+                context.startForegroundService(intent)
+                return true
+            } catch (e: ForegroundServiceStartNotAllowedException) {
+                e.message
+            } catch (e: IllegalStateException) {
+                e.message
+            } catch (e: SecurityException) {
+                e.message
+            }
+            pendingStarts.decrementAndGet()
+            Log.w(TAG, "Could not start the audio: $why")
+            return false
         }
     }
 }

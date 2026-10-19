@@ -25,8 +25,11 @@ import dev.vigil.core.journal.Entry
 import dev.vigil.core.machine.JummahTestPart
 import dev.vigil.core.pool.PoolDecision
 import dev.vigil.core.pool.PoolText
+import dev.vigil.core.protocol.LockType
 import dev.vigil.core.protocol.Protocol
 import dev.vigil.core.protocol.ProtocolKind
+import dev.vigil.core.run.Run
+import dev.vigil.core.run.RunPhase
 import dev.vigil.engine.Device
 import dev.vigil.engine.Vigil
 import dev.vigil.trigger.TestAlarm
@@ -48,7 +51,8 @@ import kotlinx.coroutines.withContext
 import java.time.Instant
 
 /**
- * Try things out: start any protocol now (the walk, friends, a call card and a nudge have their own row), a real alarm
+ * Try things out: start any protocol now (the walk, friends, a call card and a nudge have their own row; one without a
+ * screen lock, like the morning, a meal or the gym, opens its takeover at once), a real alarm
  * with the screen off, the wake alarm, the AUDIO screen, what the pool would do for a pool app, and the newest journal
  * entries. Every protocol started here is a TEST preview (stage 1, journaled as a
  * test, no stages, penalties, prayer memory or report counts). There are no kill switch buttons here: its only way in
@@ -93,7 +97,7 @@ fun TestScreen(openAudio: () -> Unit) {
         for (p in file.protocols) {
             FireRow(p, status.stages[p.id] ?: 1) {
                 // A promise needs its line and minutes: a 1-minute TEST promise.
-                if (p.kind == ProtocolKind.PROMISE) testPromise(context) else Vigil.startManual(p.id)
+                if (p.kind == ProtocolKind.PROMISE) testPromise(context) else Vigil.startManual(p.id)?.let { r -> showPreview(context, r) }
             }
         }
 
@@ -256,6 +260,16 @@ private fun PoolCheck(appLabel: (String) -> String) {
         }
     }
     PixelText("A check only asks; it never opens the pool or starts a wait.", Type.Small)
+}
+
+/**
+ * A preview without a screen lock (the morning, a meal, the gym) only posts its quiet notification, so its takeover is
+ * opened here, as the wake alarm opens the morning's. One with a screen lock shows by itself; the walk and friends
+ * previews are their notification.
+ */
+private fun showPreview(context: Context, run: Run) {
+    if (run.phase != RunPhase.ACTIVE || run.lock == LockType.SCREEN || run.kind == ProtocolKind.WALK || run.kind == ProtocolKind.FRIENDS) return
+    Vigil.openTakeover(context, run.id)
 }
 
 /** A 1-minute TEST promise (it counts for nothing). */

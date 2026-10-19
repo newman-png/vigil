@@ -102,7 +102,7 @@ internal fun WorkoutPanel(
         TakeoverText("WORKOUT", TakeoverType.Small)
         TakeoverText(plannedLine(workout, nowSec()), TakeoverType.Small)
         Spacer(Modifier.height(16.dp))
-        if (resting && restUntil != null) {
+        if (resting) {
             RestView(restUntil, nowSec(), workout, onSkip = { restSkipped = true })
             return@Column
         }

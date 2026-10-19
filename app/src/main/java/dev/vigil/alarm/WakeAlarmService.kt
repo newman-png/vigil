@@ -25,6 +25,7 @@ import dev.vigil.engine.Vigil
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import java.util.concurrent.atomic.AtomicInteger
 import kotlin.math.PI
 import kotlin.math.min
 import kotlin.math.sin
@@ -59,10 +60,16 @@ class WakeAlarmService : Service() {
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (pendingStarts.decrementAndGet() <= 0) pendingStarts.set(0)
+        // A stop sent while the ring was still on its way (see [stop]): in the foreground, as Android requires, then over.
+        if (intent?.action == ACTION_STOP) {
+            if (enterForeground(fullScreen = false)) finish(unanswered = false) else stopSelf(startId)
+            return START_NOT_STICKY
+        }
         test = intent?.getBooleanExtra(EXTRA_TEST, false) ?: false
         val stopAt = intent?.getLongExtra(EXTRA_STOP_AT, 0L) ?: 0L
         if (!enterForeground()) {
-            stopSelf()
+            stopSelf(startId)
             return START_NOT_STICKY
         }
         startRinging(stopAt)
@@ -75,9 +82,9 @@ class WakeAlarmService : Service() {
         super.onDestroy()
     }
 
-    private fun enterForeground(): Boolean = try {
+    private fun enterForeground(fullScreen: Boolean = true): Boolean = try {
         // Never a full-screen alarm over a call: then the notification only leads to it.
-        val n = Notifications.wakeAlarm(this, test, fullScreen = !Device.inCall(this))
+        val n = Notifications.wakeAlarm(this, test, fullScreen = fullScreen && !Device.inCall(this))
         startForeground(Notifications.ID_ALARM, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
         true
     } catch (e: ForegroundServiceStartNotAllowedException) {
@@ -156,7 +163,8 @@ class WakeAlarmService : Service() {
             }
         }
         stopForeground(STOP_FOREGROUND_REMOVE)
-        stopSelf()
+        // A ring on its way rings again instead (stopping now, before it is in the foreground, would crash VIGIL).
+        if (pendingStarts.get() == 0) stopSelf()
     }
 
     /** Four short beeps and a pause, made in code (no sound file), looped by the track. */
@@ -200,6 +208,13 @@ class WakeAlarmService : Service() {
         private const val TAG = "VigilWakeAlarm"
         private const val EXTRA_STOP_AT = "stop_at"
         private const val EXTRA_TEST = "test"
+        private const val ACTION_STOP = "dev.vigil.action.STOP_WAKE_ALARM"
+
+        /**
+         * Starts sent to the service that it has not received yet. Android kills the app when such a service is stopped
+         * before it entered the foreground, so meanwhile [stop] goes to the service as a start that stops it.
+         */
+        private val pendingStarts = AtomicInteger(0)
 
         private const val RATE = 44_100
         private const val TONE_HZ = 880.0
@@ -232,20 +247,31 @@ class WakeAlarmService : Service() {
             val intent = Intent(context, WakeAlarmService::class.java)
                 .putExtra(EXTRA_STOP_AT, stopAt.toEpochMilli())
                 .putExtra(EXTRA_TEST, test)
-            try {
-                context.startForegroundService(intent)
-            } catch (e: ForegroundServiceStartNotAllowedException) {
-                Log.w(TAG, "Could not start ringing: ${e.message}")
-            } catch (e: IllegalStateException) {
-                Log.w(TAG, "Could not start ringing: ${e.message}")
-            } catch (e: SecurityException) {
-                Log.w(TAG, "Could not start ringing: ${e.message}")
-            }
+            send(context, intent)
         }
 
         /** Stops a ringing alarm (dismissed, or the engine is done with it). */
         fun stop(context: Context) {
+            if (pendingStarts.get() > 0 && send(context, Intent(context, WakeAlarmService::class.java).setAction(ACTION_STOP))) return
             runCatching { context.stopService(Intent(context, WakeAlarmService::class.java)) }
+        }
+
+        /** Starts the service with [intent]; false when Android did not allow it. */
+        private fun send(context: Context, intent: Intent): Boolean {
+            pendingStarts.incrementAndGet()
+            val why = try {
+                context.startForegroundService(intent)
+                return true
+            } catch (e: ForegroundServiceStartNotAllowedException) {
+                e.message
+            } catch (e: IllegalStateException) {
+                e.message
+            } catch (e: SecurityException) {
+                e.message
+            }
+            pendingStarts.decrementAndGet()
+            Log.w(TAG, "Could not start ringing: $why")
+            return false
         }
     }
 }
