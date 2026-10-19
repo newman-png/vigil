@@ -189,7 +189,7 @@ fun MyTimesScreen(onSaved: () -> Unit) {
             hintColor = errorColor(showErrors && problems.any { it.startsWith("Jummah") }),
         ) {
             PixelText(
-                "The Friday prayer at uni. On Fridays it replaces Dhuhr once the Jummah protocol is added.",
+                "The Friday prayer at uni. On Fridays it replaces Dhuhr; the leave-by alert and the 45-minute lock are timed from it.",
                 Type.Small,
             )
             Spacer(Modifier.height(6.dp))
