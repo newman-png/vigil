@@ -23,6 +23,9 @@ import dev.vigil.core.protocol.StepType
 import dev.vigil.core.protocol.ToggleName
 import dev.vigil.core.protocol.Trigger
 import dev.vigil.core.protocol.Version
+import dev.vigil.core.run.JummahInfo
+import dev.vigil.core.run.JummahPart
+import dev.vigil.core.run.PromiseInfo
 import dev.vigil.core.run.Run
 import dev.vigil.core.run.RunOutcome
 import dev.vigil.core.run.RunPhase
@@ -80,11 +83,12 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         until: Instant? = null,
         scheduled: Instant? = null,
         test: Boolean = false,
+        prayerName: String? = null,
     ) {
         entries += Entry(
             ts = WallClock.stamp(at, zone), type = type, protocol = protocol, run = run, step = step, version = version,
             stage = stage, app = app, minutes = minutes, seconds = seconds, reason = reason, detail = detail, text = text,
-            day = day, prayer = prayer?.json, until = until?.let { WallClock.stamp(it, zone) },
+            day = day, prayer = prayer?.json ?: prayerName, until = until?.let { WallClock.stamp(it, zone) },
             scheduled = scheduled?.let { WallClock.stamp(it, zone) }, test = test.takeIf { it },
         )
     }
@@ -103,7 +107,7 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
     ) = log(
         type, at = at, protocol = r.protocol, run = r.id, step = step, version = r.version.label, stage = r.stage,
         minutes = minutes, reason = reason, detail = detail, text = text, prayer = r.prayer, until = until, scheduled = scheduled,
-        test = r.test,
+        test = r.test, prayerName = if (r.jummah != null) JUMMAH_PRAYER else null,
     )
 
     private fun hhmm(at: Instant) = WallClock.hhmm(at, zone)
@@ -118,8 +122,15 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         s = s.copy(runs = s.runs + r)
     }
 
+    /** Takes run [id] out of play; a Jummah lock that silenced the phone gives Do Not Disturb back, whatever ended it. */
     private fun remove(id: String) {
+        run(id)?.let { if (it.jummah?.dnd == true) dndOff(it, "the Jummah run ended") }
         s = s.copy(runs = s.runs.filterNot { it.id == id })
+    }
+
+    private fun dndOff(r: Run, why: String) {
+        effects += Effect.SetDnd(false)
+        logRun(EntryType.DND, r, reason = "off", detail = why)
     }
 
     private fun updateDay(f: (DayState) -> DayState) {
@@ -231,6 +242,7 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         dayEnding = true
         closeRunsAtDayEnd(at)
         dayEnding = false
+        clearOffer("expired", "the day ended", at)
         endSessionAtDayEnd(at)
         log(
             EntryType.DAY_END, at = at, day = d.key, reason = reason.json,
@@ -317,6 +329,13 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
                     cancelRunNotices(r)
                 }
                 r.phase == RunPhase.NIGHT -> endNight(r, "day_end", at)
+                // A promise never gets stuck: it ends with its day, without a penalty or a miss.
+                r.promise != null -> {
+                    remove(r.id)
+                    logRun(EntryType.PROMISE, r, at = at, reason = "expired_at_day_end", text = r.promise.text)
+                    logRun(EntryType.DROPPED, r, at = at, reason = "day_end", detail = "the promise expired with the day")
+                    cancelRunNotices(r)
+                }
                 r.prayer == Prayer.ISHA -> if (r.confirmed) complete(r) else missPrayer(r, "day_end", at)
                 r.prayer != null -> Unit
                 // An unconfirmed stage-3 reminder is a miss like any other: without it a protocol at stage 3 could
@@ -343,6 +362,14 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
             cancelRunNotices(r)
             return
         }
+        if (r.jummah != null) {
+            settleJummah(id)
+            return
+        }
+        r.promise?.let { promise ->
+            if (r.phase == RunPhase.WAITING && !now.isBefore(promise.dueAt)) promiseDue(r)
+            return
+        }
         if (r.prayer != null && !r.confirmed) {
             val end = windowEnd(r)
             if (end != null && !now.isBefore(end)) {
@@ -366,22 +393,28 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
 
     /** Timer steps that ran out, completion, and the lock's end. */
     private fun settleActive(start: Run, p: Protocol) {
+        val r = runTimers(start) ?: return
+        val lockEnd = r.lockEndsAt
+        if (lockEnd != null && !now.isBefore(lockEnd)) lockEnded(r, p, lockEnd)
+    }
+
+    /** Timer steps that ran out, and completion once the steps are over. Returns the run, or null when that finished it. */
+    private fun runTimers(start: Run): Run? {
         var r = start
         var guard = 0
         while (guard++ < 200) {
             val steps = stepsOf(r)
             if (r.step >= steps.size) {
                 complete(r)
-                return
+                return null
             }
             val st = steps[r.step]
             if (st.type != StepType.TIMER) break
             val end = timerEnd(r, st) ?: break
             if (now.isBefore(end)) break
-            r = stepDone(r, steps, auto = true, at = end) ?: return
+            r = stepDone(r, steps, auto = true, at = end) ?: return null
         }
-        val lockEnd = r.lockEndsAt
-        if (lockEnd != null && !now.isBefore(lockEnd)) lockEnded(r, p, lockEnd)
+        return r
     }
 
     /**
@@ -392,6 +425,8 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         val st = steps[r.step]
         logRun(EntryType.STEP_DONE, r, at = at, step = r.step, detail = st.text, text = text, reason = if (auto) "timer" else null)
         if (st.todos && text != null && r.kind == ProtocolKind.SLEEP && !r.test) setTodos(r, st, text)
+        if (st.walkingOn && !r.test) setToggle(ToggleName.WALKING, true, detail = "on (${title(r)}: ${st.text})")
+        if (st.reenter && !r.test) reenter(r)
         var next = r.copy(
             step = r.step + 1,
             stepStartedAt = at,
@@ -490,12 +525,13 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
     private fun cancelRunNotices(r: Run) {
         effects += Effect.CancelNotify(runNotice(r))
         r.prayer?.let { effects += Effect.CancelNotify(prayerNotice(it)) }
+        if (r.jummah != null && !r.test) effects += Effect.CancelNotify(JUMMAH_CARD_NOTICE)
     }
 
     /** Stage memory, stage changes, and the misses-in-a-row trigger. */
     private fun recordOutcome(r: Run, outcome: RunOutcome) {
         val p = protocol(r) ?: return
-        val (mem, change) = Stages.record(s.stages[p.id] ?: StageMemory(), outcome, file.stages, pinned = !p.stages)
+        val (mem, change) = Stages.record(s.stages[p.id] ?: StageMemory(), outcome, file.stages, pinned = pinned(p))
         s = s.copy(stages = s.stages + (p.id to mem))
         if (change > 0) {
             log(EntryType.STAGE_UP, protocol = p.id, stage = mem.stage, detail = "${file.stages.promoteAfterClean} clean completions in a row")
@@ -508,10 +544,11 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         if (outcome.failure) {
             val n = s.missesInARow + 1
             s = s.copy(missesInARow = n)
+            // The reset is offered, not forced; NOT NOW costs nothing, and the next offer needs n more misses.
             val offers = file.protocols.filter { (it.parsedTrigger as? Trigger.Misses)?.count == n }
             if (offers.isNotEmpty()) {
                 s = s.copy(missesInARow = 0)
-                offers.forEach { fire(it, "misses:$n") }
+                offers.forEach { offer(it, "misses:$n") }
             }
         } else {
             s = s.copy(missesInARow = 0)
@@ -547,17 +584,23 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
             log(EntryType.SKIPPED, protocol = p.id, reason = "suspended", scheduled = planned, detail = "VIGIL is suspended")
             return null
         }
+        if (p.kind == ProtocolKind.PROMISE) {
+            log(EntryType.SKIPPED, protocol = p.id, reason = "needs_text", detail = "a promise starts from LATER: one line and its minutes")
+            return null
+        }
         if (!test) {
             // A run left unfinished after its lock (or an unconfirmed reminder) does not hold the protocol: its next
             // start (lunch after breakfast, the second study block, tonight's wind-down) replaces it, as a miss.
-            for (old in s.runs.filter { it.protocol == p.id && !it.test && it.prayer == null && it.phase in REPLACEABLE }) {
-                missRun(old, "replaced", detail = "the next start of this protocol came before it was finished")
-            }
+            val replaceable = s.runs.filter { it.protocol == p.id && !it.test && it.prayer == null && it.jummah == null && it.phase in REPLACEABLE }
+            for (old in replaceable) missRun(old, "replaced", detail = "the next start of this protocol came before it was finished")
         }
         if (!test && s.runs.any { it.protocol == p.id && !it.test && it.phase != RunPhase.NIGHT }) {
             log(EntryType.SKIPPED, protocol = p.id, reason = "already_running", scheduled = planned)
             return null
         }
+        // Started by any way (home, the offer's START): the offer is answered.
+        if (!test && s.offer?.protocol == p.id) clearOffer("started", "started ($reason)")
+        if (p.kind == ProtocolKind.JUMMAH) return startJummah(p, reason, planned, test, if (test) JummahPart.LEAVE else null)
         val r = newRun(p, if (test) 1 else stageOf(p), reason, planned, slot, test)
         place(r, p)
         return r
@@ -569,8 +612,11 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
      */
     private fun place(r: Run, p: Protocol) {
         if (!r.test) s = s.copy(lastFired = s.lastFired + (p.id to now))
-        val owner = screenOwner()
-        val prayerFirst = r.prayer != null && !r.test && owner != null && owner.prayer == null
+        // Thursday's wind-down puts the Jummah prep onto Friday's to-dos.
+        if (p.kind == ProtocolKind.SLEEP && !r.test) addPrepTodos()
+        // An asking takeover (I'M AT UNI, a promise) gives way to any screen lock.
+        val owner = screenHolder()
+        val prayerFirst = r.prayer != null && !r.test && owner != null && !owner.prayerLike
         when {
             r.stage >= 3 -> {
                 add(r.copy(phase = RunPhase.REMINDER))
@@ -599,9 +645,12 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         }
     }
 
-    /** A prayer takes the screen: a non-prayer protocol holding it pauses, its timers frozen like in a call. */
+    /**
+     * A prayer (or the Jummah lock) takes the screen: a non-prayer protocol holding it pauses, its timers frozen like in
+     * a call. The Jummah lock itself is never paused.
+     */
     private fun yieldScreenToPrayer() {
-        val owner = s.runs.firstOrNull { it.lock == LockType.SCREEN && lockActive(it) && it.prayer == null } ?: return
+        val owner = s.runs.firstOrNull { it.lock == LockType.SCREEN && lockActive(it) && !it.prayerLike } ?: return
         put(owner.copy(phase = RunPhase.PAUSED, pausedAt = runNow))
         logRun(EntryType.PAUSED, owner, detail = "a prayer took the screen; it goes on after the prayer's lock")
     }
@@ -623,6 +672,10 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
     private fun activate(id: String) {
         val r = run(id) ?: return
         val p = protocol(r) ?: return
+        if (r.jummah != null) {
+            activateJummah(id)
+            return
+        }
         val lockEnd = p.lock.minutes?.takeIf { r.lock != LockType.NONE }?.let { now.plus(Duration.ofMinutes(it.toLong())) }
         val doneAfter = if (r.stage == 1) p.lock.doneAfterMin?.let { now.plus(Duration.ofMinutes(it.toLong())) } else null
         var a = r.copy(
@@ -650,14 +703,17 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         if (prev == null || (!prev.isAfter(wake) && now.isAfter(wake))) updateDay { it.copy(started = it.started + (id to now)) }
     }
 
-    /** While nothing owns the screen, the next queued prayer starts, else a paused run goes on, else the next queued run. */
+    /**
+     * While nothing holds the screen (an asking takeover gives way), the next queued prayer (or Jummah lock) starts, else
+     * a paused run goes on, else the next queued run.
+     */
     private fun promoteQueue() {
         if (suspended) return
         var guard = 0
-        while (screenOwner() == null && guard++ < 50) {
+        while (screenHolder() == null && guard++ < 50) {
             val queued = s.runs.filter { it.phase == RunPhase.QUEUED }
             val paused = s.runs.firstOrNull { it.phase == RunPhase.PAUSED }
-            val next = queued.firstOrNull { it.prayer != null } ?: paused ?: queued.firstOrNull() ?: return
+            val next = queued.firstOrNull { it.prayerLike } ?: paused ?: queued.firstOrNull() ?: return
             if (next.phase == RunPhase.PAUSED) resume(next.id) else activate(next.id)
         }
     }
@@ -680,17 +736,26 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
             if (r.confirmed) complete(r) else missPrayer(r, "next_adhan", now)
         }
         val p = file.prayerProtocol(prayer) ?: return
+        if (dhuhrReplaced(prayer)) {
+            log(EntryType.SKIPPED, protocol = p.id, prayer = prayer, reason = "jummah", detail = "Friday: Jummah replaces Dhuhr")
+            return
+        }
+        startPrayer(prayer, p, "adhan")
+    }
+
+    /** The run of [prayer] starts now ([reason] adhan, or jummah_missed): its window runs until the next prayer's adhan. */
+    private fun startPrayer(prayer: Prayer, p: Protocol, reason: String) {
         val (windowEnd, estimated) = estimateWindowEnd(prayer)
         val stage = stageOf(p)
         // Class rule at stage 3 too: the one notification is silent during a class.
         val inClass = stage >= 3 && dayTimes().classAt(now) != null
-        val base = newRun(p, stage, "adhan", null, null, false)
+        val base = newRun(p, stage, reason, null, null, false)
             .copy(prayer = prayer, windowEndsAt = windowEnd, windowEstimated = estimated, silent = inClass)
         if (suspended) {
             s = s.copy(lastFired = s.lastFired + (p.id to now))
             val open = base.copy(phase = RunPhase.OPEN, lock = LockType.NONE)
             add(open)
-            logRun(EntryType.FIRED, open, reason = "adhan", detail = "VIGIL is suspended: no takeover; CONFIRM when prayed")
+            logRun(EntryType.FIRED, open, reason = reason, detail = "VIGIL is suspended: no takeover; CONFIRM when prayed")
             notifyConfirm(open, p)
             return
         }
@@ -699,7 +764,7 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
             s = s.copy(lastFired = s.lastFired + (p.id to now))
             val card = base.copy(phase = RunPhase.CARD, classEndsAt = classEnd, silent = true)
             add(card)
-            logRun(EntryType.FIRED, card, reason = "adhan", detail = "in class until ${hhmm(classEnd)}: silent card")
+            logRun(EntryType.FIRED, card, reason = reason, detail = "in class until ${hhmm(classEnd)}: silent card")
             logRun(EntryType.CLASS_CARD, card, until = classEnd, detail = "silent card; the takeover starts when the class ends")
             effects += Effect.Notify(
                 prayerNotice(prayer), p.title, "Class now: pray in the first break or right after class.",
@@ -748,9 +813,9 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         logRun(EntryType.CLASS_CARD, r, detail = "class over: the takeover starts")
         effects += Effect.CancelNotify(prayerNotice(r.prayer!!))
         put(r.copy(classEndsAt = null, silent = false, phase = RunPhase.QUEUED))
-        val owner = screenOwner()
+        val owner = screenHolder()
         // Like at the adhan: a protocol holding the screen pauses for the prayer, the night lock yields.
-        if (owner == null || (owner.prayer == null && !r.test)) {
+        if (owner == null || (!owner.prayerLike && !r.test)) {
             yieldScreenToPrayer()
             activate(r.id)
         }
@@ -766,7 +831,7 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         if (suspended) return
         for (prayer in Prayer.entries) {
             val p = file.prayerProtocol(prayer) ?: continue
-            if (stageOf(p) >= 3) continue
+            if (stageOf(p) >= 3 || dhuhrReplaced(prayer)) continue
             val lead = p.intParam("heads_up_min")
             if (lead <= 0) continue
             val last = s.prayers.lastAdhan[prayer] ?: continue
@@ -784,10 +849,14 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
     private fun fireDue() {
         for (item in plan()) {
             if (item.source == StartSource.ADHAN || item.key in day.handled) continue
-            if (item.at.isAfter(now) || Duration.between(item.at, now) > Machine.PLANNED_GRACE) continue
             val p = file.find(item.protocolId) ?: continue
+            // Jummah still starts late (the phone was off at leave-by): it joins at the part that is due, until missed.
+            val until = (if (p.kind == ProtocolKind.JUMMAH) jummahToday()?.missedAt else null) ?: item.at.plus(Machine.PLANNED_GRACE)
+            if (item.at.isAfter(now) || now.isAfter(until)) continue
             val reason = (p.parsedTrigger as? Trigger.Slot)?.let { "slot:${it.type.json}" } ?: "time"
             val r = fire(p, reason, item.at, item.slot?.let(::slotInfo))
+            // A Jummah skipped while VIGIL is suspended starts once the suspension is over.
+            if (r == null && suspended && p.kind == ProtocolKind.JUMMAH) continue
             updateDay { it.copy(handled = it.handled + (item.key to if (r != null) "fired" else "skipped")) }
         }
     }
@@ -1044,6 +1113,15 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
                 detail = listOfNotNull(input.at?.let { "at ${WallClock.stamp(it, zone)}" }, input.detail).joinToString("; ").ifEmpty { null },
             )
             is Input.SpeedBump -> log(EntryType.SPEED_BUMP, app = input.target, detail = input.detail)
+            is Input.Promise -> onPromise(input.text, input.minutes, input.test)
+            is Input.Snooze -> onSnooze(input.runId)
+            is Input.Dismiss -> onDismiss(input.runId)
+            is Input.AnswerOffer -> answerOffer(input.start)
+            is Input.TestJummah -> testJummah(input.part)
+            Input.DndNoAccess -> log(
+                EntryType.DND, reason = "no_access",
+                detail = "Do Not Disturb access is not granted (SETUP): the lock shows, the phone is not silenced",
+            )
         }
     }
 
@@ -1104,9 +1182,30 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
     private fun setTodos(r: Run, st: Step, text: String) {
         val lines = text.lines().map { it.trim() }.filter { it.isNotEmpty() }.take(st.lines ?: 1)
         if (lines.isEmpty()) return
-        val key = alarmKey().toString()
-        s = s.copy(todos = s.todos + (key to lines.map { Todo(it) }))
+        val day = alarmKey()
+        val key = day.toString()
+        // Friday's Jummah prep stays on the list.
+        val prep = prepTodos(day).filter { it.text !in lines }
+        s = s.copy(todos = s.todos + (key to lines.map { Todo(it) } + prep))
         log(EntryType.TODO_SET, protocol = r.protocol, run = r.id, day = key, text = lines.joinToString("\n"), detail = "${lines.size} for $key")
+    }
+
+    /** The Jummah prep to-dos (the jummah protocol's `prep_todos`) when [day] is a Friday, else none. */
+    private fun prepTodos(day: LocalDate): List<Todo> {
+        val p = jummahProtocol ?: return emptyList()
+        if (WallClock.dayCode(day) != "fri") return emptyList()
+        return p.textListParam("prep_todos").map { Todo(it) }
+    }
+
+    /** Thursday's wind-down adds the Jummah prep to Friday's to-dos (once, whatever else is written there). */
+    private fun addPrepTodos() {
+        val day = alarmKey()
+        val key = day.toString()
+        val list = s.todos[key] ?: emptyList()
+        val added = prepTodos(day).filter { t -> list.none { it.text == t.text } }
+        if (added.isEmpty()) return
+        s = s.copy(todos = s.todos + (key to list + added))
+        log(EntryType.TODO_SET, protocol = jummahProtocol?.id, day = key, text = added.joinToString("\n") { it.text }, detail = "Jummah prep for $key")
     }
 
     private fun onToggle(name: ToggleName, on: Boolean) = setToggle(name, on)
@@ -1164,19 +1263,40 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
                 if (forced && until != null && runNow.isBefore(until)) return
             }
             StepType.TIMER -> if (forced) return
-            // A to-dos step takes up to its lines (at least one); other text steps need every line.
-            StepType.TEXT -> if (nonBlankLines(text) < (if (st.todos) 1 else st.lines ?: 1)) return
+            // A to-dos step takes up to its lines (at least one); an optional one may stay empty; others need every line.
+            StepType.TEXT -> if (nonBlankLines(text) < (if (st.optional) 0 else if (st.todos) 1 else st.lines ?: 1)) return
             StepType.DONE -> if (forced && r.doneAfterAt != null && runNow.isBefore(r.doneAfterAt)) return
+        }
+        if (r.jummah != null) {
+            jummahStep(r, steps, text)
+            return
+        }
+        if (r.promise != null && st.type == StepType.DONE) {
+            keepPromise(r)
+            return
         }
         // The wind-down's last step is GOING TO SLEEP: the day ends (before the day's wake time only the run finishes).
         if (r.kind == ProtocolKind.SLEEP && !r.test && index == steps.lastIndex && goToSleep(ishaPrayed = false)) return
-        stepDone(r, steps, text = text?.trim())
+        stepDone(r, steps, text = text?.trim()?.ifEmpty { null })
     }
 
     private fun nonBlankLines(text: String?): Int = text?.lines()?.count { it.isNotBlank() } ?: 0
 
     private fun onConfirm(runId: String) {
         val r = run(runId) ?: return
+        if (r.promise != null) {
+            keepPromise(r)
+            return
+        }
+        val j = r.jummah
+        if (j != null) {
+            // On the way it is I'M AT UNI; from the lock on it is "I prayed Jummah".
+            when (j.part) {
+                JummahPart.LEAVE, JummahPart.TRAVEL -> confirmArrival(r)
+                JummahPart.LOCK, JummahPart.CONFIRM -> confirmJummah(r)
+            }
+            return
+        }
         if (r.prayer == null) {
             if (r.phase == RunPhase.REMINDER) complete(r.copy(confirmed = true))
             return
@@ -1230,6 +1350,11 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
             penalty(r)
             return
         }
+        if (r.jummah != null) {
+            bailJummah(r)
+            return
+        }
+        r.promise?.let { logRun(EntryType.PROMISE, r, reason = "bailed", text = it.text) }
         if (r.prayer != null) {
             if (r.phase != RunPhase.ACTIVE && r.phase != RunPhase.QUEUED && r.phase != RunPhase.RETURNED) return
             val minimumEnd = r.doneAfterAt ?: r.lockStartedAt?.plus(Duration.ofMinutes((p.lock.doneAfterMin ?: 0).toLong()))
@@ -1303,6 +1428,17 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
                 endNight(r, "kill_switch")
                 continue
             }
+            // Like a prayer, Jummah stays open (no screen, the phone's sound back) and goes on once the suspension ends.
+            val j = r.jummah
+            if (j != null && !r.test) {
+                when (j.part) {
+                    JummahPart.LEAVE -> toTravel(r, "VIGIL was suspended")
+                    JummahPart.TRAVEL -> if (r.asking) put(r.copy(asking = false))
+                    JummahPart.LOCK -> toConfirm(r, "VIGIL was suspended")
+                    JummahPart.CONFIRM -> Unit
+                }
+                continue
+            }
             if (r.prayer != null && p != null) {
                 when {
                     r.confirmed -> complete(r)
@@ -1318,10 +1454,539 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
                 cancelRunNotices(r)
             }
         }
+        clearOffer("expired", "VIGIL was suspended")
         updatePool { it.copy(wait = null) }
         // The pool is simply open while suspended: a live session ends now (its minutes and cooldown count as usual), so
         // the suspended time is never counted, and never turns into heavy use the moment the suspension ends.
         s.pool.session?.let { endSession(if (it.inSince != null) now else it.leftAt ?: now, cooldown = true) }
+    }
+
+    // ------------------------------------------------------------------ Jummah (design M4)
+
+    /**
+     * Starts the Jummah run of [p]: today's times, or for a TEST of one part ([only]) times that put that part now. It
+     * joins at the part the clock is in, so a late start (the phone was off at leave-by) skips what is over.
+     */
+    private fun startJummah(p: Protocol, reason: String, planned: Instant?, test: Boolean, only: JummahPart?): Run? {
+        val times = if (only != null) testJummahTimes(p, only) else jummahToday()
+        if (times == null || !now.isBefore(times.missedAt)) {
+            val why = if (times == null) "not_friday" else "over"
+            log(EntryType.SKIPPED, protocol = p.id, reason = why, scheduled = planned, detail = "Jummah runs on Fridays, until its missed time", test = test)
+            return null
+        }
+        if (!test) s = s.copy(lastFired = s.lastFired + (p.id to now))
+        val r = newRun(p, 1, reason, planned, null, test).copy(jummah = times.copy(only = only))
+        add(r)
+        val lockEnd = times.lockAt.plus(Duration.ofMinutes((p.lock.minutes ?: 0).toLong()))
+        val holder = screenHolder()
+        val leave = now.isBefore(times.arriveAt)
+        logRun(
+            EntryType.FIRED, r, reason = reason, scheduled = planned,
+            detail = "leave by ${hhmm(times.leaveAt)}, I'M AT UNI by ${hhmm(times.arriveAt)}, lock ${hhmm(times.lockAt)}-${hhmm(lockEnd)}" +
+                if (leave && holder != null) "; waits behind ${title(holder)}" else "",
+        )
+        when {
+            !now.isBefore(times.lockAt) -> startLock(r)
+            !leave -> toTravel(r, null)
+            holder == null -> activateJummah(r.id)
+        }
+        return run(r.id) ?: r
+    }
+
+    /** A TEST part's times: as on a Friday without classes, shifted so that [part] starts now. */
+    private fun testJummahTimes(p: Protocol, part: JummahPart): JummahInfo {
+        fun param(name: String): Duration = Duration.ofMinutes(p.intParam(name).toLong())
+        val commute = Duration.ofMinutes(s.times.current.commuteMin.toLong())
+        val lockAt = when (part) {
+            JummahPart.LEAVE -> now.plus(commute).plus(param("leave_buffer_min"))
+            JummahPart.TRAVEL -> now.plus(param("arrive_before_min"))
+            JummahPart.LOCK, JummahPart.CONFIRM -> now
+        }
+        val jummahAt = lockAt.plus(param("lock_before_min"))
+        val leaveAt = minOf(now, lockAt.minus(commute).minus(param("leave_buffer_min")))
+        return JummahInfo(
+            jummahAt = jummahAt, leaveAt = leaveAt, arriveAt = maxOf(leaveAt, lockAt.minus(param("arrive_before_min"))),
+            lockAt = lockAt, missedAt = jummahAt.plus(param("missed_after_min")),
+        )
+    }
+
+    /** Moves a Jummah run on by the clock: the leave-by screen's end, the I'M AT UNI asks, the card, the lock, missed. */
+    private fun settleJummah(id: String) {
+        var r = run(id) ?: return
+        var j = r.jummah ?: return
+        // Nothing confirmed by its time (a lock that a call made longer finishes first).
+        val lockRunning = j.part == JummahPart.LOCK && r.phase == RunPhase.ACTIVE
+        if (!now.isBefore(j.missedAt) && !lockRunning) {
+            missJummah(r)
+            return
+        }
+        sendCard(r)
+        r = run(id) ?: return
+        j = r.jummah ?: return
+        when (j.part) {
+            JummahPart.LEAVE -> when {
+                !now.isBefore(j.lockAt) -> startLock(r)
+                !now.isBefore(j.arriveAt) -> toTravel(r, if (r.phase == RunPhase.ACTIVE) "the leave-by takeover ended at the arrival time" else null)
+                r.phase == RunPhase.ACTIVE && s.callSince == null -> {
+                    val moved = runTimers(r) ?: return
+                    if (moved.step >= arrivalIndex(stepsOf(moved))) toTravel(moved, null)
+                }
+            }
+            JummahPart.TRAVEL -> when {
+                !now.isBefore(j.lockAt) -> startLock(r)
+                !j.arrived && !suspended && !now.isBefore(j.askedAt?.plus(askRepeat(r)) ?: j.arriveAt) -> ask(r)
+            }
+            JummahPart.LOCK -> when {
+                r.phase == RunPhase.QUEUED -> r.lockEndsAt?.let { if (!now.isBefore(it)) lockOver(r, it) }
+                r.phase == RunPhase.ACTIVE && s.callSince == null -> {
+                    val moved = runTimers(r) ?: return
+                    moved.lockEndsAt?.let { if (!now.isBefore(it)) lockOver(moved, it) }
+                }
+            }
+            JummahPart.CONFIRM -> Unit
+        }
+    }
+
+    private fun askRepeat(r: Run): Duration = Duration.ofMinutes((protocol(r)?.intParam("arrive_repeat_min") ?: 10).toLong())
+
+    /** The index of the I'M AT UNI step (the parser makes sure there is one). */
+    private fun arrivalIndex(steps: List<Step>): Int = steps.indexOfFirst { it.arrival }.takeIf { it >= 0 } ?: steps.size
+
+    /** The index of the confirming done step. */
+    private fun doneIndex(steps: List<Step>): Int = steps.indexOfLast { it.type == StepType.DONE }.takeIf { it >= 0 } ?: steps.lastIndex
+
+    /** The run takes the screen for its part: the leave-by takeover, or the Jummah lock (Do Not Disturb on). */
+    private fun activateJummah(id: String) {
+        val r = run(id) ?: return
+        val j = r.jummah ?: return
+        when (j.part) {
+            JummahPart.LEAVE -> {
+                if (!now.isBefore(j.arriveAt)) {
+                    toTravel(r, null)
+                    return
+                }
+                put(r.copy(phase = RunPhase.ACTIVE, startedAt = r.startedAt ?: now, lockStartedAt = now, lockEndsAt = j.arriveAt, doneAfterAt = null, stepStartedAt = now))
+                if (!r.test) recordStart(r.protocol)
+                effects += Effect.ShowTakeover(id)
+            }
+            JummahPart.LOCK -> {
+                val end = r.lockEndsAt
+                if (end != null && !now.isBefore(end)) {
+                    lockOver(r, end)
+                    return
+                }
+                val on = r.copy(phase = RunPhase.ACTIVE, startedAt = r.startedAt ?: now, lockStartedAt = now, stepStartedAt = now, jummah = j.copy(dnd = true))
+                put(on)
+                if (!r.test) recordStart(r.protocol)
+                logRun(EntryType.JUMMAH_LOCK, on, until = end, detail = "the phone silent and the pool blocked until ${end?.let { hhmm(it) }}")
+                effects += Effect.SetDnd(true)
+                logRun(EntryType.DND, on, reason = "on", detail = "the Jummah lock")
+                effects += Effect.CancelNotify(runNotice(r))
+                effects += Effect.ShowTakeover(id)
+            }
+            JummahPart.TRAVEL, JummahPart.CONFIRM -> Unit
+        }
+    }
+
+    /** On the way: the screen is free; I'M AT UNI comes at the arrival time ([why] says why the leave-by screen ended). */
+    private fun toTravel(r: Run, why: String?) {
+        val j = r.jummah ?: return
+        val p = protocol(r) ?: return
+        if (why != null) logRun(EntryType.LOCK_ENDED, r, detail = why)
+        val a = arrivalIndex(stepsOf(r))
+        val t = r.copy(
+            phase = RunPhase.OPEN, asking = false, step = if (j.arrived) a + 1 else a, stepStartedAt = now, lockEndsAt = null,
+            doneAfterAt = null, jummah = j.copy(part = JummahPart.TRAVEL),
+        )
+        put(t)
+        if (j.only == JummahPart.LEAVE) {
+            complete(t)
+            return
+        }
+        effects += Effect.Notify(
+            runNotice(t), "${p.title}: ON THE WAY", "Tap I'M AT UNI once you are there. The phone goes silent at ${hhmm(j.lockAt)}.",
+            silent = true, kind = NotifyKind.CONFIRM, runId = t.id,
+        )
+    }
+
+    /** I'M AT UNI? A full takeover now, and again every arrive_repeat_min until it is confirmed or the lock starts. */
+    private fun ask(r: Run) {
+        val j = r.jummah ?: return
+        val p = protocol(r) ?: return
+        val asked = r.copy(asking = true, jummah = j.copy(askedAt = now))
+        put(asked)
+        logRun(EntryType.ARRIVAL_CHECK, asked, detail = if (j.askedAt == null) "I'M AT UNI? The lock starts at ${hhmm(j.lockAt)}" else "asked again")
+        if (screenOwner()?.id == r.id) effects += Effect.ShowTakeover(r.id)
+        effects += Effect.Notify(
+            runNotice(r), "${p.title}: I'M AT UNI?", "Tap I'M AT UNI once you are there. The phone goes silent at ${hhmm(j.lockAt)}.",
+            silent = true, kind = NotifyKind.CONFIRM, runId = r.id,
+        )
+    }
+
+    /** I'M AT UNI: the asks stop, the walking switch goes off, and the run waits for the lock. */
+    private fun confirmArrival(r: Run) {
+        val j = r.jummah ?: return
+        if (j.arrived || (j.part != JummahPart.LEAVE && j.part != JummahPart.TRAVEL)) return
+        val p = protocol(r) ?: return
+        val late = Duration.between(j.arriveAt, now).toMinutes().toInt()
+        val detail = when {
+            late > 0 -> "$late min after ${hhmm(j.arriveAt)}"
+            late < 0 -> "${-late} min before ${hhmm(j.arriveAt)}"
+            else -> "on time"
+        }
+        logRun(EntryType.ARRIVED, r, minutes = late, detail = detail)
+        if (!r.test && s.toggles.walking) setToggle(ToggleName.WALKING, false, detail = "off (arrived at uni)")
+        val arrived = r.copy(
+            phase = RunPhase.OPEN, asking = false, step = arrivalIndex(stepsOf(r)) + 1, stepStartedAt = now, lockEndsAt = null,
+            doneAfterAt = null, jummah = j.copy(part = JummahPart.TRAVEL, arrived = true),
+        )
+        put(arrived)
+        if (j.only == JummahPart.TRAVEL) {
+            complete(arrived)
+            return
+        }
+        effects += Effect.Notify(
+            runNotice(r), "${p.title} AT ${hhmm(j.jummahAt)}", "At uni. The phone goes silent at ${hhmm(j.lockAt)}: go straight to the prayer place.",
+            silent = true, kind = NotifyKind.RUN, runId = r.id,
+        )
+    }
+
+    /** The silent card before the last Friday class ends (once; not when it is late or the lock has begun). */
+    private fun sendCard(r: Run) {
+        val j = r.jummah ?: return
+        val at = j.cardAt ?: return
+        if (j.cardSent || now.isBefore(at) || r.test) return
+        put(r.copy(jummah = j.copy(cardSent = true)))
+        if (Duration.between(at, now) > Machine.PLANNED_GRACE || !now.isBefore(j.lockAt) || suspended) return
+        val p = protocol(r) ?: return
+        logRun(EntryType.JUMMAH_CARD, r, detail = cardText(p))
+        effects += Effect.Notify(JUMMAH_CARD_NOTICE, p.title, cardText(p), silent = true, kind = NotifyKind.CARD, runId = r.id)
+    }
+
+    private fun cardText(p: Protocol): String =
+        "Class ends in ${p.intParam("card_before_end_min")} minutes. Go straight to the prayer place."
+
+    /**
+     * The Jummah lock begins (jummah_time - lock_before_min, for lock.minutes): Do Not Disturb, the pool blocked and a
+     * subtle silent screen; DONE unlocks lock.done_after_min after its start. Behind a prayer's lock it waits; any
+     * other protocol holding the screen pauses for it. A TEST of another part ends here.
+     */
+    private fun startLock(r: Run) {
+        val j = r.jummah ?: return
+        val p = protocol(r) ?: return
+        when (j.only) {
+            JummahPart.LEAVE -> {
+                complete(r)
+                return
+            }
+            JummahPart.TRAVEL -> {
+                if (j.arrived) complete(r) else missRun(r, "not_confirmed", detail = "I'M AT UNI was not confirmed before the lock")
+                return
+            }
+            else -> Unit
+        }
+        if (suspended) return
+        val steps = stepsOf(r)
+        val lockEnd = j.lockAt.plus(Duration.ofMinutes((p.lock.minutes ?: 0).toLong()))
+        val doneAfter = p.lock.doneAfterMin?.let { j.lockAt.plus(Duration.ofMinutes(it.toLong())) }
+        val locked = r.copy(
+            phase = RunPhase.QUEUED, asking = false, silent = true, step = (arrivalIndex(steps) + 1).coerceAtMost(steps.lastIndex),
+            stepStartedAt = null, lockEndsAt = lockEnd, doneAfterAt = doneAfter, jummah = j.copy(part = JummahPart.LOCK),
+        )
+        put(locked)
+        effects += Effect.CancelNotify(JUMMAH_CARD_NOTICE)
+        if (!now.isBefore(lockEnd)) {
+            lockOver(locked, lockEnd)
+            return
+        }
+        val holder = screenHolder()
+        if (holder != null && holder.prayerLike) {
+            logRun(EntryType.JUMMAH_LOCK, locked, detail = "waits behind ${title(holder)}")
+            return
+        }
+        if (holder != null) yieldScreenToPrayer()
+        activateJummah(locked.id)
+    }
+
+    /** The lock ended unconfirmed at [end]: the phone's sound comes back; CONFIRM until the missed time. */
+    private fun lockOver(r: Run, end: Instant) {
+        logRun(EntryType.JUMMAH_LOCK, r, at = end, reason = "ended", detail = "ended unconfirmed: CONFIRM by ${r.jummah?.missedAt?.let { hhmm(it) }}")
+        toConfirm(r, "the Jummah lock ended")
+    }
+
+    /** No lock and no screen any more: Do Not Disturb off, CONFIRM on home and in a notification until the missed time. */
+    private fun toConfirm(r: Run, why: String) {
+        val j = r.jummah ?: return
+        val p = protocol(r) ?: return
+        if (j.dnd) dndOff(r, why)
+        val c = r.copy(
+            phase = RunPhase.OPEN, asking = false, silent = false, step = doneIndex(stepsOf(r)), stepStartedAt = now, lockEndsAt = null,
+            doneAfterAt = null, jummah = j.copy(part = JummahPart.CONFIRM, dnd = false),
+        )
+        put(c)
+        effects += Effect.Notify(
+            runNotice(c), "${p.title} NOT CONFIRMED", "Prayed? Tap CONFIRM by ${hhmm(j.missedAt)}.",
+            silent = true, kind = NotifyKind.CONFIRM, runId = c.id,
+        )
+    }
+
+    /** DONE (or CONFIRM): Jummah was prayed. Not while DONE is still locked. */
+    private fun confirmJummah(r: Run) {
+        if (doneLockedUntil(r) != null) return
+        val c = r.copy(confirmed = true)
+        put(c)
+        if (!r.test) updateDay { it.copy(jummah = DayState.JUMMAH_CONFIRMED) }
+        logRun(EntryType.CONFIRMED, c)
+        complete(c)
+    }
+
+    /**
+     * A tap on a Jummah step: the leave-by checklist (the walking step switches walking on), I'M AT UNI, or the lock's
+     * steps (DONE confirms Jummah).
+     */
+    private fun jummahStep(r: Run, steps: List<Step>, text: String?) {
+        val j = r.jummah ?: return
+        val st = steps[r.step]
+        val typed = text?.trim()?.ifEmpty { null }
+        when {
+            st.arrival -> confirmArrival(r)
+            j.part == JummahPart.LEAVE && r.phase == RunPhase.ACTIVE -> {
+                val moved = stepDone(r, steps, text = typed) ?: return
+                if (moved.step >= arrivalIndex(steps)) toTravel(moved, null)
+            }
+            st.type == StepType.DONE && (j.part == JummahPart.LOCK || j.part == JummahPart.CONFIRM) -> confirmJummah(r)
+            j.part == JummahPart.LOCK && r.phase == RunPhase.ACTIVE -> stepDone(r, steps, text = typed)
+        }
+    }
+
+    /**
+     * LEAVE on Jummah: the leave-by takeover or the lock is left (the usual penalty; the run goes on: the lock still
+     * comes, CONFIRM still counts). On the I'M AT UNI ask there is nothing to leave: it closes like NOT YET.
+     */
+    private fun bailJummah(r: Run) {
+        val j = r.jummah ?: return
+        if (asking(r)) {
+            onDismiss(r.id)
+            return
+        }
+        if (r.phase != RunPhase.ACTIVE || (j.part != JummahPart.LEAVE && j.part != JummahPart.LOCK)) return
+        logRun(EntryType.BAILED, r, detail = if (j.part == JummahPart.LEAVE) "left the leave-by takeover" else "left the Jummah lock; CONFIRM by ${hhmm(j.missedAt)}")
+        if (!r.test) {
+            penalty(r)
+            if (!r.bailed) recordOutcome(r, RunOutcome.BAILED)
+        }
+        val bailed = r.copy(bailed = true)
+        put(bailed)
+        if (j.part == JummahPart.LEAVE) toTravel(bailed, null) else toConfirm(bailed, "the Jummah lock was left")
+        promoteQueue()
+    }
+
+    /**
+     * Nothing confirmed by the missed time: missed (it counts for the reset offer), the Dhuhr prayer runs instead (until
+     * Asr) and the reset is offered.
+     */
+    private fun missJummah(r: Run) {
+        val j = r.jummah ?: return
+        if (!r.test) updateDay { it.copy(jummah = DayState.JUMMAH_MISSED) }
+        remove(r.id)
+        logRun(EntryType.MISSED, r, at = j.missedAt, reason = "not_confirmed", detail = "nothing confirmed by ${hhmm(j.missedAt)}")
+        cancelRunNotices(r)
+        if (!r.test && !r.bailed) recordOutcome(r, RunOutcome.MISSED)
+        promoteQueue()
+        if (r.test) return
+        dhuhrAfterJummah()
+        resetProtocol?.let { offer(it, "jummah_missed") }
+    }
+
+    /** Jummah was missed: today's Dhuhr runs after all, its window until Asr (not once Asr has come). */
+    private fun dhuhrAfterJummah() {
+        val p = file.prayerProtocol(Prayer.DHUHR) ?: return
+        if (Prayer.ASR in day.adhans) {
+            log(EntryType.SKIPPED, protocol = p.id, prayer = Prayer.DHUHR, reason = "window_closed", detail = "Jummah was missed after Asr came: the Dhuhr window is over")
+            return
+        }
+        if (s.runs.any { it.prayer == Prayer.DHUHR && !it.test }) return
+        startPrayer(Prayer.DHUHR, p, "jummah_missed")
+    }
+
+    /** TEST > JUMMAH: one part now as a preview (the card is only its notification). */
+    private fun testJummah(part: JummahTestPart) {
+        val p = jummahProtocol ?: return
+        val only = when (part) {
+            JummahTestPart.LEAVE -> JummahPart.LEAVE
+            JummahTestPart.ARRIVAL -> JummahPart.TRAVEL
+            JummahTestPart.LOCK -> JummahPart.LOCK
+            JummahTestPart.CARD -> {
+                log(EntryType.JUMMAH_CARD, protocol = p.id, detail = cardText(p), test = true)
+                effects += Effect.Notify(JUMMAH_CARD_NOTICE, p.title, cardText(p), silent = true, kind = NotifyKind.CARD)
+                return
+            }
+        }
+        if (s.runs.any { it.jummah != null && it.test }) return
+        startJummah(p, "test", null, test = true, only = only)
+    }
+
+    // ------------------------------------------------------------------ the 10-minute promise (design M5)
+
+    /** LATER: one line and its minutes; the timer runs in the background. One promise at a time. */
+    private fun onPromise(text: String, minutes: Int, test: Boolean) {
+        val p = promiseProtocol ?: return
+        val line = text.lineSequence().map { it.trim() }.firstOrNull { it.isNotEmpty() }?.take(MAX_PROMISE_CHARS) ?: return
+        if (!test && suspended) {
+            log(EntryType.SKIPPED, protocol = p.id, reason = "suspended", text = line, detail = "VIGIL is suspended")
+            return
+        }
+        if (s.runs.any { it.promise != null }) {
+            log(EntryType.SKIPPED, protocol = p.id, reason = "one_at_a_time", text = line, detail = "a promise is already running", test = test)
+            return
+        }
+        val m = minutes.coerceIn(1, MAX_PROMISE_MIN)
+        val due = now.plus(Duration.ofMinutes(m.toLong()))
+        val r = newRun(p, 1, "later", null, null, test).copy(phase = RunPhase.WAITING, promise = PromiseInfo(line, m, due))
+        if (!test) s = s.copy(lastFired = s.lastFired + (p.id to now))
+        add(r)
+        logRun(EntryType.FIRED, r, reason = "later", detail = "due at ${hhmm(due)}")
+        logRun(EntryType.PROMISE, r, reason = "promised", text = line, minutes = m, until = due)
+        notifyPromise(r)
+    }
+
+    /** The promise is due: its full takeover asks (exactly the line), and the pool is locked until DONE. */
+    private fun promiseDue(r: Run) {
+        val promise = r.promise ?: return
+        val due = r.copy(phase = RunPhase.ACTIVE, asking = true, startedAt = r.startedAt ?: now, lockStartedAt = now, lockEndsAt = null, doneAfterAt = null, stepStartedAt = now)
+        put(due)
+        if (!r.test) recordStart(r.protocol)
+        logRun(EntryType.PROMISE, due, at = promise.dueAt, reason = "due", text = promise.text)
+        notifyPromise(due)
+    }
+
+    private fun notifyPromise(r: Run) {
+        val promise = r.promise ?: return
+        val p = protocol(r) ?: return
+        val title = if (r.phase == RunPhase.WAITING) "${p.title} AT ${hhmm(promise.dueAt)}" else "${p.title}: NOW. THE POOL IS LOCKED UNTIL DONE."
+        effects += Effect.Notify(runNotice(r), title, promise.text, silent = true, kind = NotifyKind.PROMISE, runId = r.id)
+    }
+
+    /** SNOOZE: once per promise, half its minutes (at least snooze_min_min); the takeover and the pool lock wait too. */
+    private fun onSnooze(id: String) {
+        val r = run(id) ?: return
+        val promise = r.promise ?: return
+        val m = Machine.snoozeMinutes(r, file) ?: return
+        val due = now.plus(Duration.ofMinutes(m.toLong()))
+        val waiting = r.copy(phase = RunPhase.WAITING, asking = false, lockStartedAt = null, promise = promise.copy(dueAt = due, snoozed = true))
+        put(waiting)
+        logRun(EntryType.PROMISE, waiting, reason = "snoozed", text = promise.text, minutes = m, until = due)
+        notifyPromise(waiting)
+    }
+
+    /** DONE: the promise was kept (also before it was due). */
+    private fun keepPromise(r: Run) {
+        val promise = r.promise ?: return
+        logRun(
+            EntryType.PROMISE, r, reason = "kept", text = promise.text, minutes = WallClock.minutesCeil(r.firedAt, now),
+            detail = if (r.phase == RunPhase.WAITING) "done before it was due" else null,
+        )
+        complete(r.copy(confirmed = true))
+    }
+
+    /** ON IT (a promise: the pool lock stays) or NOT YET (I'M AT UNI: it asks again later): the asking takeover closes. */
+    private fun onDismiss(id: String) {
+        val r = run(id) ?: return
+        if (!asking(r)) return
+        put(r.copy(asking = false))
+        val j = r.jummah
+        when {
+            r.promise != null -> logRun(EntryType.PROMISE, r, reason = "on_it", text = r.promise.text, detail = "the pool stays locked until DONE")
+            j != null -> logRun(EntryType.ARRIVAL_CHECK, r, reason = "not_yet", detail = "asks again at ${hhmm((j.askedAt ?: now).plus(askRepeat(r)))}")
+        }
+    }
+
+    // ------------------------------------------------------------------ the reset and its offer (design M5)
+
+    /** Offers [p] (START / NOT NOW) instead of starting it: a full-intensity card on home and in a notification. */
+    private fun offer(p: Protocol, reason: String) {
+        val skip = when {
+            dayEnding -> "day_end"
+            suspended -> "suspended"
+            s.runs.any { it.protocol == p.id && !it.test } -> "already_running"
+            s.offer?.protocol == p.id -> return
+            else -> null
+        }
+        if (skip != null) {
+            log(EntryType.SKIPPED, protocol = p.id, reason = skip, detail = "offered ($reason)")
+            return
+        }
+        s = s.copy(offer = Offer(p.id, now, reason))
+        val text = if (reason == "jummah_missed") {
+            "Jummah was missed. Pray Dhuhr, then ${p.title} brings the day back. Or NOT NOW: it costs nothing."
+        } else {
+            "${reason.removePrefix("misses:")} missed or left in a row. ${p.title} brings the day back. Or NOT NOW: it costs nothing."
+        }
+        log(EntryType.OFFER, protocol = p.id, reason = reason, detail = text)
+        effects += Effect.Notify(OFFER_NOTICE, "${p.title}?", text, silent = s.toggles.quiet, kind = NotifyKind.OFFER)
+    }
+
+    /** START or NOT NOW on the offer. NOT NOW costs nothing; the next offer comes after as many misses again. */
+    private fun answerOffer(start: Boolean) {
+        val o = s.offer ?: return
+        clearOffer(if (start) "started" else "not_now", if (start) "START" else "NOT NOW: it costs nothing")
+        if (start) file.find(o.protocol)?.let { fire(it, "offer") }
+    }
+
+    private fun clearOffer(reason: String, detail: String, at: Instant = now) {
+        val o = s.offer ?: return
+        s = s.copy(offer = null)
+        effects += Effect.CancelNotify(OFFER_NOTICE)
+        log(EntryType.OFFER, at = at, protocol = o.protocol, reason = reason, detail = detail)
+    }
+
+    /**
+     * The reset's last step: re-entering the day. Today's missed and waiting runs are dropped (no catch-up, no penalty,
+     * no stage change), the miss count starts again; then an open prayer comes first, else the next planned protocol
+     * starts now if it is due within next_within_min, else it is named ([View.reentryLine]).
+     */
+    private fun reenter(r: Run) {
+        val p = protocol(r) ?: return
+        val dropped = s.runs.filter {
+            it.id != r.id && !it.test && it.prayer == null && it.jummah == null && it.promise == null && it.phase in DROPPED_AT_REENTRY
+        }
+        for (old in dropped) {
+            remove(old.id)
+            logRun(EntryType.DROPPED, old, reason = "reset", detail = "dropped at re-entry: no catch-up")
+            cancelRunNotices(old)
+        }
+        s = s.copy(missesInARow = 0)
+        val plan = reentryPlan(p.intParam("next_within_min"))
+        val line = reentryLine(plan)
+        val why = when (plan) {
+            is Reentry.Prayer -> {
+                val prayer = run(plan.run.id)
+                val pp = prayer?.let { protocol(it) }
+                when {
+                    prayer == null || pp == null -> Unit
+                    // Its takeover starts as soon as the reset is over (prayers go first).
+                    prayer.phase == RunPhase.OPEN || prayer.phase == RunPhase.CARD ->
+                        put(prayer.copy(phase = RunPhase.QUEUED, classEndsAt = null, silent = false))
+                    prayer.phase == RunPhase.REMINDER -> effects += Effect.Notify(
+                        prayerNotice(prayer.prayer!!), pp.title, "Time to pray. Tap CONFIRM when done.",
+                        silent = s.toggles.quiet, kind = NotifyKind.REMINDER, runId = prayer.id,
+                    )
+                }
+                "prayer"
+            }
+            is Reentry.Start -> {
+                val next = file.find(plan.item.protocolId)
+                val started = next?.let { fire(it, "reenter", plan.item.at, plan.item.slot?.let(::slotInfo)) }
+                updateDay { it.copy(handled = it.handled + (plan.item.key to if (started != null) "fired" else "skipped")) }
+                "started"
+            }
+            is Reentry.Next -> "next"
+            Reentry.Nothing -> "nothing"
+        }
+        log(
+            EntryType.REENTRY, protocol = r.protocol, run = r.id, reason = why, detail = line,
+            text = r.texts.values.filter { it.isNotBlank() }.joinToString(" / ").ifEmpty { null },
+        )
     }
 
     // ------------------------------------------------------------------ sleep and wake
@@ -1547,6 +2212,21 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
 
         /** Phases in which a run no longer holds its protocol against a new start. */
         private val REPLACEABLE = setOf(RunPhase.OPEN, RunPhase.REMINDER)
+
+        /** Runs a reset's re-entry drops: waiting, left unfinished after their lock, or unconfirmed reminders. */
+        private val DROPPED_AT_REENTRY = setOf(RunPhase.QUEUED, RunPhase.OPEN, RunPhase.REMINDER)
+
+        /** The journal's `prayer` for Jummah entries. */
+        const val JUMMAH_PRAYER = "jummah"
+
+        /** A promise's line is cut to this many characters (it must fit the takeover). */
+        const val MAX_PROMISE_CHARS = 120
+
+        /** The longest promise delay accepted. */
+        const val MAX_PROMISE_MIN = 240
+
+        const val OFFER_NOTICE = "offer"
+        const val JUMMAH_CARD_NOTICE = "jummah-card"
 
         fun headsUpNotice(prayer: Prayer) = "heads-up-${prayer.json}"
 

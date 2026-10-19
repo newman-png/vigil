@@ -1,5 +1,6 @@
 package dev.vigil.ui.test
 
+import android.content.Context
 import android.widget.Toast
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -21,9 +22,11 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import dev.vigil.Graph
 import dev.vigil.core.journal.Entry
+import dev.vigil.core.machine.JummahTestPart
 import dev.vigil.core.pool.PoolDecision
 import dev.vigil.core.pool.PoolText
 import dev.vigil.core.protocol.Protocol
+import dev.vigil.core.protocol.ProtocolKind
 import dev.vigil.engine.Device
 import dev.vigil.engine.Vigil
 import dev.vigil.trigger.TestAlarm
@@ -87,7 +90,29 @@ fun TestScreen() {
 
         Label("START NOW · ${file.protocols.size} PROTOCOLS")
         for (p in file.protocols) {
-            FireRow(p, status.stages[p.id] ?: 1) { Vigil.startManual(p.id) }
+            FireRow(p, status.stages[p.id] ?: 1) {
+                // A promise needs its line and minutes: a 1-minute TEST promise.
+                if (p.kind == ProtocolKind.PROMISE) testPromise(context) else Vigil.startManual(p.id)
+            }
+        }
+
+        if (file.protocols.any { it.kind == ProtocolKind.JUMMAH }) {
+            Spacer(Modifier.height(12.dp))
+            Label("JUMMAH · EACH PART NOW")
+            for ((label, part) in JUMMAH_PARTS) {
+                PixelButton(label, { Vigil.testJummah(part) }, Modifier.fillMaxWidth().padding(vertical = 4.dp))
+            }
+            PixelText(
+                "Each part as a TEST preview with the real screens. The lock turns Do Not Disturb on (LEAVE turns it off " +
+                    "at no cost); the card is a silent notification.",
+                Type.Small,
+            )
+        }
+        if (file.protocols.any { it.kind == ProtocolKind.PROMISE }) {
+            Spacer(Modifier.height(12.dp))
+            Label("10-MINUTE PROMISE")
+            PixelButton("1-MINUTE PROMISE", { testPromise(context) }, Modifier.fillMaxWidth())
+            PixelText("A TEST promise due in 1 minute: its full takeover, SNOOZE, ON IT and DONE.", Type.Small)
         }
 
         Spacer(Modifier.height(12.dp))
@@ -206,5 +231,19 @@ private fun PoolCheck(appLabel: (String) -> String) {
     }
     PixelText("A check only asks; it never opens the pool or starts a wait.", Type.Small)
 }
+
+/** A 1-minute TEST promise (it counts for nothing). */
+private fun testPromise(context: Context) {
+    val notMade = Vigil.promise("TEST: this is your line", 1, test = true)
+    Toast.makeText(context, notMade ?: "A TEST promise is due in 1 minute.", Toast.LENGTH_SHORT).show()
+}
+
+/** TEST > JUMMAH: its parts, in order. */
+private val JUMMAH_PARTS = listOf(
+    "LEAVE-BY" to JummahTestPart.LEAVE,
+    "I'M AT UNI" to JummahTestPart.ARRIVAL,
+    "CLASS-END CARD" to JummahTestPart.CARD,
+    "LOCK (DO NOT DISTURB)" to JummahTestPart.LOCK,
+)
 
 private const val RECENT = 30

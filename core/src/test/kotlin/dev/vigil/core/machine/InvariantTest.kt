@@ -32,7 +32,6 @@ class InvariantTest {
         testProtocol("meal", trigger = "slot:meal", kind = ProtocolKind.MEAL, lock = Lock(LockType.POOL, 20, null)),
         testProtocol("friends", trigger = "toggle:friends", kind = ProtocolKind.FRIENDS, lock = Lock(LockType.POOL)),
         testProtocol("free", trigger = "event:after:prayer-dhuhr", kind = ProtocolKind.ATTENTION, lock = Lock(LockType.SCREEN, 5, null)),
-        testProtocol("reset", trigger = "event:misses:2", lock = Lock(LockType.SCREEN, 10, 2)),
     )
     private val file = file0.copy(pool = file0.pool.copy(windows = listOf(dev.vigil.core.protocol.FreeWindowConfig("day", "05:00", "23:30", 60), dev.vigil.core.protocol.FreeWindowConfig("x", "12:00", "next", 20))))
     private val times = MyTimes(classes = listOf(Slot(listOf("tue", "fri"), "13:00", "14:30", label = "Analysis")))
@@ -111,6 +110,16 @@ class InvariantTest {
             val longest = Duration.ofMinutes(maxOf(file.pool.cooldownCapMin, file.pool.heavyUse.withinMin).toLong())
             if (Duration.between(now, it) > longest) broken("a cooldown longer than any rule allows")
         }
+        // Do Not Disturb only inside a running Jummah lock; asking only while active or open; one promise; an offer
+        // never for a protocol that is running.
+        s.runs.filter { it.jummah?.dnd == true }.forEach {
+            if (it.jummah?.part != dev.vigil.core.run.JummahPart.LOCK || it.phase != RunPhase.ACTIVE) broken("${it.id} keeps Do Not Disturb outside its lock")
+        }
+        if (Machine.dndWanted(s, env) != s.runs.any { it.jummah?.dnd == true && view.lockActive(it) }) broken("dndWanted disagrees")
+        s.runs.filter { it.asking }.forEach { if (it.phase != RunPhase.ACTIVE && it.phase != RunPhase.OPEN) broken("${it.id} asks in phase ${it.phase}") }
+        if (s.runs.count { it.promise != null } > 1) broken("two promises")
+        s.runs.filter { it.phase == RunPhase.WAITING }.forEach { if (it.promise == null) broken("${it.id} waits without a promise") }
+        s.offer?.let { o -> if (s.runs.any { it.protocol == o.protocol && !it.test }) broken("an offer for a running protocol") }
         val prayers = s.runs.filter { it.prayer != null && !it.test }.groupBy { it.prayer }
         if (prayers.values.any { it.size > 1 }) broken("two open runs for one prayer")
         Machine.nextWake(s, env)?.let { if (!it.isAfter(now)) broken("next wake $it is not after now") }
@@ -126,7 +135,7 @@ class InvariantTest {
         val runs = sim.state.runs
         val run = runs.takeIf { it.isNotEmpty() }?.get(rnd.nextInt(runs.size))
         val prayer = Prayer.entries[rnd.nextInt(Prayer.entries.size)]
-        return when (rnd.nextInt(30)) {
+        return when (rnd.nextInt(34)) {
             0, 1, 2, 3, 4, 5 -> Input.Tick
             6 -> Input.Adhan(prayer)
             7 -> Input.Manual(listOf("alpha", "timed", "sleep", "meal", "prayer-${prayer.json}")[rnd.nextInt(5)], test = rnd.nextInt(6) == 0)
@@ -155,6 +164,11 @@ class InvariantTest {
             26 -> if (rnd.nextInt(5) == 0) Input.Suspend(5 + rnd.nextInt(55)) else Input.Resume
             27 -> Input.Alarm(sim.now.minusSeconds(rnd.nextInt(300).toLong()))
             28 -> if (rnd.nextInt(10) == 0) Input.EditMyTimes(MyTimes(bedtimeGoal = "23:30")) else Input.Tick
+            // The reset, its offer, the promise and the Jummah tests (Jummah itself runs on the Fridays of the walk).
+            29 -> if (rnd.nextBoolean()) Input.AnswerOffer(rnd.nextBoolean()) else Input.Manual("reset", test = rnd.nextInt(4) == 0)
+            30 -> Input.Promise("Call the dentist", listOf(5, 10, 15, 30)[rnd.nextInt(4)], test = rnd.nextInt(5) == 0)
+            31 -> if (run != null) (if (rnd.nextBoolean()) Input.Snooze(run.id) else Input.Dismiss(run.id)) else Input.Tick
+            32 -> if (rnd.nextInt(4) == 0) Input.TestJummah(JummahTestPart.entries[rnd.nextInt(JummahTestPart.entries.size)]) else Input.Tick
             else -> Input.Tick
         }
     }

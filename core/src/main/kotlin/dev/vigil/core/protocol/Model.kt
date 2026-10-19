@@ -228,6 +228,14 @@ data class Step(
     @SerialName("skip_on_class_days") val skipOnClassDays: Boolean = false,
     /** The takeover offers the WHITE NOISE switch on this step (wind-down: lights low). */
     @SerialName("noise_toggle") val noiseToggle: Boolean = false,
+    /** text: may be left empty (SKIP); the reset's "name it". */
+    val optional: Boolean = false,
+    /** Reset protocols, last step: finishing it re-enters the day (missed runs dropped, the next protocol starts). */
+    val reenter: Boolean = false,
+    /** Finishing this step switches the walking switch on (Jummah: leaving for uni). */
+    @SerialName("walking_on") val walkingOn: Boolean = false,
+    /** Jummah: the I'M AT UNI step. Steps before it are the leave-by takeover, steps after it the Jummah lock. */
+    val arrival: Boolean = false,
 )
 
 /** Step types: what a step asks for and when it is finished. */
@@ -361,8 +369,8 @@ enum class ProtocolKind(val json: String, val ladder: Set<Version>, val params: 
             "arrive_repeat_min" to ParamSpec.IntRange(1, 60, 10),
             "card_before_end_min" to ParamSpec.IntRange(0, 60, 5),
             "lock_before_min" to ParamSpec.IntRange(0, 60, 5),
-            "lock_min" to ParamSpec.IntRange(1, 180, 45),
             "missed_after_min" to ParamSpec.IntRange(0, 240, 50),
+            "prep_todos" to ParamSpec.TextList,
         ),
     ),
     @SerialName("study") STUDY(
@@ -410,7 +418,7 @@ enum class ProtocolKind(val json: String, val ladder: Set<Version>, val params: 
         "promise", emptySet(),
         mapOf("delays" to ParamSpec.IntList(1, 240), "snooze_min_min" to ParamSpec.IntRange(1, 60, 2)),
     ),
-    @SerialName("reset") RESET("reset", ALL_LADDER, emptyMap()),
+    @SerialName("reset") RESET("reset", ALL_LADDER, mapOf("next_within_min" to ParamSpec.IntRange(0, 240, 60))),
     ;
 
     companion object {

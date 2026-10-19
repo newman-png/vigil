@@ -42,9 +42,28 @@ data class DayState(
     val woke: Instant? = null,
     /** Tonight's wind-down was left early (LEAVE): the night counts as missed for sleep shifting. */
     @SerialName("sleep_bailed") val sleepBailed: Boolean = false,
+    /** Today's Jummah: [JUMMAH_CONFIRMED] or [JUMMAH_MISSED] (a missed one lets Dhuhr run); null before either. */
+    val jummah: String? = null,
 ) {
     val date: LocalDate get() = LocalDate.parse(key)
+
+    companion object {
+        const val JUMMAH_CONFIRMED = "confirmed"
+        const val JUMMAH_MISSED = "missed"
+    }
 }
+
+/**
+ * A protocol offered instead of forced (design M5: the reset after missed or bailed protocols in a row, or a missed
+ * Jummah): a full-intensity card with START and NOT NOW, until answered or the day ends.
+ */
+@Serializable
+data class Offer(
+    val protocol: String,
+    val at: Instant,
+    /** Why: misses:<n> or jummah_missed. */
+    val reason: String,
+)
 
 /** What the prayer rules remember across days. */
 @Serializable
@@ -137,6 +156,8 @@ data class MachineState(
     @SerialName("wake_alarm") val wakeAlarm: WakeAlarmState = WakeAlarmState(),
     /** To-dos by day key: written in a wind-down for the next day, gone when that day ends. */
     val todos: Map<String, List<Todo>> = emptyMap(),
+    /** The protocol offered now (the reset), or null. */
+    val offer: Offer? = null,
 ) {
     /**
      * The state as JSON. Nulls are written out: a field whose default is not null (a pool session's `inSince`) would

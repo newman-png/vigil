@@ -24,6 +24,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import dev.vigil.Graph
+import dev.vigil.engine.Dnd
 import dev.vigil.engine.Vigil
 import dev.vigil.guard.Guard
 import dev.vigil.trigger.AdhanListener
@@ -260,5 +261,12 @@ private fun baseItems(context: Context, requestNotifications: () -> Unit): List<
             TriggerSetup.exactAlarms(context),
             "OPEN",
         ) { open(Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM, packageUri)) },
+        SetupItem(
+            "DO NOT DISTURB ACCESS",
+            "Jummah silences the phone: Do Not Disturb (priority only) for the Jummah lock, and back as it was after. " +
+                "Turn on VIGIL under Do Not Disturb access. Without it the lock still shows, but the phone can ring.",
+            Dnd.hasAccess(context),
+            "OPEN",
+        ) { open(Dnd.accessIntent()) },
     )
 }

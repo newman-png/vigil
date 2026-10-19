@@ -33,6 +33,8 @@ import dev.vigil.Graph
 import dev.vigil.core.machine.HomeStatus
 import dev.vigil.core.protocol.LockType
 import dev.vigil.core.protocol.Prayer
+import dev.vigil.core.protocol.ToggleName
+import dev.vigil.core.run.JummahPart
 import dev.vigil.core.run.Run
 import dev.vigil.core.run.RunPhase
 import dev.vigil.core.timeline.StartSource
@@ -42,9 +44,11 @@ import dev.vigil.data.ReportExporter
 import dev.vigil.engine.Vigil
 import dev.vigil.guard.GuardScreens
 import dev.vigil.ui.Format
+import dev.vigil.ui.components.ChoiceChips
 import dev.vigil.ui.components.Label
 import dev.vigil.ui.components.PixelButton
 import dev.vigil.ui.components.PixelText
+import dev.vigil.ui.components.TextInput
 import dev.vigil.ui.components.TierPips
 import dev.vigil.ui.components.stagePips
 import dev.vigil.ui.components.tap
@@ -53,6 +57,7 @@ import dev.vigil.ui.setup.missingPermissions
 import dev.vigil.ui.theme.Palette
 import dev.vigil.ui.theme.Type
 import kotlinx.coroutines.delay
+import java.time.Duration
 import java.time.Instant
 import java.time.ZoneId
 
@@ -67,15 +72,17 @@ class HomeActions(
 
 /**
  * HOME: the day, the pool, the flags, tonight's bedtime and the next wake alarm, a red line while a protocol (or the
- * night lock) owns the screen, a running morning to open, today's to-dos with tick boxes, prayers waiting for CONFIRM
- * and today's timeline (with when each protocol last fired); then QUIET, GOING TO SLEEP (CONFIRM ISHA first when Isha
- * is still open), MY TIMES, SETUP, TEST and EXPORT.
+ * night lock) owns the screen, the reset offer (START RESET / NOT NOW), LATER and RESET, the running promise and
+ * today's Jummah, a running morning to open, today's to-dos with tick boxes, prayers waiting for CONFIRM and today's
+ * timeline (with when each protocol last fired); then QUIET, GOING TO SLEEP (CONFIRM ISHA first when Isha is still
+ * open), MY TIMES, SETUP, TEST and EXPORT.
  * Everything shown comes from the engine ([Vigil.status], [Vigil.timeline]); nothing is decided here.
  *
- * [refreshKey] changes on every resume, so the permission count is re-read after a visit to system settings.
+ * [refreshKey] changes on every resume, so the permission count is re-read after a visit to system settings;
+ * [laterRequest] changes when the always-on notification's LATER opened VIGIL, which opens the LATER sheet.
  */
 @Composable
-fun HomeScreen(refreshKey: Int, actions: HomeActions) {
+fun HomeScreen(refreshKey: Int, laterRequest: Int, actions: HomeActions) {
     val context = LocalContext.current
     val state by Vigil.state.collectAsState()
     // Minutes left, windows opening and planned starts going by change with the clock alone.
@@ -90,6 +97,18 @@ fun HomeScreen(refreshKey: Int, actions: HomeActions) {
     var lastTapMs by remember { mutableLongStateOf(0L) }
     var exporting by remember { mutableStateOf(false) }
     var askIsha by remember { mutableStateOf(false) }
+    var laterOpen by remember { mutableStateOf(false) }
+    LaunchedEffect(laterRequest) {
+        if (laterRequest > 0) laterOpen = true
+    }
+    // RESET takes the screen and leaving it early costs like any bail-out: the first tap only asks for a second one.
+    var resetArmed by remember { mutableStateOf(false) }
+    LaunchedEffect(resetArmed) {
+        if (resetArmed) {
+            delay(RESET_ARM_MS)
+            resetArmed = false
+        }
+    }
 
     /** GOING TO SLEEP for real ([ishaPrayed]: the answer to CONFIRM ISHA), and what happened. */
     fun sleepNow(ishaPrayed: Boolean) {
@@ -132,6 +151,7 @@ fun HomeScreen(refreshKey: Int, actions: HomeActions) {
             if (status.callActive) add("IN A CALL · TIMERS PAUSED")
             if (status.walking) add("WALKING")
             if (status.friends) add("WITH FRIENDS")
+            if (status.dndOn) add("PHONE SILENT (JUMMAH)")
         }
         if (flags.isNotEmpty()) PixelText(flags.joinToString(" · "), Type.Label, color = Palette.White)
         prayersLine(status)?.let { PixelText(it, Type.Label) }
@@ -151,8 +171,65 @@ fun HomeScreen(refreshKey: Int, actions: HomeActions) {
         status.nightLockUntil?.let {
             PixelText("THE NIGHT LOCK ENDS WHEN YOU ANSWER THE ALARM, ${Format.clock(it, zone)} AT THE LATEST", Type.Label)
         }
-        // A run without a screen lock (the morning): its takeover opens from here, like from its notification.
-        val others = status.runs.filter { it.id != owner?.id && (it.phase == RunPhase.ACTIVE || it.phase == RunPhase.QUEUED) }
+
+        // The reset offered after missed or left protocols in a row (or a missed Jummah): START or NOT NOW.
+        status.offer?.let { offer ->
+            Spacer(Modifier.height(12.dp))
+            val title = Vigil.file().find(offer.protocol)?.title?.uppercase() ?: "RESET"
+            val why = if (offer.reason == "jummah_missed") "JUMMAH WAS MISSED" else "${offer.reason.removePrefix("misses:")} MISSED OR LEFT IN A ROW"
+            PixelText("$title? $why. ABOUT 15 MIN, NO PENALTY.", Type.Body, color = Palette.Red)
+            Spacer(Modifier.height(8.dp))
+            Row(Modifier.fillMaxWidth()) {
+                PixelButton("START $title", { Vigil.answerOffer(start = true) }, Modifier.weight(1f))
+                Spacer(Modifier.width(8.dp))
+                PixelButton("NOT NOW", { Vigil.answerOffer(start = false) }, Modifier.weight(1f), color = Palette.Dim)
+            }
+        }
+
+        // LATER (a 10-minute promise) and RESET, always in reach.
+        val promiseOn = status.promiseDelays.isNotEmpty()
+        if (promiseOn || status.resetProtocol != null) {
+            Spacer(Modifier.height(12.dp))
+            Row(Modifier.fillMaxWidth()) {
+                if (promiseOn) {
+                    PixelButton(if (laterOpen) "CLOSE" else "LATER", { laterOpen = !laterOpen }, Modifier.weight(1f))
+                }
+                if (promiseOn && status.resetProtocol != null) Spacer(Modifier.width(8.dp))
+                if (status.resetProtocol != null) {
+                    PixelButton(
+                        if (resetArmed) "TAP AGAIN" else "RESET",
+                        {
+                            if (!resetArmed) {
+                                resetArmed = true
+                            } else {
+                                resetArmed = false
+                                Vigil.startReset()?.let { Toast.makeText(context, it, Toast.LENGTH_LONG).show() }
+                            }
+                        },
+                        Modifier.weight(1f),
+                    )
+                }
+            }
+        }
+        if (resetArmed) PixelText("RESET: ABOUT 15 MIN WITH THE SCREEN LOCKED. TAP AGAIN TO START.", Type.Label, color = Palette.White)
+        if (laterOpen && promiseOn) {
+            LaterSheet(
+                delays = status.promiseDelays,
+                running = status.promise != null,
+                onStart = { text, minutes ->
+                    val notMade = Vigil.promise(text, minutes)
+                    laterOpen = notMade != null
+                    Toast.makeText(context, notMade ?: "Promised: in $minutes min.", Toast.LENGTH_SHORT).show()
+                },
+            )
+        }
+        status.promise?.let { PromiseRow(it, nowAt, zone) }
+        status.jummah?.let { JummahRow(it, zone) }
+        // A run without a screen lock (the morning): its takeover opens from here, like from its notification. The
+        // promise has its own row above.
+        val others = status.runs.filter {
+            it.id != owner?.id && it.promise == null && (it.phase == RunPhase.ACTIVE || it.phase == RunPhase.QUEUED)
+        }
         for (r in others) {
             val openable = r.phase == RunPhase.ACTIVE && r.lock != LockType.SCREEN
             val step = if (openable) Vigil.stepView(r.id)?.let { " · STEP ${it.index + 1}/${it.total}" } ?: "" else ""
@@ -201,6 +278,10 @@ fun HomeScreen(refreshKey: Int, actions: HomeActions) {
             hintColor = if (status.quiet) Palette.White else Palette.Dim,
             onClick = { Vigil.setQuiet(!status.quiet) },
         )
+        // Walking is switched on by Jummah's leave-by (it blocks the pool on the way): here it can be ended by hand.
+        if (status.walking) {
+            Item("WALKING", hint = "ON · TAP TO END", hintColor = Palette.White, onClick = { Vigil.setToggle(ToggleName.WALKING, false) })
+        }
         HoldItem(
             "GOING TO SLEEP",
             hint = if (status.sleepTapIgnored != null) "NOT BEFORE TODAY'S WAKE TIME" else "HOLD 2 S · ENDS THE DAY",
@@ -286,11 +367,12 @@ private fun sleepLine(status: HomeStatus, zone: ZoneId): String? {
     return parts.takeIf { it.isNotEmpty() }?.joinToString(" · ")
 }
 
-/** PRAYED FAJR, DHUHR · MISSED ASR, or null before anything happened today. */
+/** PRAYED FAJR, DHUHR · MISSED ASR · JUMMAH PRAYED, or null before anything happened today. */
 private fun prayersLine(status: HomeStatus): String? {
     val parts = buildList {
         if (status.confirmedToday.isNotEmpty()) add("PRAYED " + status.confirmedToday.joinToString(", ") { it.title })
         if (status.missedToday.isNotEmpty()) add("MISSED " + status.missedToday.joinToString(", ") { it.title })
+        status.jummahToday?.let { add("JUMMAH ${it.uppercase()}") }
     }
     return parts.takeIf { it.isNotEmpty() }?.joinToString(" · ")
 }
@@ -323,6 +405,80 @@ private fun OpenRow(r: Run, status: HomeStatus, zone: ZoneId) {
         }
         Spacer(Modifier.width(12.dp))
         PixelButton(if (r.prayer != null) "CONFIRM" else "DONE", { Vigil.confirm(r.id) })
+    }
+}
+
+/**
+ * LATER: one line of what you will do, and in how many minutes ([delays], from the promise protocol). At the time a
+ * full takeover holds you to it. One promise at a time ([running]).
+ */
+@Composable
+private fun LaterSheet(delays: List<Int>, running: Boolean, onStart: (String, Int) -> Unit) {
+    var text by remember { mutableStateOf("") }
+    var minutes by remember { mutableIntStateOf(delays.firstOrNull { it == 10 } ?: delays.first()) }
+    Spacer(Modifier.height(12.dp))
+    Label("I'LL DO IT IN...")
+    if (running) {
+        PixelText("A PROMISE IS ALREADY RUNNING. ONE AT A TIME.", Type.Label, color = Palette.White)
+        return
+    }
+    TextInput(text, { text = it.replace('\n', ' ') }, placeholder = "What will you do?")
+    Spacer(Modifier.height(8.dp))
+    ChoiceChips(
+        options = delays.map { "$it MIN" },
+        selected = "$minutes MIN",
+        onSelect = { choice -> choice.removeSuffix(" MIN").toIntOrNull()?.let { minutes = it } },
+    )
+    Spacer(Modifier.height(8.dp))
+    PixelButton("START", { onStart(text.trim(), minutes) }, Modifier.fillMaxWidth(), enabled = text.isNotBlank())
+}
+
+/** The running promise: its line, when it is due (or that the pool is locked until DONE), and DONE. */
+@Composable
+private fun PromiseRow(r: Run, now: Instant, zone: ZoneId) {
+    val promise = r.promise ?: return
+    Spacer(Modifier.height(12.dp))
+    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            PixelText((if (r.test) "PROMISE (TEST): " else "PROMISE: ") + promise.text, Type.Body)
+            val left = (Duration.between(now, promise.dueAt).seconds + 59).coerceAtLeast(0) / 60
+            val line = if (r.phase == RunPhase.WAITING) {
+                "AT ${Format.clock(promise.dueAt, zone)} · IN $left MIN" + if (promise.snoozed) " · SNOOZED" else ""
+            } else {
+                "NOW · THE POOL IS LOCKED UNTIL DONE"
+            }
+            PixelText(line, Type.Label, color = if (r.phase == RunPhase.WAITING) Palette.Dim else Palette.Red)
+        }
+        Spacer(Modifier.width(12.dp))
+        PixelButton("DONE", { Vigil.confirm(r.id) })
+    }
+}
+
+/** Today's Jummah: its times and where it is, with I'M AT UNI on the way and CONFIRM after the lock. */
+@Composable
+private fun JummahRow(r: Run, zone: ZoneId) {
+    val j = r.jummah ?: return
+    Spacer(Modifier.height(12.dp))
+    Row(Modifier.fillMaxWidth().padding(vertical = 6.dp), verticalAlignment = Alignment.CenterVertically) {
+        Column(Modifier.weight(1f)) {
+            PixelText("JUMMAH ${Format.clock(j.jummahAt, zone)}", Type.Body)
+            val where = when (j.part) {
+                JummahPart.LEAVE -> "LEAVE BY ${Format.clock(j.leaveAt, zone)}"
+                JummahPart.TRAVEL -> if (j.arrived) "AT UNI" else "ON THE WAY · AT UNI BY ${Format.clock(j.arriveAt, zone)}"
+                JummahPart.LOCK -> "THE JUMMAH LOCK"
+                JummahPart.CONFIRM -> "NOT CONFIRMED · UNTIL ${Format.clock(j.missedAt, zone)}"
+            }
+            PixelText("$where · SILENT FROM ${Format.clock(j.lockAt, zone)}", Type.Label)
+        }
+        val button = when {
+            j.part == JummahPart.CONFIRM -> "CONFIRM"
+            !j.arrived && (j.part == JummahPart.LEAVE || j.part == JummahPart.TRAVEL) -> "I'M AT UNI"
+            else -> null
+        }
+        if (button != null) {
+            Spacer(Modifier.width(12.dp))
+            PixelButton(button, { Vigil.confirm(r.id) })
+        }
     }
 }
 
@@ -421,3 +577,6 @@ private fun Line() {
 }
 
 private const val TAP_GAP_MS = 1_500L
+
+/** How long RESET waits for its second tap. */
+private const val RESET_ARM_MS = 4_000L

@@ -20,6 +20,7 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
+import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -51,6 +52,7 @@ import dev.vigil.core.protocol.Protocol
 import dev.vigil.core.protocol.Step
 import dev.vigil.core.protocol.StepType
 import dev.vigil.core.protocol.TakeoverConfig
+import dev.vigil.core.run.JummahPart
 import dev.vigil.core.run.Run
 import dev.vigil.core.run.RunPhase
 import dev.vigil.engine.WhitelistApp
@@ -87,6 +89,15 @@ internal interface TakeoverCallbacks {
 
     /** LEAVE was held to the end: the run is left early (logged, the pool penalty follows). */
     fun bailOut(runId: String)
+
+    /** ON IT (a promise: the pool lock stays) or NOT YET (I'M AT UNI: it asks again later): the asking takeover closes. */
+    fun dismiss(runId: String)
+
+    /** SNOOZE on a promise that came due. */
+    fun snooze(runId: String)
+
+    /** The minutes SNOOZE gives promise [runId] now, or null when no snooze is offered. */
+    fun snoozeMinutes(runId: String): Int?
 
     /**
      * The wind-down's GOING TO SLEEP step, after CONFIRM ISHA was answered: the day ends ([ishaPrayed]: Isha was prayed,
@@ -173,6 +184,10 @@ private fun timingFor(tier: Int): Timing = when {
  * full then subtle turns subtle after [TakeoverConfig.fullSeconds]. Both count from [shownSinceMs] (elapsed realtime),
  * when this takeover first appeared. Silence (QUIET) is the activity's business: it builds [fx] silent or mutes it.
  *
+ * A promise that came due shows exactly its line with DONE, SNOOZE (once) and ON IT instead of its step; Jummah's
+ * I'M AT UNI step also offers NOT YET, and its lock says until when the phone is silent; a reset's last step says what
+ * re-entering does. Jummah and the promise have no shorter version: NOT OKAY only says so.
+ *
  * [initial] is the run as it was when this takeover appeared; [live] is the same run as the engine has it now while
  * it owns the screen, or null once it does not. [steps] are [live]'s steps (its version on its weekday); [todo] is a
  * line under them (the morning: today's first to-do). The wind-down's GOING TO SLEEP step with Isha still open asks
@@ -187,6 +202,7 @@ internal fun TakeoverScreen(
     initial: Run,
     live: Run?,
     protocol: Protocol?,
+    intensity: Intensity,
     steps: List<Step>,
     todo: String?,
     penaltyToday: Int,
@@ -198,7 +214,6 @@ internal fun TakeoverScreen(
     callbacks: TakeoverCallbacks,
 ) {
     val id = initial.id
-    val intensity = protocol?.intensity ?: Intensity.FULL_THEN_SUBTLE
     val tier = tierFor(intensity)
     val timing = remember(tier) { timingFor(tier) }
     val openFrames = integerResource(R.integer.eye_open_frames)
@@ -328,8 +343,31 @@ internal fun TakeoverScreen(
     fun notOkay() {
         val r = currentLive ?: return
         if (ended) return
+        // Jummah and the promise: nothing changes, and the screen says so.
+        if (!canStepDown(r, protocol)) {
+            note = NO_STEP_DOWN_NOTE
+            return
+        }
         cb.notOkay(r.id)
         view = cb.stepView(r.id)
+    }
+
+    /** NOT YET (I'M AT UNI), ON IT or SNOOZE (a promise): the takeover closes with [text]; the run goes on. */
+    fun closeAsking(text: String, act: (String) -> Unit) {
+        val r = currentLive ?: return
+        if (ended) return
+        ended = true
+        act(r.id)
+        fx.dismissed()
+        closeWith(text, FAREWELL_MS)
+    }
+
+    /** DONE on a promise that came due: kept (the eye fills and closes as for any finished run). */
+    fun promiseDone() {
+        val r = currentLive ?: return
+        if (ended) return
+        fx.confirmStep()
+        cb.confirm(r.id)
     }
 
     fun leave() {
@@ -344,9 +382,14 @@ internal fun TakeoverScreen(
     }
 
     val current = view
+    // A reset's re-enter step as last shown: once it is done, its line (what comes next) is the goodbye.
+    val reentry = remember { arrayOfNulls<String>(1) }
+    current?.reentry?.let { reentry[0] = it }
     val holdable = current != null && current.canTap && current.step.type != StepType.TEXT
+    // A promise is answered with its own words (DONE, SNOOZE, ON IT), never by holding.
     val canHold by rememberUpdatedState(
-        phase == Phase.STEP && stepVisible && holdable && !checklist && !ended && !appsOpen && !askIsha && live != null,
+        phase == Phase.STEP && stepVisible && holdable && !checklist && !ended && !appsOpen && !askIsha && live != null &&
+            run.promise == null,
     )
     val onConfirm by rememberUpdatedState({ confirmHeld() })
 
@@ -548,6 +591,10 @@ internal fun TakeoverScreen(
         }
         val text = ending?.let { endText(it) }
         when {
+            ending?.type == EntryType.COMPLETED && reentry[0] != null -> {
+                fx.completed()
+                closeWith(reentry[0] ?: "", FAREWELL_MS)
+            }
             ending?.type == EntryType.COMPLETED -> {
                 fx.completed()
                 filledUp = true
@@ -678,7 +725,17 @@ internal fun TakeoverScreen(
                                 else -> Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                                     TakeoverText(if (run.test) "$title · TEST" else title, TakeoverType.Small)
                                     Spacer(Modifier.height(20.dp))
-                                    if (checklist) {
+                                    val promise = run.promise
+                                    if (promise != null) {
+                                        val snooze = cb.snoozeMinutes(run.id)
+                                        PromiseQuestion(
+                                            line = promise.text,
+                                            snoozeMinutes = snooze,
+                                            onDone = { promiseDone() },
+                                            onSnooze = { closeAsking("SNOOZED FOR ${snooze ?: 0} MIN.") { cb.snooze(it) } },
+                                            onOnIt = { closeAsking("ON IT.\nTHE POOL STAYS LOCKED UNTIL DONE.") { cb.dismiss(it) } },
+                                        )
+                                    } else if (checklist) {
                                         Checklist(
                                             steps = steps,
                                             current = current?.index ?: run.step,
@@ -692,6 +749,23 @@ internal fun TakeoverScreen(
                                             nowSec = { nowSec },
                                             onTyping = { cb.typing() },
                                             onSave = { text -> finishStep(current.index, StepType.TEXT, text) },
+                                        )
+                                        // I'M AT UNI is asked again later: NOT YET closes it until then.
+                                        if (current.arrival && run.asking) {
+                                            Spacer(Modifier.height(12.dp))
+                                            val repeat = protocol?.intParam("arrive_repeat_min") ?: 10
+                                            QuestionChoice("NOT YET", TakeoverType.Dim) {
+                                                closeAsking("NOT YET.\nIT ASKS AGAIN IN $repeat MIN.") { cb.dismiss(it) }
+                                            }
+                                        }
+                                    }
+                                    // The Jummah lock: until when the phone is silent.
+                                    val silentUntil = current?.lockEndsAt?.takeIf { run.jummah?.part == JummahPart.LOCK }
+                                    if (silentUntil != null) {
+                                        Spacer(Modifier.height(20.dp))
+                                        TakeoverText(
+                                            "SILENT UNTIL ${WallClock.hhmm(silentUntil, ZoneId.systemDefault())} · ${countdown(secondsUntil(silentUntil, nowSec))}",
+                                            TakeoverType.Small,
                                         )
                                     }
                                     val version = versionLine(run, protocol)
@@ -723,8 +797,10 @@ internal fun TakeoverScreen(
             }
             SafetyStrip(
                 holds = holds,
-                stepDown = canStepDown(run, protocol),
+                stepDown = canStepDown(run, protocol) || saysNoStepDown(run),
                 apps = !ended,
+                // The I'M AT UNI ask locks nothing: NOT YET closes it.
+                leave = !(run.jummah != null && run.asking),
                 onCall = { cb.call() },
                 onApps = { appsOpen = true },
                 onNotOkay = { notOkay() },
@@ -751,6 +827,21 @@ internal fun TakeoverScreen(
                 onClose = { appsOpen = false },
             )
         }
+    }
+}
+
+/**
+ * A promise that came due: exactly the line the user typed (as typed), then DONE, SNOOZE [snoozeMinutes] MIN (only
+ * when offered) and ON IT.
+ */
+@Composable
+private fun PromiseQuestion(line: String, snoozeMinutes: Int?, onDone: () -> Unit, onSnooze: () -> Unit, onOnIt: () -> Unit) {
+    Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
+        BasicText(line, style = TakeoverType.Title)
+        Spacer(Modifier.height(32.dp))
+        QuestionChoice("DONE", Palette.White, onDone)
+        if (snoozeMinutes != null) QuestionChoice("SNOOZE $snoozeMinutes MIN", TakeoverType.Dim, onSnooze)
+        QuestionChoice("ON IT", TakeoverType.Dim, onOnIt)
     }
 }
 
@@ -797,6 +888,9 @@ private fun QuestionChoice(label: String, color: Color, onTap: () -> Unit) {
 /** The small line under the title, when there is something to say before the steps. */
 private fun lineBelowTitle(run: Run): String? = when {
     run.test -> "TEST RUN: NOTHING COUNTS"
+    run.jummah?.part == JummahPart.LOCK -> "THE PHONE IS SILENT"
+    run.jummah?.part == JummahPart.TRAVEL -> "ARE YOU AT UNI?"
+    run.promise != null -> "YOU SAID YOU WOULD"
     run.phase == RunPhase.RETURNED -> run.windowEndsAt
         ?.let { "NOT CONFIRMED. THE WINDOW CLOSES AT ${WallClock.hhmm(it, ZoneId.systemDefault())}" }
         ?: "NOT CONFIRMED YET"

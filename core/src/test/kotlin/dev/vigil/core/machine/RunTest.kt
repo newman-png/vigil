@@ -232,7 +232,7 @@ class RunTest {
 
     @Test
     fun kindsWithoutALadderIgnoreNotOkay() {
-        val p = testProtocol("j", kind = ProtocolKind.JUMMAH)
+        val p = testProtocol("j", kind = ProtocolKind.WALK)
         val sim = Sim(file = fileWith(p))
         sim.step(Input.Manual("j"))
         sim.step(Input.NotOkay(sim.runId("j")))
@@ -406,17 +406,20 @@ class RunTest {
     }
 
     @Test
-    fun missesInARowStartTheResetOffer() {
-        val reset = testProtocol("reset", trigger = "event:misses:2")
-        val sim = Sim(file = fileWith(a, reset))
+    fun missesInARowOfferTheReset() {
+        // The bundled reset (event:misses:2) is offered, not started.
+        val sim = Sim(file = fileWith(a))
+        sim.step(Input.Manual("alpha"))
+        sim.step(Input.BailOut(sim.runId("alpha")))
+        assertNull(sim.state.offer)
         sim.step(Input.Manual("alpha"))
         sim.step(Input.BailOut(sim.runId("alpha")))
         assertNull(sim.run("reset"))
-        sim.step(Input.Manual("alpha"))
-        sim.step(Input.BailOut(sim.runId("alpha")))
-        assertNotNull(sim.run("reset"))
-        assertEquals("misses:2", sim.of(EntryType.FIRED).last().reason)
+        assertEquals(Offer("reset", sim.now, "misses:2"), sim.state.offer)
         assertEquals(0, sim.state.missesInARow)
+        sim.step(Input.AnswerOffer(start = true))
+        assertNotNull(sim.run("reset"))
+        assertEquals("offer", sim.of(EntryType.FIRED).last().reason)
     }
 
     @Test

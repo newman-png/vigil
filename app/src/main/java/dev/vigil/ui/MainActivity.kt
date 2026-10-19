@@ -1,6 +1,7 @@
 package dev.vigil.ui
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.net.Uri
@@ -63,6 +64,9 @@ class MainActivity : ComponentActivity() {
 
     private var screen by mutableStateOf(Screen.HOME)
 
+    /** Bumped when LATER on the always-on notification opened VIGIL: HOME opens its LATER sheet. */
+    private var laterRequest by mutableIntStateOf(0)
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         // The app is always black, so the system bars always use light icons.
@@ -73,6 +77,7 @@ class MainActivity : ComponentActivity() {
             saved != null -> Screen.entries.firstOrNull { it.key == saved } ?: Screen.HOME
             else -> Screen.HOME
         }
+        if (savedInstanceState == null) openLaterIfAsked(intent)
         setContent { App() }
     }
 
@@ -81,6 +86,14 @@ class MainActivity : ComponentActivity() {
         setIntent(intent)
         // Opening VIGIL again from the launcher starts on HOME, like a fresh start.
         if (intent.action == Intent.ACTION_MAIN && Graph.settings.setupDone) screen = Screen.HOME
+        openLaterIfAsked(intent)
+    }
+
+    /** LATER on the always-on notification: HOME with its LATER sheet open. */
+    private fun openLaterIfAsked(intent: Intent?) {
+        if (intent?.getBooleanExtra(EXTRA_LATER, false) != true || !Graph.settings.setupDone) return
+        screen = Screen.HOME
+        laterRequest++
     }
 
     override fun onResume() {
@@ -144,6 +157,7 @@ class MainActivity : ComponentActivity() {
                         when (screen) {
                             Screen.HOME -> HomeScreen(
                                 refreshKey = resumeTick,
+                                laterRequest = laterRequest,
                                 actions = HomeActions(
                                     openMyTimes = { screen = Screen.MY_TIMES },
                                     openSetup = { screen = Screen.SETUP },
@@ -166,8 +180,13 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private companion object {
-        const val TAG = "Vigil"
-        const val KEY_SCREEN = "screen"
+    companion object {
+        private const val TAG = "Vigil"
+        private const val KEY_SCREEN = "screen"
+        private const val EXTRA_LATER = "later"
+
+        /** Opens HOME with its LATER sheet (a 10-minute promise): the always-on notification's LATER. */
+        fun laterIntent(context: Context): Intent =
+            Intent(context, MainActivity::class.java).putExtra(EXTRA_LATER, true).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
     }
 }

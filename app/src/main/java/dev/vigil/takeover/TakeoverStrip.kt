@@ -42,16 +42,18 @@ import kotlinx.coroutines.withContext
 
 /**
  * Always at the bottom, faint and small: CALL (a tap, always: the dialer), APPS (a tap: the whitelist's apps), NOT
- * OKAY (3 s hold, only when [stepDown]: it changes something) and LEAVE (10 s hold). The holds show only while
- * [holds]. A held word turns into a number counting down; [onLeaveHeld] reports while LEAVE is held, so the honest
- * line about its cost can show meanwhile. Each word keeps its place whether or not the others show; NOT OKAY gets
- * the widest share, so it stays on one line on a narrow phone.
+ * OKAY (3 s hold, only when [stepDown]: it changes something, or says that nothing does) and LEAVE (10 s hold, unless
+ * [leave] is false: there is nothing to leave). The holds show only while [holds]. A held word turns into a number
+ * counting down; [onLeaveHeld] reports while LEAVE is held, so the honest line about its cost can show meanwhile. Each
+ * word keeps its place whether or not the others show; NOT OKAY gets the widest share, so it stays on one line on a
+ * narrow phone.
  */
 @Composable
 internal fun SafetyStrip(
     holds: Boolean,
     stepDown: Boolean,
     apps: Boolean,
+    leave: Boolean = true,
     onCall: () -> Unit,
     onApps: () -> Unit,
     onNotOkay: () -> Unit,
@@ -69,7 +71,7 @@ internal fun SafetyStrip(
             if (holds && stepDown) HoldWord("NOT OKAY", NOT_OKAY_HOLD_MS, onNotOkay)
         }
         Box(Modifier.weight(1.1f), contentAlignment = Alignment.CenterEnd) {
-            if (holds) HoldWord("LEAVE", LEAVE_HOLD_MS, onLeave, onLeaveHeld)
+            if (holds && leave) HoldWord("LEAVE", LEAVE_HOLD_MS, onLeave, onLeaveHeld)
         }
     }
 }

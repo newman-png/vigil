@@ -14,15 +14,17 @@ import dev.vigil.alarm.WakeAlarmActivity
 import dev.vigil.alarm.WhiteNoiseStopReceiver
 import dev.vigil.core.machine.Effect
 import dev.vigil.core.machine.NotifyKind
+import dev.vigil.core.run.JummahPart
 import dev.vigil.core.run.RunPhase
 import dev.vigil.takeover.TakeoverActivity
 import dev.vigil.ui.MainActivity
 
 /**
- * Every notification VIGIL posts: the always-on one, the one behind a takeover, and the engine's notices
- * ([Effect.Notify]: heads-ups, class cards, CONFIRM prompts, stage-3 reminders, runs without a screen lock, window
- * warnings). Only a takeover that has just started and a stage-3 reminder or warning that is not silent may alert;
- * everything else is posted on low-importance channels, which never sound or light up a dark screen.
+ * Every notification VIGIL posts: the always-on one (QUIET, LATER), the one behind a takeover, and the engine's notices
+ * ([Effect.Notify]: heads-ups, class cards, CONFIRM and I'M AT UNI prompts, stage-3 reminders, runs without a screen
+ * lock, window warnings, the reset offer, promises). Only a takeover that has just started, a stage-3 reminder or warning
+ * that is not silent, and the reset offer may alert; everything else is posted on low-importance channels, which never
+ * sound or light up a dark screen.
  */
 object Notifications {
     private const val TAG = "VigilNotify"
@@ -34,6 +36,7 @@ object Notifications {
     const val CHANNEL_REMINDERS = "reminders"
     const val CHANNEL_ALARM = "wake_alarm"
     const val CHANNEL_NOISE = "white_noise"
+    const val CHANNEL_OFFER = "offers"
 
     /** v1 channels that no longer exist. */
     private val OLD_CHANNELS = listOf("plan")
@@ -87,6 +90,12 @@ object Notifications {
             },
         )
         nm.createNotificationChannel(
+            NotificationChannel(CHANNEL_OFFER, "Reset offer", NotificationManager.IMPORTANCE_HIGH).apply {
+                description = "The reset offered after missed protocols in a row (START or NOT NOW). Silent while QUIET is on."
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            },
+        )
+        nm.createNotificationChannel(
             NotificationChannel(CHANNEL_ALARM, "Wake alarm", NotificationManager.IMPORTANCE_HIGH).apply {
                 description = "Opens VIGIL's wake alarm. The alarm makes its own sound on the alarm stream."
                 setSound(null, null)
@@ -105,7 +114,7 @@ object Notifications {
         OLD_CHANNELS.forEach { runCatching { nm.deleteNotificationChannel(it) } }
     }
 
-    /** The always-on notification, with the QUIET switch. */
+    /** The always-on notification, with the QUIET switch and LATER (a 10-minute promise, from home's sheet). */
     fun service(context: Context, text: String, quiet: Boolean): Notification {
         val toggle = PendingIntent.getBroadcast(
             context, 2, Intent(context, QuietToggleReceiver::class.java),
@@ -116,6 +125,10 @@ object Notifications {
             if (quiet) "END QUIET" else "QUIET",
             toggle,
         ).build()
+        val later = PendingIntent.getActivity(
+            context, 5, MainActivity.laterIntent(context),
+            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+        )
         return Notification.Builder(context, CHANNEL_SERVICE)
             .setSmallIcon(R.drawable.ic_stat_eye)
             .setContentTitle(if (quiet) "VIGIL · QUIET" else "VIGIL")
@@ -124,6 +137,7 @@ object Notifications {
             .setShowWhen(false)
             .setContentIntent(openApp(context))
             .addAction(action)
+            .addAction(Notification.Action.Builder(Icon.createWithResource(context, R.drawable.ic_stat_eye), "LATER", later).build())
             .build()
     }
 
@@ -191,6 +205,8 @@ object Notifications {
         val alerting = !notice.silent && (notice.kind == NotifyKind.REMINDER || notice.kind == NotifyKind.WARNING)
         val channel = when {
             notice.kind == NotifyKind.HEADS_UP -> CHANNEL_HEADS_UP
+            // The reset offer is a full-intensity card: it alerts (heads-up), unless QUIET is on.
+            notice.kind == NotifyKind.OFFER && !notice.silent -> CHANNEL_OFFER
             alerting -> CHANNEL_REMINDERS
             else -> CHANNEL_CARDS
         }
@@ -217,12 +233,31 @@ object Notifications {
                     builder.addAction(Notification.Action.Builder(Icon.createWithResource(context, R.drawable.ic_stat_eye), "OPEN", openRun(context, id)).build())
                 }
             }
+            // Jummah's "class ends in 5 minutes": nothing to answer.
+            NotifyKind.CARD -> builder.setCategory(Notification.CATEGORY_REMINDER)
+            NotifyKind.OFFER -> {
+                val title = Vigil.state.value.offer?.let { Vigil.file().find(it.protocol)?.title } ?: "RESET"
+                builder.setCategory(Notification.CATEGORY_REMINDER)
+                    .setAutoCancel(true)
+                    .addAction(Notification.Action.Builder(Icon.createWithResource(context, R.drawable.ic_stat_eye), "START ${title.uppercase()}", offerIntent(context, true)).build())
+                    .addAction(Notification.Action.Builder(Icon.createWithResource(context, R.drawable.ic_stat_eye), "NOT NOW", offerIntent(context, false)).build())
+            }
+            // A promise stays while it runs (its pool lock holds until DONE).
+            NotifyKind.PROMISE -> builder.setCategory(Notification.CATEGORY_REMINDER).setOngoing(true)
         }
         val runId = notice.runId
-        if (runId != null && notice.kind != NotifyKind.HEADS_UP && notice.kind != NotifyKind.RUN) {
-            // A prayer is confirmed; a stage-3 reminder is marked done. Both are Vigil.confirm.
-            val prayer = Vigil.state.value.runs.firstOrNull { it.id == runId }?.prayer != null
-            val label = if (prayer || notice.kind != NotifyKind.REMINDER) "CONFIRM" else "DONE"
+        val answerable = notice.kind != NotifyKind.HEADS_UP && notice.kind != NotifyKind.RUN && notice.kind != NotifyKind.CARD
+        if (runId != null && answerable) {
+            // Vigil.confirm for every one: a prayer or Jummah is confirmed, I'M AT UNI on the way to Jummah, a stage-3
+            // reminder or a promise is done.
+            val run = Vigil.state.value.runs.firstOrNull { it.id == runId }
+            val part = run?.jummah?.part
+            val label = when {
+                part == JummahPart.LEAVE || part == JummahPart.TRAVEL -> "I'M AT UNI"
+                notice.kind == NotifyKind.PROMISE -> "DONE"
+                run?.prayer != null || run?.jummah != null || notice.kind != NotifyKind.REMINDER -> "CONFIRM"
+                else -> "DONE"
+            }
             builder.addAction(
                 Notification.Action.Builder(Icon.createWithResource(context, R.drawable.ic_stat_eye), label, confirmIntent(context, runId)).build(),
             )
@@ -252,6 +287,14 @@ object Notifications {
         PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
     )
 
+    /** START ([start]) or NOT NOW on the reset offer. */
+    private fun offerIntent(context: Context, start: Boolean): PendingIntent = PendingIntent.getBroadcast(
+        context, if (start) 6 else 7,
+        Intent(context, NoticeActionReceiver::class.java)
+            .setAction(if (start) NoticeActionReceiver.ACTION_OFFER_START else NoticeActionReceiver.ACTION_OFFER_NOT_NOW),
+        PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
+    )
+
     /** Opens the takeover of run [runId] (one without a screen lock is shown only when asked for). */
     private fun openRun(context: Context, runId: String): PendingIntent = PendingIntent.getActivity(
         context, runId.hashCode(), TakeoverActivity.intent(context, runId),
@@ -265,20 +308,28 @@ object Notifications {
     )
 }
 
-/** CONFIRM (or DONE) on an engine notice: [Vigil.confirm] for its run. The engine removes the notice when it applies. */
+/**
+ * The buttons on engine notices: CONFIRM, DONE or I'M AT UNI ([Vigil.confirm] for its run), and START / NOT NOW on the
+ * reset offer. The engine removes the notice when it applies.
+ */
 class NoticeActionReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
-        val runId = intent.getStringExtra(EXTRA_RUN) ?: return
         // A failure here must not crash the process in the background; the button can simply be tapped again.
         try {
-            if (intent.action == ACTION_CONFIRM) Vigil.confirm(runId)
+            when (intent.action) {
+                ACTION_CONFIRM -> intent.getStringExtra(EXTRA_RUN)?.let { Vigil.confirm(it) }
+                ACTION_OFFER_START -> Vigil.answerOffer(start = true)
+                ACTION_OFFER_NOT_NOW -> Vigil.answerOffer(start = false)
+            }
         } catch (e: Exception) {
-            Log.e(TAG, "Confirming $runId failed", e)
+            Log.e(TAG, "Handling ${intent.action} failed", e)
         }
     }
 
     companion object {
         const val ACTION_CONFIRM = "dev.vigil.action.CONFIRM"
+        const val ACTION_OFFER_START = "dev.vigil.action.OFFER_START"
+        const val ACTION_OFFER_NOT_NOW = "dev.vigil.action.OFFER_NOT_NOW"
         const val EXTRA_RUN = "run"
         private const val TAG = "VigilNotice"
     }

@@ -66,7 +66,7 @@ class BundledProtocolsTest {
     @Test
     fun fivePrayersAsTheDesignSays() {
         assertEquals(
-            listOf("prayer-fajr", "morning", "prayer-dhuhr", "prayer-asr", "prayer-maghrib", "prayer-isha", "sleep"),
+            listOf("prayer-fajr", "morning", "prayer-dhuhr", "prayer-asr", "prayer-maghrib", "prayer-isha", "sleep", "jummah", "reset", "promise"),
             file.protocols.map { it.id },
         )
         assertEquals(Prayer.entries.map { "prayer-${it.json}" }, file.protocols.filter { it.kind == ProtocolKind.PRAYER }.map { it.id })
@@ -145,5 +145,64 @@ class BundledProtocolsTest {
         assertEquals(10, p.intParam("ring_max_min"))
         assertEquals(5, p.intParam("snooze_min"))
         assertEquals(3, p.intParam("max_rings"))
+    }
+
+    @Test
+    fun jummahAsTheSpecSays() {
+        val p = file.find("jummah")!!
+        assertEquals(ProtocolKind.JUMMAH, p.kind)
+        assertEquals(Trigger.Slot(SlotType.JUMMAH), p.parsedTrigger)
+        assertEquals(Intensity.FULL, p.intensity)
+        // The lock: 45 minutes from jummah_time - 5, DONE 15 minutes in (jummah_time + 10).
+        assertEquals(Lock(LockType.SCREEN, 45, 15), p.lock)
+        // Shoes on, bag, leave, walking on; I'M AT UNI; the lock's DONE.
+        assertEquals(listOf(StepType.CHECK, StepType.CHECK, StepType.CHECK, StepType.CHECK, StepType.CHECK, StepType.DONE), p.steps.map { it.type })
+        assertEquals(listOf(3), p.steps.indices.filter { p.steps[it].walkingOn })
+        assertEquals(listOf(4), p.steps.indices.filter { p.steps[it].arrival })
+        assertEquals(null, p.short)
+        assertTrue(!p.stages)
+        assertEquals(15, p.intParam("leave_buffer_min"))
+        assertEquals(15, p.intParam("arrive_before_min"))
+        assertEquals(10, p.intParam("arrive_repeat_min"))
+        assertEquals(5, p.intParam("card_before_end_min"))
+        assertEquals(5, p.intParam("lock_before_min"))
+        assertEquals(50, p.intParam("missed_after_min"))
+        assertEquals(listOf("Jummah prep: clean clothes, bag packed."), p.textListParam("prep_todos"))
+    }
+
+    @Test
+    fun resetAsTheSpecSays() {
+        val p = file.find("reset")!!
+        assertEquals(ProtocolKind.RESET, p.kind)
+        assertEquals(Trigger.Misses(2), p.parsedTrigger)
+        assertEquals(Intensity.FULL, p.intensity)
+        assertEquals(Lock(LockType.SCREEN), p.lock)
+        assertTrue(!p.stages)
+        fun shape(steps: List<Step>?) = steps!!.map { it.type to it.min }
+        // Stop 1, name it (optional), body 3, space 5, move 5, re-enter.
+        assertEquals(
+            listOf(StepType.TIMER to 1, StepType.TEXT to null, StepType.CHECK to 3, StepType.CHECK to 5, StepType.CHECK to 5, StepType.DONE to null),
+            shape(p.steps),
+        )
+        assertTrue(p.steps[1].optional)
+        assertEquals(1, p.steps[1].lines)
+        // Short = steps 1, 3 and re-enter; minimal = water, wash your face, re-enter; single = re-enter.
+        assertEquals(listOf(p.steps[0], p.steps[2], p.steps[5]), p.short)
+        assertEquals(listOf(StepType.CHECK, StepType.CHECK, StepType.DONE), p.minimal!!.map { it.type })
+        for (v in listOf(p.steps, p.short!!, p.minimal!!, p.single!!)) assertTrue(v.last().reenter && v.dropLast(1).none { it.reenter })
+        assertEquals(60, p.intParam("next_within_min"))
+    }
+
+    @Test
+    fun promiseAsTheSpecSays() {
+        val p = file.find("promise")!!
+        assertEquals(ProtocolKind.PROMISE, p.kind)
+        assertEquals(Trigger.Manual, p.parsedTrigger)
+        assertEquals(Intensity.FULL, p.intensity)
+        assertEquals(Lock(LockType.POOL), p.lock)
+        assertEquals(listOf(StepType.DONE), p.steps.map { it.type })
+        assertEquals(kotlinx.serialization.json.JsonArray(listOf(5, 10, 15, 30).map { kotlinx.serialization.json.JsonPrimitive(it) }), p.param("delays"))
+        assertEquals(2, p.intParam("snooze_min_min"))
+        assertTrue(!p.stages)
     }
 }

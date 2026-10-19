@@ -18,7 +18,7 @@ enum class SlotType(val json: String) {
     CALL("call"),
     COMMUTE("commute"),
 
-    /** Fridays at MY TIMES `jummah_time`. */
+    /** Fridays: the Jummah sequence (kind jummah only), from its leave-by time before MY TIMES `jummah_time`. */
     JUMMAH("jummah"),
     ;
 
@@ -54,7 +54,7 @@ sealed interface Trigger {
     /** Right after that protocol's run completes or its lock ends (not after a bail-out or a miss). */
     data class After(val protocolId: String) : Trigger
 
-    /** After [count] missed or bailed protocols in a row. */
+    /** After [count] missed or bailed protocols in a row: the protocol is offered (START / NOT NOW), not forced. */
     data class Misses(val count: Int) : Trigger
 
     /** At the start of every MY TIMES slot of [type] that day. */

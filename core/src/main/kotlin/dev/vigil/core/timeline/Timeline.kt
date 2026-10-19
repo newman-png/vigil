@@ -2,8 +2,11 @@ package dev.vigil.core.timeline
 
 import dev.vigil.core.common.WallClock
 import dev.vigil.core.protocol.Prayer
+import dev.vigil.core.protocol.Protocol
 import dev.vigil.core.protocol.ProtocolFile
+import dev.vigil.core.protocol.SlotType
 import dev.vigil.core.protocol.Trigger
+import dev.vigil.core.run.JummahInfo
 import dev.vigil.core.times.DayTimes
 import dev.vigil.core.times.ResolvedSlot
 import java.time.Duration
@@ -89,7 +92,11 @@ object Timeline {
                     times.resolve(t.expr)?.let { out += PlannedStart(p.id, p.title, it, StartSource.TIME) }
                     next?.resolve(t.expr)?.let { if (early(it, next)) out += PlannedStart(p.id, p.title, it, StartSource.TIME) }
                 }
-                is Trigger.Slot -> {
+                // Jummah starts at its leave-by time (the whole Friday sequence follows from it).
+                is Trigger.Slot -> if (t.type == SlotType.JUMMAH) {
+                    jummah(p, times)?.let { out += PlannedStart(p.id, p.title, it.leaveAt, StartSource.SLOT) }
+                    next?.let { jummah(p, it) }?.leaveAt?.let { if (early(it, next)) out += PlannedStart(p.id, p.title, it, StartSource.SLOT) }
+                } else {
                     times.slots(t.type).forEach { out += PlannedStart(p.id, p.title, it.start, StartSource.SLOT, slot = it) }
                     next?.slots(t.type)?.filter { early(it.start, next) }
                         ?.forEach { out += PlannedStart(p.id, p.title, it.start, StartSource.SLOT, slot = it) }
@@ -105,6 +112,29 @@ object Timeline {
         return out.filter { !it.at.isBefore(from) && it.at.isBefore(until) }
             .distinctBy { it.key }
             .sortedWith(compareBy({ it.at }, { it.protocolId }))
+    }
+
+    /**
+     * Fridays: the Jummah times for [p] (kind jummah, design M4) from MY TIMES jummah_time, commute_min and the Friday
+     * classes; null on other days or with an unreadable jummah_time. The target is the first Friday class (before the
+     * lock), else the lock itself: leave-by = target - commute_min - leave_buffer_min, I'M AT UNI from target -
+     * arrive_before_min, the lock at jummah_time - lock_before_min, the card card_before_end_min before the last
+     * class that ends by jummah_time, missed at jummah_time + missed_after_min.
+     */
+    fun jummah(p: Protocol, times: DayTimes): JummahInfo? {
+        if (times.dayCode != "fri") return null
+        val time = WallClock.parseTime(times.times.jummahTime) ?: return null
+        fun param(name: String): Duration = Duration.ofMinutes(p.intParam(name).toLong())
+        val jummahAt = times.at(time)
+        val lockAt = jummahAt.minus(param("lock_before_min"))
+        val target = times.classStart?.takeIf { it.isBefore(lockAt) } ?: lockAt
+        val leaveAt = target.minus(Duration.ofMinutes(times.times.commuteMin.toLong())).minus(param("leave_buffer_min"))
+        val arriveAt = maxOf(leaveAt, target.minus(param("arrive_before_min")))
+        val lastEnd = times.classes.mapNotNull { it.end }.filter { it.isAfter(leaveAt) && !it.isAfter(jummahAt) }.maxOrNull()
+        return JummahInfo(
+            jummahAt = jummahAt, leaveAt = leaveAt, arriveAt = arriveAt, cardAt = lastEnd?.minus(param("card_before_end_min")),
+            lockAt = lockAt, missedAt = jummahAt.plus(param("missed_after_min")),
+        )
     }
 
     /** A start on [next]'s own date (its morning; the [until] filter keeps those this day can still reach). */

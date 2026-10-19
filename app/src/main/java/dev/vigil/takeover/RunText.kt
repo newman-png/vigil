@@ -9,6 +9,7 @@ import dev.vigil.core.protocol.Protocol
 import dev.vigil.core.protocol.ProtocolKind
 import dev.vigil.core.protocol.StepType
 import dev.vigil.core.protocol.Version
+import dev.vigil.core.run.JummahPart
 import dev.vigil.core.run.Run
 import dev.vigil.core.run.RunPhase
 import java.time.Duration
@@ -27,8 +28,19 @@ internal fun tierFor(intensity: Intensity): Int = when (intensity) {
     Intensity.SUBTLE -> 1
 }
 
-/** One takeover: a prayer whose takeover came back (window warning) is a new takeover of the same run. */
-internal fun takeoverKey(run: Run): String = if (run.phase == RunPhase.RETURNED) "${run.id}:returned" else run.id
+/**
+ * One takeover: a prayer whose takeover came back (window warning) is a new takeover of the same run; so is each part
+ * of Jummah (leave-by, I'M AT UNI, the lock) and a promise coming due again after its snooze.
+ */
+internal fun takeoverKey(run: Run): String {
+    val jummah = run.jummah
+    return when {
+        run.phase == RunPhase.RETURNED -> "${run.id}:returned"
+        jummah != null -> "${run.id}:${jummah.part.name.lowercase()}"
+        run.promise?.snoozed == true -> "${run.id}:snoozed"
+        else -> run.id
+    }
+}
 
 /**
  * True when "I'M NOT OKAY" changes something for [run] now, as the engine's rule says: a prayer's lock shortens to
@@ -53,6 +65,15 @@ internal fun versionLine(run: Run, protocol: Protocol?): String? = when {
 
 /** The note right after "I'M NOT OKAY" took effect (the version line under the step says what runs now). */
 internal const val STEP_DOWN_NOTE = "OKAY. THIS COSTS NOTHING."
+
+/**
+ * True for runs whose "I'M NOT OKAY" only says that nothing changes (Jummah and the promise have no shorter version),
+ * so it still shows.
+ */
+internal fun saysNoStepDown(run: Run): Boolean = run.jummah != null || run.promise != null
+
+/** What "I'M NOT OKAY" says where there is no shorter version. */
+internal const val NO_STEP_DOWN_NOTE = "THERE IS NO SHORTER VERSION OF THIS ONE. IT STAYS AS IT IS."
 
 /** Minutes of pool lock a bail-out adds now, the daily cap counted (the engine's penalty rule). */
 internal fun bailOutCost(cfg: BailOutConfig, penaltyToday: Int): Int =
@@ -84,6 +105,11 @@ internal fun leftText(run: Run, protocol: Protocol?, cfg: BailOutConfig, penalty
     val cost = if (free) 0 else bailOutCost(cfg, penaltyToday)
     if (cost > 0) lines += "THE POOL IS LOCKED ${span(cost)} MORE."
     if (run.prayer != null && !run.confirmed) lines += "CONFIRM ON HOME ONCE YOU HAVE PRAYED."
+    when (run.jummah?.part) {
+        JummahPart.LEAVE -> lines += "THE JUMMAH LOCK STILL COMES."
+        JummahPart.LOCK -> lines += "CONFIRM JUMMAH ON HOME ONCE YOU HAVE PRAYED."
+        JummahPart.TRAVEL, JummahPart.CONFIRM, null -> Unit
+    }
     return lines.joinToString("\n")
 }
 
@@ -92,6 +118,15 @@ internal fun leftText(run: Run, protocol: Protocol?, cfg: BailOutConfig, penalty
  * before it was finished, or it was left from somewhere else.
  */
 internal fun lockOverText(run: Run): String {
+    val jummah = run.jummah
+    if (jummah != null) {
+        return when {
+            jummah.part == JummahPart.TRAVEL && jummah.arrived -> "AT UNI.\nWHEN IT IS TIME, GO STRAIGHT TO THE PRAYER PLACE."
+            jummah.part == JummahPart.TRAVEL && run.bailed -> "LEFT EARLY. LOGGED.\nTHE JUMMAH LOCK STILL COMES."
+            jummah.part == JummahPart.TRAVEL -> "ON YOUR WAY.\nTAP I'M AT UNI ONCE YOU ARE THERE."
+            else -> (if (run.bailed) "LEFT EARLY. LOGGED." else "THE LOCK IS OVER.") + "\nCONFIRM JUMMAH ON HOME ONCE YOU HAVE PRAYED."
+        }
+    }
     val head = when {
         run.released -> "LEFT AFTER THE MINIMUM."
         run.bailed -> "LEFT EARLY. LOGGED."

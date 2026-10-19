@@ -224,6 +224,79 @@
       ],
       "params": { "shift_min": 20, "hold_after_missed": 2, "late_min": 30, "night_lock_grace_min": 120, "white_noise": false },
       "stages": true
+    },
+    {
+      "id": "jummah",
+      "_note": "Fridays, instead of the Dhuhr protocol (a missed Jummah brings Dhuhr back). Times from MY TIMES: leave by the first Friday class (or the lock) minus the commute minus 15 min; I'M AT UNI from 15 min before it, again every 10 min; a silent card 5 min before the last class that ends by jummah_time; the lock (Do Not Disturb, pool blocked, subtle screen) from jummah_time - 5 for 45 min, DONE from 15 min into it; missed at jummah_time + 50. Thursday's wind-down adds the prep to-do; Friday's morning has the shower.",
+      "kind": "jummah",
+      "title": "JUMMAH",
+      "trigger": "slot:jummah",
+      "intensity": "full",
+      "lock": { "type": "screen", "minutes": 45, "done_after_min": 15 },
+      "steps": [
+        { "text": "Shoes on.", "type": "check" },
+        { "text": "Bag: clean clothes on, bag packed.", "type": "check" },
+        { "text": "Leave now. Maps is under APPS.", "type": "check" },
+        { "text": "Walking on: no feeds on the way.", "type": "check", "walking_on": true },
+        { "text": "I'M AT UNI.", "type": "check", "arrival": true },
+        { "text": "Jummah. The phone is silent. Tap DONE after the prayer.", "type": "done" }
+      ],
+      "params": {
+        "leave_buffer_min": 15,
+        "arrive_before_min": 15,
+        "arrive_repeat_min": 10,
+        "card_before_end_min": 5,
+        "lock_before_min": 5,
+        "missed_after_min": 50,
+        "prep_todos": ["Jummah prep: clean clothes, bag packed."]
+      },
+      "stages": false
+    },
+    {
+      "id": "reset",
+      "_note": "The home RESET button, or offered (START / NOT NOW) after 2 missed or left protocols in a row and after a missed Jummah. No penalty to start, no stage change; leaving early is a normal bail-out. Re-enter drops what was missed today and goes to the next thing.",
+      "kind": "reset",
+      "title": "RESET",
+      "trigger": "event:misses:2",
+      "intensity": "full",
+      "lock": { "type": "screen" },
+      "steps": [
+        { "text": "Stop: phone down, drink a glass of water.", "type": "timer", "min": 1 },
+        { "text": "Name it: one line on what derailed the day. Optional; it goes in the report.", "type": "text", "lines": 1, "optional": true },
+        { "text": "Body: wash your face. Make wudu if a prayer is near.", "type": "check", "min": 3 },
+        { "text": "Space: tidy the room.", "type": "check", "min": 5 },
+        { "text": "Move: walk, or stand outside.", "type": "check", "min": 5 },
+        { "text": "Re-enter: what was missed is dropped. Go to the next thing.", "type": "done", "reenter": true }
+      ],
+      "short": [
+        { "text": "Stop: phone down, drink a glass of water.", "type": "timer", "min": 1 },
+        { "text": "Body: wash your face. Make wudu if a prayer is near.", "type": "check", "min": 3 },
+        { "text": "Re-enter: what was missed is dropped. Go to the next thing.", "type": "done", "reenter": true }
+      ],
+      "minimal": [
+        { "text": "Drink a glass of water.", "type": "check" },
+        { "text": "Wash your face.", "type": "check" },
+        { "text": "Re-enter: what was missed is dropped. Go to the next thing.", "type": "done", "reenter": true }
+      ],
+      "single": [
+        { "text": "A glass of water, then re-enter: go to the next thing.", "type": "done", "reenter": true }
+      ],
+      "params": { "next_within_min": 60 },
+      "stages": false
+    },
+    {
+      "id": "promise",
+      "_note": "LATER on home or on VIGIL's notification: one line and 5, 10, 15 or 30 minutes. At the time: a full takeover with exactly the line (DONE, one SNOOZE of half the time, ON IT), then the pool stays locked until DONE. Ends at DONE, LEAVE (the usual penalty) or the day end.",
+      "kind": "promise",
+      "title": "PROMISE",
+      "trigger": "manual",
+      "intensity": "full",
+      "lock": { "type": "pool" },
+      "steps": [
+        { "text": "Do what you said you would.", "type": "done" }
+      ],
+      "params": { "delays": [5, 10, 15, 30], "snooze_min_min": 2 },
+      "stages": false
     }
   ]
 }

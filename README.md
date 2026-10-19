@@ -20,7 +20,7 @@ VIGIL opens on **SETUP**.
 1. **Allow restricted settings.** Android greys out accessibility and notification access for apps installed from a file. Try to turn one of them on once, then open *App info › ⋮ (top right) › Allow restricted settings* and confirm. (The ⋮ menu only appears after that first try; **SETUP › RESTRICTED SETTINGS** has a button for App info.)
 2. **GUARD (ACCESSIBILITY):** turn on **VIGIL Guard** under Accessibility. It keeps the pool apps closed, and it only learns which app is in front, never what is on the screen.
 3. **NOTIFICATION ACCESS:** turn VIGIL on. It reads your adhan app's prayer notification, and other apps' call notifications, so a takeover never covers a WhatsApp call.
-4. Grant the other rows under **PERMISSIONS**: notifications, full-screen takeovers, display over other apps, battery unrestricted (*Settings › Apps › VIGIL › Battery › Unrestricted*), exact alarms, usage access (lets a takeover come back when you leave it) and, optionally, phone (call pause).
+4. Grant the other rows under **PERMISSIONS**: notifications, full-screen takeovers, display over other apps, battery unrestricted (*Settings › Apps › VIGIL › Battery › Unrestricted*), exact alarms, Do Not Disturb access (the Jummah lock silences the phone), usage access (lets a takeover come back when you leave it) and, optionally, phone (call pause).
 5. **ADHAN:** once your adhan app has posted a notification, tap it in the list. Check the result with **TEST TRIGGER**; the default phrase `time for` already matches "It's time for Isha".
 6. Tap **DONE**. **MY TIMES** opens: set your wake times, bedtime start and goal, classes and meals, then **SAVE**. The first save applies at once.
 7. In **TEST**, tap **FIRE IN 60 S (LOCK THE PHONE)** and lock the phone. A test preview of a prayer should take over the locked screen.
@@ -28,7 +28,7 @@ VIGIL opens on **SETUP**.
 
 ## What it does today
 
-M1 is the engine and the five prayers, M2 the sleep wind-down and the night lock, M3 the wake alarm and the morning routine. The other protocols come with later milestones.
+M1 is the engine and the five prayers, M2 the sleep wind-down and the night lock, M3 the wake alarm and the morning routine, M4 Jummah, M5 the reset and the 10-minute promise. The other protocols come with later milestones.
 
 ### Prayers
 
@@ -58,6 +58,33 @@ A prayer never waits behind another protocol: when its adhan comes, a protocol h
 
 - **Wake alarm:** VIGIL rings it at your MY TIMES wake time for the day (04:00 to 11:00), as a real alarm clock (the alarm icon shows in the status bar): a full-screen alarm over the lock screen with a tone made by the app on the alarm stream (heard in silent mode and Do Not Disturb), its volume rising over 30 s, with vibration. Hold **I'M UP** for 3 s to stop it; there is no snooze. Unanswered for 10 minutes, it stops and rings again 5 minutes later, three times at most; then the morning starts at your next unlock. QUIET and the kill switch do not silence it.
 - **Morning:** dismissing the alarm ends the night lock and opens the morning takeover: *get up*, *sun in your eyes* (5 min timer), *bathroom and brush* (5), *skincare or shower* (15), *breakfast*, *chores* (20 min timer), *walk* (15 min; left out on days with a class or commute in MY TIMES, since the commute is the walk). Thursday is shorter (shower, no chores or walk); Friday has a shower for Jummah. The screen stays free: the morning notification shows the current step, and **OPEN** (or home) brings the takeover back. The pool stays blocked until every step is done, and the morning free window opens then, but not before an hour after you got up. NOT OKAY: short drops skincare and shortens chores and the walk to 10 minutes; minimal is get up, bathroom, breakfast and sun; then 5 minutes in the sun, marked "minimum".
+
+### Jummah (Fridays)
+
+On Fridays Jummah replaces the Dhuhr protocol: Dhuhr's adhan is journaled but starts nothing, unless Jummah is missed. Every time comes from MY TIMES: *jummah time* (14:40), *commute* (60 min) and your Friday classes.
+
+1. **The night before:** Thursday's wind-down puts *Jummah prep: clean clothes, bag packed* on Friday's to-dos. Friday's morning has the shower.
+2. **Leave by** your first Friday class minus the commute minus 15 minutes (no class: jummah time − 5 − commute − 15): a full takeover with *shoes on*, *bag*, *leave now* and *walking on* (it switches WALKING on, which blocks the pool on the way). Google Maps is under APPS.
+3. **I'M AT UNI:** from 15 minutes before that class (no class: jummah time − 20) a full takeover asks; **NOT YET** closes it and it asks again every 10 minutes until you confirm or the lock starts. It is also on its notification and on home. Confirming switches WALKING off.
+4. **Class-end card:** a silent notification 5 minutes before the last Friday class that ends by jummah time: *Class ends in 5 minutes. Go straight to the prayer place.*
+5. **The Jummah lock:** from jummah time − 5 for 45 minutes the phone is silent (Do Not Disturb, priority only: alarms and the callers you allow in your own Do Not Disturb settings still come), the pool is blocked, and a quiet, silent screen counts down. **DONE** unlocks from jummah time + 10. Do Not Disturb goes back to what you had when the lock ends, however it ends (DONE, its time, LEAVE, the kill switch, the day end, or the next start of the app if it was killed). Without Do Not Disturb access (SETUP) the lock shows all the same, and the journal says so.
+6. **Missed:** nothing confirmed by jummah time + 50: Jummah is missed, the Dhuhr prayer starts as usual (its window until Asr), and the reset is offered.
+
+Jummah has no shorter version (NOT OKAY says so) and always stays at stage 1. LEAVE is the usual bail-out, and Jummah goes on: the lock still comes, and CONFIRM on home still counts until the missed time. The class rule for prayers does not apply to it.
+
+### Reset
+
+A way back after a derailed day. **RESET** on home (tap it twice) starts it; after 2 missed or left protocols in a row (step-downs do not count), or a missed Jummah, it is offered instead: a full notification and a red card on home with **START RESET** and **NOT NOW**. NOT NOW costs nothing, and the next offer needs 2 more misses.
+
+The reset is a full takeover with the screen locked and the pool blocked: *stop* (1 min: phone down, a glass of water), *name it* (one optional line on what derailed the day, **SKIP** to leave it out; it goes in the report), *body* (3 min: wash your face, wudu if a prayer is near), *space* (5 min: tidy the room), *move* (5 min: walk or stand outside), then **re-enter**: today's missed and waiting protocols are dropped (no catch-up) and the count of misses starts again. An open, unconfirmed prayer comes first; otherwise the next planned protocol starts now if it is due within 60 minutes; otherwise the screen says what comes next, e.g. *NEXT: ASR AT ~15:20*.
+
+Starting a reset costs nothing and never moves a protocol back a stage; leaving early is the usual bail-out. NOT OKAY: short is stop, body and re-enter; minimal is water, wash your face and re-enter.
+
+### The 10-minute promise
+
+"I'll do it in 10", held to account. **LATER** on home, or on the always-on notification, opens a small sheet: one line of what you will do, **5 / 10 / 15 / 30 MIN** and **START**. One promise at a time; home shows it counting down, with **DONE**.
+
+When it is due a full takeover shows exactly your line, with **DONE**, **SNOOZE** (once per promise: half the time, at least 2 minutes) and **ON IT** (the takeover closes). From then on the pool stays locked until DONE (on home, the promise's notification or the takeover); the screen stays free, since the task may be on the phone. LEAVE is the usual bail-out. A promise that is still open when the day ends expires without a penalty. There is no shorter version.
 
 ### The takeover
 
@@ -109,23 +136,22 @@ A protocol moves up a stage after 10 clean completions in a row (the full versio
 
 ### Home
 
-The **VIGIL** title, the day (since when, and when it ends at the latest), the pool's status, flags (quiet, suspended, in a call), the prayers prayed and missed today, the next planned start, tonight's target bedtime and the next wake alarm (with missed nights in a row), a red **A PROTOCOL IS RUNNING · OPEN** (or **NIGHT LOCK**) while a takeover owns the screen, a running morning with **OPEN**, today's **TO-DOS** with tick boxes, open prayers with **CONFIRM**, and **TODAY**: the day's timeline (prayers at their adhan, `~` when estimated) with each protocol's stage and when it last fired. Below that:
+The **VIGIL** title, the day (since when, and when it ends at the latest), the pool's status, flags (quiet, suspended, in a call, walking, the phone silent for Jummah), the prayers prayed and missed today (and Jummah), the next planned start, tonight's target bedtime and the next wake alarm (with missed nights in a row), a red **A PROTOCOL IS RUNNING · OPEN** (or **NIGHT LOCK**) while a takeover owns the screen, the reset offer (**START RESET** / **NOT NOW**), **LATER** and **RESET**, the running promise with **DONE**, today's Jummah (where it is, with **I'M AT UNI** or **CONFIRM**), a running morning with **OPEN**, today's **TO-DOS** with tick boxes, open prayers with **CONFIRM**, and **TODAY**: the day's timeline (prayers at their adhan, `~` when estimated) with each protocol's stage and when it last fired. Below that:
 
 | item | what it does |
 |---|---|
 | **QUIET** | Tap to make every takeover silent (no sound, vibration or Glyph), whatever its intensity. Also on the always-on notification. |
+| **WALKING** | Shows only while walking is on (Jummah's leave-by switches it on; it blocks the pool): tap to end it. It also ends by itself at I'M AT UNI, or after 3 hours. |
 | **GOING TO SLEEP** | Hold 2 s: the day ends now and the night lock starts (CONFIRM ISHA first while Isha is open). |
-| **MY TIMES** | Your week: wake time per weekday (the wake alarm), bedtime start and goal (sleep shifting), classes, meals, study, gym, calls, commute and the Jummah time, with **+ ADD** rows and weekday chips. A change **applies from tomorrow** (only the very first save applies at once). Used so far: wake, bedtime, dinner, classes and commute (the morning walk); the rest is for later milestones. |
-| **SETUP** | Permissions (with the count missing), restricted settings, battery, **POOL AND APPS** (the pool, the browsers found, the rules, the APPS button), **ADHAN**, **TAKEOVER** (switches for sound, vibration and the Glyph lights) and **SAFETY**. |
-| **TEST** | **START** any protocol as a test preview: stage 1, logged as a test, and left out of stages, penalties, prayer times and the report. **FIRE IN 60 S (LOCK THE PHONE)**: a real exact alarm starts a preview of the next prayer, to try the whole path with the screen off. **RING WAKE ALARM NOW**: the real wake alarm as a test; I'M UP starts a morning preview. **POOL CHECK**: what the pool would do right now for each pool app. **LAST EVENTS**: the newest 30 journal entries. |
-| **EXPORT** | A progress report (markdown: totals, then each day's prayers, pool use, protocols, bail-outs, app exits, late alarms and stage changes) and the whole journal as CSV, through the share sheet. |
+| **MY TIMES** | Your week: wake time per weekday (the wake alarm), bedtime start and goal (sleep shifting), classes, meals, study, gym, calls, commute and the Jummah time, with **+ ADD** rows and weekday chips. A change **applies from tomorrow** (only the very first save applies at once). Used so far: wake, bedtime, dinner, classes, commute (the morning walk and Jummah's leave-by) and the Jummah time; the rest is for later milestones. |
+| **SETUP** | Permissions (with the count missing, Do Not Disturb access included), restricted settings, battery, **POOL AND APPS** (the pool, the browsers found, the rules, the APPS button), **ADHAN**, **TAKEOVER** (switches for sound, vibration and the Glyph lights) and **SAFETY**. |
+| **TEST** | **START** any protocol as a test preview: stage 1, logged as a test, and left out of stages, penalties, prayer times and the report. **FIRE IN 60 S (LOCK THE PHONE)**: a real exact alarm starts a preview of the next prayer, to try the whole path with the screen off. **RING WAKE ALARM NOW**: the real wake alarm as a test; I'M UP starts a morning preview. **JUMMAH · EACH PART NOW**: the leave-by takeover, I'M AT UNI, the class-end card or the lock (with Do Not Disturb; LEAVE ends a preview at no cost). **1-MINUTE PROMISE**: a test promise due in a minute. **POOL CHECK**: what the pool would do right now for each pool app. **LAST EVENTS**: the newest 30 journal entries. |
+| **EXPORT** | A progress report (markdown: totals, then each day's prayers, Jummah, pool use, protocols, bail-outs, resets with what derailed the day, promises kept, snoozed or left, app exits, late alarms and stage changes) and the whole journal as CSV, through the share sheet. |
 
 ## Coming next
 
 Each milestone adds its protocols to `protocols.json` (with core, app and tests) and ships through the same release.
 
-- **M4 Jummah** (coming): on Fridays it replaces Dhuhr: prep the night before, a leave-by takeover, "I'M AT UNI" before class, then the phone silent and the pool blocked for 45 minutes.
-- **M5 Reset and the 10-minute promise** (coming): a way back after a derailed day, and "I'll do it in 10" held to account.
 - **M6 Study block and attention reset** (coming): timed work and break rounds, and a few still minutes facing a wall after Dhuhr.
 - **M7 Gym and meals** (coming): workout logging with a rest timer and your last weights pre-filled; cook, eat, clean up.
 - **M8 Walk and commute, friends mode, calls, audio and wellness nudges** (coming): switches that block the pool, the daily call, white noise, a metronome and your own audio files.

@@ -86,6 +86,16 @@ class Settings(context: Context) {
         get() = prefs.getLong("step_aside_until_ms", 0)
         set(value) = edit { putLong("step_aside_until_ms", value) }
 
+    /** True while VIGIL has Do Not Disturb on (the Jummah lock): it must turn it off again. Survives restarts. */
+    var dndByVigil: Boolean
+        get() = prefs.getBoolean("dnd_by_vigil", false)
+        set(value) = edit { putBoolean("dnd_by_vigil", value) }
+
+    /** The interruption filter the user had before VIGIL turned Do Not Disturb on (restored when it goes off). */
+    var dndPrevious: Int
+        get() = prefs.getInt("dnd_previous", 0)
+        set(value) = edit { putInt("dnd_previous", value) }
+
     /** The newest process exit (ApplicationExitInfo timestamp, epoch ms) already journaled; 0 = none seen yet. */
     var lastExitSeenMs: Long
         get() = prefs.getLong("last_exit_seen_ms", 0)

@@ -316,10 +316,10 @@ class PoolMachineTest {
 
     @Test
     fun bailOutPenaltyStacksWithADailyCap() {
-        val sim = Sim(file = fileWith(testProtocol("reset")))
+        val sim = Sim(file = fileWith(testProtocol("alpha")))
         repeat(4) {
-            sim.step(Input.Manual("reset"))
-            sim.after(1, Input.BailOut(sim.runId("reset")))
+            sim.step(Input.Manual("alpha"))
+            sim.after(1, Input.BailOut(sim.runId("alpha")))
         }
         assertEquals(listOf(120, 120, 120, 0), sim.of(EntryType.PENALTY).map { it.minutes })
         assertEquals(rome("2026-10-19T14:01"), sim.state.pool.penaltyUntil)

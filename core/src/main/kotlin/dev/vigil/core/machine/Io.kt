@@ -106,7 +106,34 @@ sealed interface Input {
 
     /** The speed bump covered a settings page ([target]: app_info, accessibility, notification_access, device_admin, uninstall). */
     data class SpeedBump(val target: String, val detail: String? = null) : Input
+
+    /**
+     * LATER (home or the VIGIL notification): a 10-minute promise of [text] (its first line) in [minutes] (the promise
+     * protocol's `delays`, 1-240). One at a time. [test] = a TEST preview that counts for nothing.
+     */
+    data class Promise(val text: String, val minutes: Int, val test: Boolean = false) : Input
+
+    /** SNOOZE on a promise that came due: once per promise, half its delay (at least `snooze_min_min`). */
+    data class Snooze(val runId: String) : Input
+
+    /**
+     * ON IT (a promise that came due: the takeover closes, the pool lock stays) or NOT YET (the I'M AT UNI ask: it asks
+     * again `arrive_repeat_min` later): the asking takeover of run [runId] closes.
+     */
+    data class Dismiss(val runId: String) : Input
+
+    /** The answer to [MachineState.offer]: START (the offered protocol starts now) or NOT NOW (costs nothing). */
+    data class AnswerOffer(val start: Boolean) : Input
+
+    /** The app could not switch Do Not Disturb (no access granted): journaled; the lock shows all the same. */
+    data object DndNoAccess : Input
+
+    /** TEST > JUMMAH: one part of Jummah as a preview now (the card is only its silent notification). */
+    data class TestJummah(val part: JummahTestPart) : Input
 }
+
+/** The parts of Jummah the TEST screen can fire. */
+enum class JummahTestPart { LEAVE, ARRIVAL, CARD, LOCK }
 
 /** What a notification is for (the app picks channel and look). */
 enum class NotifyKind {
@@ -127,6 +154,15 @@ enum class NotifyKind {
 
     /** A prayer window about to close (stage 3, or while suspended). */
     WARNING,
+
+    /** A silent card with nothing to answer (Jummah: the class ends in 5 minutes). */
+    CARD,
+
+    /** A protocol offered (the reset): a full-intensity card with START and NOT NOW ([Input.AnswerOffer]). */
+    OFFER,
+
+    /** A 10-minute promise: its line, with DONE ([Input.Confirm]). */
+    PROMISE,
 }
 
 /** Something the Android layer must do after a step. */
@@ -168,7 +204,10 @@ sealed interface Effect {
     /** Stop a ringing wake alarm (the engine counted it unanswered, or it is over). */
     data object StopWakeAlarm : Effect
 
-    /** Do Not Disturb on/off (M4 Jummah). */
+    /**
+     * Do Not Disturb on (the Jummah lock starts) or off (it ends, whatever ends it: DONE, its time, LEAVE, the kill
+     * switch, the day end). Off restores what the user had before; [Machine.dndWanted] says whether it should be on.
+     */
     data class SetDnd(val on: Boolean) : Effect
 
     /** Audio control: [action] play/stop, [sound] `white_noise` ([WHITE_NOISE]; M8 adds more sounds and uploaded files). */

@@ -46,7 +46,66 @@ enum class RunPhase {
      * it counts for no day.
      */
     @SerialName("night") NIGHT,
+
+    /** A 10-minute promise counting down to [PromiseInfo.dueAt]: nothing shows and nothing is locked yet. */
+    @SerialName("waiting") WAITING,
 }
+
+/** Where a Jummah run is (design M4); its times are in [JummahInfo]. */
+@Serializable
+enum class JummahPart {
+    /** The leave-by takeover: shoes, bag, leave, walking on (a screen lock until the arrival time at the latest). */
+    @SerialName("leave") LEAVE,
+
+    /** On the way: no screen; I'M AT UNI is asked at the arrival time and every few minutes after, until the lock. */
+    @SerialName("travel") TRAVEL,
+
+    /** The Jummah lock: phone silent (Do Not Disturb), pool blocked, a subtle silent screen; DONE after the prayer. */
+    @SerialName("lock") LOCK,
+
+    /** The lock is over unconfirmed (or was left): CONFIRM until the missed time. */
+    @SerialName("confirm") CONFIRM,
+}
+
+/** A Jummah run's day: its times (from MY TIMES and the protocol's params) and what has happened. */
+@Serializable
+data class JummahInfo(
+    /** MY TIMES jummah_time on this Friday. */
+    @SerialName("jummah_at") val jummahAt: Instant,
+    /** The leave-by takeover: first Friday class (or the lock) - commute_min - leave_buffer_min. */
+    @SerialName("leave_at") val leaveAt: Instant,
+    /** I'M AT UNI is asked from here: first Friday class (or the lock) - arrive_before_min. */
+    @SerialName("arrive_at") val arriveAt: Instant,
+    /** The silent class-end card; null without a Friday class ending before Jummah. */
+    @SerialName("card_at") val cardAt: Instant? = null,
+    /** The Jummah lock starts (jummah_time - lock_before_min). */
+    @SerialName("lock_at") val lockAt: Instant,
+    /** Nothing confirmed by then (jummah_time + missed_after_min): missed, Dhuhr instead, the reset offered. */
+    @SerialName("missed_at") val missedAt: Instant,
+    val part: JummahPart = JummahPart.LEAVE,
+    /** I'M AT UNI was confirmed. */
+    val arrived: Boolean = false,
+    /** The last I'M AT UNI ask (the next one comes arrive_repeat_min later). */
+    @SerialName("asked_at") val askedAt: Instant? = null,
+    @SerialName("card_sent") val cardSent: Boolean = false,
+    /** VIGIL turned Do Not Disturb on for this lock: it goes off again whatever ends the lock. */
+    val dnd: Boolean = false,
+    /** TEST: the one part this preview shows (leave, travel or lock); it ends with that part. Null for a real run. */
+    val only: JummahPart? = null,
+)
+
+/** A 10-minute promise (design M5): exactly the user's line and its timer. */
+@Serializable
+data class PromiseInfo(
+    /** The line, shown exactly on the takeover. */
+    val text: String,
+    /** The delay picked (5, 10, 15 or 30); a snooze is half of it. */
+    val minutes: Int,
+    /** It comes due then: a full takeover, then the pool lock until DONE. */
+    @SerialName("due_at") val dueAt: Instant,
+    /** The one snooze was used. */
+    val snoozed: Boolean = false,
+)
 
 /** The MY TIMES slot a `slot:` trigger started a run for. */
 @Serializable
@@ -124,9 +183,21 @@ data class Run(
     val pausedAt: Instant? = null,
     /** It fired on a day with a MY TIMES class or commute: steps marked `skip_on_class_days` are left out. */
     val classDay: Boolean = false,
+    /**
+     * Its full takeover is up without a screen lock (the I'M AT UNI ask, a promise that came due): it owns the screen
+     * until answered, yields to any screen lock and is never brought back once left.
+     */
+    val asking: Boolean = false,
+    /** A Jummah run: its times and part. */
+    val jummah: JummahInfo? = null,
+    /** A 10-minute promise: its line and timer. */
+    val promise: PromiseInfo? = null,
 ) {
     /** The single-step version, shown marked "minimum". */
     val isMinimum: Boolean get() = version == Version.SINGLE
+
+    /** A prayer, or the Jummah lock: it goes before other protocols for the screen, and no other protocol pauses it. */
+    val prayerLike: Boolean get() = prayer != null || jummah?.part == JummahPart.LOCK
 
     /** A completion without step-down, NOT OKAY, release, bail-out or a returning takeover. */
     val clean: Boolean get() = version == Version.FULL && !steppedDown && !shortened && !returned && !released && !bailed

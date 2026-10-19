@@ -18,6 +18,7 @@ import dev.vigil.core.protocol.ProtocolKind
 import dev.vigil.core.protocol.Step
 import dev.vigil.core.protocol.StepType
 import dev.vigil.core.protocol.Version
+import dev.vigil.core.run.JummahInfo
 import dev.vigil.core.run.Run
 import dev.vigil.core.run.RunPhase
 import dev.vigil.core.timeline.PlannedStart
@@ -149,19 +150,66 @@ internal open class View(var s: MachineState, val env: MachineEnv) {
     }
 
     /** The stage a protocol fires at now. */
-    fun stageOf(p: Protocol): Int = if (!p.stages) 1 else (s.stages[p.id]?.stage ?: 1)
+    fun stageOf(p: Protocol): Int = if (pinned(p)) 1 else (s.stages[p.id]?.stage ?: 1)
+
+    /** Stays at stage 1: `stages: false`, and always Jummah and the promise (their rules have no lighter stages). */
+    fun pinned(p: Protocol): Boolean = !p.stages || p.kind == ProtocolKind.JUMMAH || p.kind == ProtocolKind.PROMISE
 
     /** True while the run's lock holds (active, a lock type, before its end on the run clock). */
     fun lockActive(r: Run): Boolean =
         r.phase == RunPhase.ACTIVE && r.lock != LockType.NONE && (r.lockEndsAt == null || runNow.isBefore(r.lockEndsAt))
 
     /**
-     * The run that owns the screen: an active run with a running screen lock, else a returned prayer takeover, else the
-     * night lock (a prayer at night takes the screen from it, and it comes back after).
+     * The run that owns the screen: an active run with a running screen lock, else a returned prayer takeover, else an
+     * asking takeover (I'M AT UNI, a promise that came due), else the night lock (a prayer at night takes the screen
+     * from it, and it comes back after).
      */
     fun screenOwner(): Run? =
         s.runs.firstOrNull { it.lock == LockType.SCREEN && lockActive(it) } ?: s.runs.firstOrNull { it.phase == RunPhase.RETURNED }
-            ?: nightRun()?.takeIf { it.lock == LockType.SCREEN }
+            ?: s.runs.firstOrNull { asking(it) } ?: nightRun()?.takeIf { it.lock == LockType.SCREEN }
+
+    /** The screen owner that holds the screen against other runs: an asking takeover gives way to any screen lock. */
+    fun screenHolder(): Run? = screenOwner()?.takeIf { !asking(it) }
+
+    /** True while [r]'s asking takeover is up (see [Run.asking]). */
+    fun asking(r: Run): Boolean = r.asking && (r.phase == RunPhase.ACTIVE || r.phase == RunPhase.OPEN)
+
+    /** The file's Jummah protocol, or null. */
+    val jummahProtocol: Protocol? get() = file.protocols.firstOrNull { it.kind == ProtocolKind.JUMMAH }
+
+    /** The file's reset protocol (the home RESET button, the offer after a missed Jummah), or null. */
+    val resetProtocol: Protocol? get() = file.protocols.firstOrNull { it.kind == ProtocolKind.RESET }
+
+    /** The file's promise protocol (LATER), or null. */
+    val promiseProtocol: Protocol? get() = file.protocols.firstOrNull { it.kind == ProtocolKind.PROMISE }
+
+    /** Today's Jummah times when today is a Friday with a Jummah protocol, else null. */
+    fun jummahToday(): JummahInfo? = jummahProtocol?.let { Timeline.jummah(it, dayTimes()) }
+
+    /** Friday: Jummah replaces the Dhuhr protocol (its adhan starts no run, no heads-up) unless Jummah was missed. */
+    fun dhuhrReplaced(prayer: Prayer): Boolean =
+        prayer == Prayer.DHUHR && jummahToday() != null && day.jummah != DayState.JUMMAH_MISSED
+
+    /**
+     * What re-entering the day (a reset's last step) does now: an open prayer comes first; else the next planned start
+     * starts now when it is due within [withinMin] minutes (a prayer's adhan cannot be started early); else it is only
+     * named.
+     */
+    fun reentryPlan(withinMin: Int): Reentry {
+        val prayer = s.runs.filter { it.prayer != null && !it.test && !it.confirmed }.minByOrNull { it.firedAt }
+        if (prayer != null) return Reentry.Prayer(prayer)
+        val next = plan().firstOrNull { it.at.isAfter(now) && it.key !in day.handled } ?: return Reentry.Nothing
+        val soon = next.source != StartSource.ADHAN && !next.at.isAfter(now.plus(Duration.ofMinutes(withinMin.toLong())))
+        return if (soon) Reentry.Start(next) else Reentry.Next(next)
+    }
+
+    /** [plan] as the takeover and the journal say it, e.g. "NEXT: ASR AT ~15:20". */
+    fun reentryLine(plan: Reentry): String = when (plan) {
+        is Reentry.Prayer -> "${protocol(plan.run)?.title ?: plan.run.prayer?.title} COMES FIRST: PRAY IT NOW."
+        is Reentry.Start -> "${plan.item.title} STARTS NOW."
+        is Reentry.Next -> "NEXT: ${plan.item.title} AT ${if (plan.item.estimated) "~" else ""}${WallClock.hhmm(plan.item.at, zone)}."
+        Reentry.Nothing -> "NOTHING ELSE IS PLANNED TODAY."
+    }
 
     /** How much a connected call has extended [r] so far (what the call's end will add to its timers and lock). */
     fun callShift(r: Run): Duration {
@@ -306,7 +354,7 @@ internal open class View(var s: MachineState, val env: MachineEnv) {
         if (!suspended) {
             for (prayer in Prayer.entries) {
                 val p = file.prayerProtocol(prayer) ?: continue
-                if (stageOf(p) >= 3) continue
+                if (stageOf(p) >= 3 || dhuhrReplaced(prayer)) continue
                 val lead = p.intParam("heads_up_min")
                 if (lead <= 0) continue
                 val last = s.prayers.lastAdhan[prayer] ?: continue
@@ -322,6 +370,11 @@ internal open class View(var s: MachineState, val env: MachineEnv) {
             }
             if (r.phase == RunPhase.CARD) r.classEndsAt?.let { c += it }
             if (r.phase == RunPhase.NIGHT) r.lockEndsAt?.let { c += it }
+            r.jummah?.let { j ->
+                c += listOfNotNull(j.arriveAt, j.lockAt, j.missedAt, j.cardAt?.takeIf { !j.cardSent })
+                j.askedAt?.let { c += it.plus(Duration.ofMinutes(p.intParam("arrive_repeat_min").toLong())) }
+            }
+            if (r.phase == RunPhase.WAITING) r.promise?.let { c += it.dueAt }
             if (r.phase == RunPhase.ACTIVE && s.callSince == null) {
                 r.lockEndsAt?.let { c += it }
                 val steps = stepsOf(r)
@@ -345,4 +398,18 @@ internal open class View(var s: MachineState, val env: MachineEnv) {
         }
         return c.filter { it.isAfter(now) }.minOrNull()
     }
+}
+
+/** What re-entering the day does ([View.reentryPlan]). */
+internal sealed interface Reentry {
+    /** An open, unconfirmed prayer comes first: its takeover starts. */
+    data class Prayer(val run: Run) : Reentry
+
+    /** The next planned protocol starts now. */
+    data class Start(val item: PlannedStart) : Reentry
+
+    /** The next planned start, too far away to start now (or a prayer's adhan). */
+    data class Next(val item: PlannedStart) : Reentry
+
+    data object Nothing : Reentry
 }

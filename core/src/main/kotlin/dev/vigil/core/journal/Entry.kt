@@ -36,7 +36,7 @@ data class Entry(
     val text: String? = null,
     /** The day key (yyyy-MM-dd) for day_start and day_end. */
     val day: String? = null,
-    /** fajr, dhuhr, asr, maghrib or isha. */
+    /** fajr, dhuhr, asr, maghrib or isha; jummah for a Jummah run's entries. */
     val prayer: String? = null,
     /** When a lock, block or suspension ends (same format as [ts]). */
     val until: String? = null,
@@ -96,6 +96,14 @@ object EntryType {
     const val WAKE_ALARM_UNANSWERED = "wake_alarm_unanswered"
     const val TODO_SET = "todo_set"
     const val TODO_DONE = "todo_done"
+    const val OFFER = "offer"
+    const val REENTRY = "reentry"
+    const val PROMISE = "promise"
+    const val ARRIVAL_CHECK = "arrival_check"
+    const val ARRIVED = "arrived"
+    const val JUMMAH_CARD = "jummah_card"
+    const val JUMMAH_LOCK = "jummah_lock"
+    const val DND = "dnd"
 
     val DESCRIPTIONS: Map<String, String> = linkedMapOf(
         DAY_START to "A day started (day = its key; reason = how the previous day ended, or first_start).",
@@ -109,14 +117,17 @@ object EntryType {
         RELEASED to "A prayer lock was left after its minimum: no penalty, the prayer stays open for confirmation.",
         LOCK_ENDED to "A run's lock ended before it was finished: the screen is free, the run waits (prayer: CONFIRM on home).",
         MISSED to "A run ended unfinished (reason day_end, replaced = its protocol started again, prayer: window_closed or " +
-            "next_adhan, unconfirmed; an unconfirmed stage-3 reminder too). Counts for stages.",
+            "next_adhan, unconfirmed; an unconfirmed stage-3 reminder too; Jummah: not_confirmed by its missed time). " +
+            "Counts for stages and for the reset offer.",
         NOT_FIRED to "Daily self-check: a planned start that never fired (scheduled = when it was due); reason wake_alarm = " +
             "a wake alarm that never rang (the phone was off).",
         SKIPPED to "A trigger happened but nothing started (reason: suspended, already_running, day_end = set off while the " +
             "day ended; sleep_tap = GOING TO SLEEP before the day's wake time, the day goes on; wake_alarm = a dismissal with no " +
-            "alarm ringing).",
-        DROPPED to "A run was closed without an outcome (reason: kill_switch, day_end for a test run, protocol_removed).",
-        CONFIRMED to "A prayer was confirmed (Done, or CONFIRM on home / the card).",
+            "alarm ringing; jummah = a Friday Dhuhr adhan, Jummah replaces it; window_closed = Jummah missed after Asr came, " +
+            "no Dhuhr; not_friday; needs_text = a promise needs LATER; one_at_a_time = a promise is already running).",
+        DROPPED to "A run was closed without an outcome (reason: kill_switch, day_end for a test run or an expired promise, " +
+            "protocol_removed, reset = dropped when a reset re-entered the day).",
+        CONFIRMED to "A prayer was confirmed (Done, or CONFIRM on home / the card); prayer jummah = Jummah.",
         STAGE_UP to "Promoted one stage after enough clean completions in a row (stage = the new stage).",
         STAGE_DOWN to "Moved back one stage after too many misses or bail-outs in the recent outcomes (stage = the new stage).",
         POOL_WAIT to "A pool wait screen started (minutes = its length).",
@@ -158,6 +169,23 @@ object EntryType {
             "the next unlock.",
         TODO_SET to "Tomorrow's to-dos were written in the wind-down (day = the day they are for; text = one per line).",
         TODO_DONE to "A to-do was ticked off (reason done) or unticked (reason undone); text = the to-do.",
+        OFFER to "A protocol was offered instead of forced (the reset: reason misses:<n> after n missed or left in a row, " +
+            "or jummah_missed), or the offer ended (reason started, not_now = declined at no cost, expired = the day ended " +
+            "or VIGIL was suspended).",
+        REENTRY to "A reset re-entered the day: today's missed and waiting runs were dropped and the miss count cleared " +
+            "(reason prayer = an open prayer comes first, started = the next protocol started now, next = only named, " +
+            "nothing; detail = the line shown; text = what derailed the day, if named).",
+        PROMISE to "A 10-minute promise (text = the line): reason promised (minutes, until = when due), due, snoozed " +
+            "(minutes), on_it (the takeover closed, the pool lock stays), kept (DONE), bailed (LEAVE: the usual penalty), " +
+            "expired_at_day_end (no penalty).",
+        ARRIVAL_CHECK to "Jummah: I'M AT UNI was asked (it asks again every arrive_repeat_min until confirmed or the lock); " +
+            "reason not_yet = the ask was closed with NOT YET.",
+        ARRIVED to "Jummah: I'M AT UNI was confirmed (minutes after the arrival time, negative = before).",
+        JUMMAH_CARD to "Jummah: the silent card before the last Friday class ends (\"Go straight to the prayer place\").",
+        JUMMAH_LOCK to "Jummah: the lock started (until = its end; phone silent, pool blocked), waits behind a prayer's lock, " +
+            "or ended unconfirmed (reason ended).",
+        DND to "Do Not Disturb switched by VIGIL (reason on or off; detail = why; no_access = the phone did not allow it, the " +
+            "lock showed all the same). It is never left on after the Jummah lock.",
     )
 }
 

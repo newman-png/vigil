@@ -61,6 +61,18 @@ data class DaySummary(
     val alarmsUnanswered: Int = 0,
     /** To-dos ticked off this day. */
     val todosDone: Int = 0,
+    /** Jummah: "confirmed", "missed" or null (not a Friday, or nothing happened). */
+    val jummah: String? = null,
+    /** Jummah's I'M AT UNI confirmation (minutes after the arrival time), or null. */
+    val arrived: Entry? = null,
+    /** Resets that re-entered the day (detail = the line, text = what derailed the day). */
+    val resets: List<Entry> = emptyList(),
+    /** Reset offers made (reason misses:<n> or jummah_missed). */
+    val offers: Int = 0,
+    /** Offers declined with NOT NOW. */
+    val offersDeclined: Int = 0,
+    /** 10-minute promises: every `promise` entry (reason promised, due, snoozed, on_it, kept, bailed, expired_at_day_end). */
+    val promises: List<Entry> = emptyList(),
 )
 
 /** Facts written at the top of the report. */
@@ -132,7 +144,7 @@ object Report {
             appExits = list.filter { it.type == EntryType.APP_EXIT },
             lateAlarms = list.filter { it.type == EntryType.ALARM_LATE },
             stageChanges = list.filter { it.type == EntryType.STAGE_UP || it.type == EntryType.STAGE_DOWN },
-            notes = list.filter { !it.text.isNullOrBlank() && it.type != EntryType.TODO_DONE && it.type != EntryType.TODO_SET },
+            notes = list.filter { !it.text.isNullOrBlank() && it.type !in NOT_NOTES },
             entries = all,
             sleepTarget = list.lastOrNull { it.type == EntryType.SLEEP_TARGET }?.scheduled,
             slept = list.lastOrNull { it.type == EntryType.SLEEP },
@@ -140,8 +152,21 @@ object Report {
             nightMissed = list.lastOrNull { it.type == EntryType.NIGHT_MISSED }?.reason,
             alarmsUnanswered = list.count { it.type == EntryType.WAKE_ALARM_UNANSWERED },
             todosDone = list.count { it.type == EntryType.TODO_DONE && it.reason == "done" },
+            jummah = list.lastOrNull { it.prayer == JUMMAH && (it.type == EntryType.CONFIRMED || it.type == EntryType.MISSED) }
+                ?.let { if (it.type == EntryType.CONFIRMED) "confirmed" else "missed" },
+            arrived = list.lastOrNull { it.type == EntryType.ARRIVED },
+            resets = list.filter { it.type == EntryType.REENTRY },
+            offers = list.count { it.type == EntryType.OFFER && (it.reason?.startsWith("misses:") == true || it.reason == "jummah_missed") },
+            offersDeclined = list.count { it.type == EntryType.OFFER && it.reason == "not_now" },
+            promises = list.filter { it.type == EntryType.PROMISE },
         )
     }
+
+    /** The journal's `prayer` value for Jummah. */
+    private const val JUMMAH = "jummah"
+
+    /** Entries with text that have their own lines (to-dos, resets, promises), so they are not repeated as notes. */
+    private val NOT_NOTES = setOf(EntryType.TODO_DONE, EntryType.TODO_SET, EntryType.REENTRY, EntryType.PROMISE, EntryType.SKIPPED)
 
     /** The markdown progress report. */
     fun markdown(entries: List<Entry>, meta: ReportMeta): String {
@@ -185,6 +210,23 @@ object Report {
                     "; ${count(days.sumOf { it.alarmsUnanswered }, "alarm")} unanswered",
             )
         }
+        val jummahs = days.mapNotNull { it.jummah }
+        if (jummahs.isNotEmpty()) {
+            sb.appendLine("- Jummah: ${jummahs.count { it == "confirmed" }} confirmed, ${jummahs.count { it == "missed" }} missed")
+        }
+        val resets = days.sumOf { it.resets.size }
+        val offers = days.sumOf { it.offers }
+        if (resets > 0 || offers > 0) {
+            sb.appendLine("- Resets: $resets done; offered ${count(offers, "time")}, ${days.sumOf { it.offersDeclined }} not now")
+        }
+        val promises = days.flatMap { it.promises }
+        if (promises.isNotEmpty()) {
+            fun n(reason: String) = promises.count { it.reason == reason }
+            sb.appendLine(
+                "- Promises: ${n("promised")} made, ${n("kept")} kept, ${n("snoozed")} snoozed, ${n("bailed")} bailed, " +
+                    "${n("expired_at_day_end")} expired at the day end",
+            )
+        }
         sb.appendLine(
             "- Kill switch: ${days.sumOf { d -> d.killSwitch.count { it.reason == "suspended" } }} · " +
                 "speed bumps: ${days.sumOf { it.speedBumps.size }} · app exits: ${days.sumOf { it.appExits.size }} · " +
@@ -218,6 +260,13 @@ object Report {
                 d.todosDone.takeIf { it > 0 }?.let { "$it to-dos ticked" },
             )
             if (sleep.isNotEmpty()) sb.appendLine("- **Sleep** " + sleep.joinToString(" · "))
+            if (d.jummah != null || d.arrived != null) {
+                val parts = listOfNotNull(
+                    d.jummah,
+                    d.arrived?.let { "at uni ${time(it.ts)} (${relative(it.minutes ?: 0, "the arrival time")})" },
+                )
+                sb.appendLine("- **Jummah** " + parts.joinToString(" · "))
+            }
             sb.appendLine()
             if (d.protocols.isNotEmpty()) {
                 sb.appendLine("| Protocol | Fired | Completed | Clean | Stepped down | Bailed | Missed | Not fired | Skipped |")
@@ -238,6 +287,12 @@ object Report {
             }
             listLine(sb, "Stage changes", d.stageChanges) {
                 "${time(it.ts)} ${it.protocol ?: ""} ${if (it.type == EntryType.STAGE_UP) "up" else "down"} to stage ${it.stage}"
+            }
+            listLine(sb, "Resets", d.resets) {
+                "${time(it.ts)}" + (it.text?.let { t -> " \"$t\"" } ?: "") + (it.detail?.let { x -> ": $x" } ?: "")
+            }
+            listLine(sb, "Promises", d.promises.filter { it.reason != "promised" && it.reason != "due" }) {
+                "${time(it.ts)} \"${it.text ?: ""}\" ${it.reason?.replace('_', ' ') ?: ""}"
             }
             listLine(sb, "Notes", d.notes) { "${time(it.ts)} ${it.protocol ?: ""}: \"${it.text!!.replace("\n", " / ")}\"" }
         }

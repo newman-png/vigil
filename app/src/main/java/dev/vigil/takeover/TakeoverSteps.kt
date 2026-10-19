@@ -76,17 +76,36 @@ internal fun SingleStep(view: StepView, nowSec: () -> Long, onTyping: () -> Unit
                 TakeoverText(step.text, TakeoverType.Step)
                 Spacer(Modifier.height(20.dp))
                 TextLines(step.lines ?: 1, requiredLines(step), onTyping, onSave)
+                if (step.optional) SkipWord { onSave("") }
             }
         }
         if (step.noiseToggle) {
             Spacer(Modifier.height(16.dp))
             NoiseSwitch()
         }
+        // A reset's re-enter step says what re-entering does: what comes first, starts now, or comes next.
+        view.reentry?.let {
+            Spacer(Modifier.height(20.dp))
+            TakeoverText(it, TakeoverType.Small, color = Palette.White)
+        }
     }
 }
 
 /** How many of a text step's lines must be filled: all of them, or one for a to-dos step ("up to" its lines). */
 internal fun requiredLines(step: Step): Int = if (step.todos) 1 else (step.lines ?: 1)
+
+/** SKIP under an optional text step (the reset's "name it"): the step is done with nothing typed. */
+@Composable
+private fun SkipWord(onSkip: () -> Unit) {
+    TakeoverText(
+        "SKIP",
+        TakeoverType.Choice,
+        Modifier
+            .clickable(remember { MutableInteractionSource() }, indication = null, onClick = onSkip)
+            .padding(horizontal = 24.dp, vertical = 14.dp),
+        color = TakeoverType.Dim,
+    )
+}
 
 /**
  * Stage 2 (guided): every step as a plain checklist, without timers or step locks. Only the current step [current]
@@ -124,6 +143,7 @@ internal fun Checklist(
                 }
                 if (now && step.type == StepType.TEXT) {
                     TextLines(step.lines ?: 1, requiredLines(step), onTyping) { onSave(i, it) }
+                    if (step.optional) SkipWord { onSave(i, "") }
                     Spacer(Modifier.height(8.dp))
                 }
                 if (now && step.noiseToggle) NoiseSwitch()

@@ -36,6 +36,8 @@ import dev.vigil.core.pool.PoolDecision
 import dev.vigil.core.pool.PoolText
 import dev.vigil.core.pool.PoolWait
 import dev.vigil.core.protocol.HeavyUseConfig
+import dev.vigil.core.run.RunPhase
+import dev.vigil.engine.Vigil
 import dev.vigil.takeover.Eye
 import dev.vigil.takeover.EyeMode
 import kotlinx.coroutines.delay
@@ -145,11 +147,15 @@ private fun blockedText(app: String, now: Instant, decision: PoolDecision?, zone
     val blocked = decision as? PoolDecision.Blocked ?: return openText(app)
     val first = blocked.blocks.first()
     val closed = first.reason == BlockReason.OUTSIDE_WINDOW || first.reason == BlockReason.WINDOW_CAP
+    // A promise that came due holds the pool: what was promised, in the user's own words.
+    val promise = Vigil.state.value.runs.firstOrNull { it.promise != null && it.phase == RunPhase.ACTIVE }?.promise
+        ?.takeIf { first.reason == BlockReason.RUN_LOCK }
     return GuardText(
         label = (if (closed) "POOL CLOSED" else "POOL BLOCKED") + " · $app",
         headline = PoolText.reason(first),
         details = listOf(untilText(first, now, zone)) + blocked.blocks.drop(1).map { "ALSO ${PoolText.block(it, zone)}" },
-        note = noteFor(first.reason),
+        note = promise?.let { "YOU SAID: ${it.text.uppercase()}. THE POOL OPENS AT DONE (HOME OR THE NOTIFICATION)." }
+            ?: noteFor(first.reason),
     )
 }
 

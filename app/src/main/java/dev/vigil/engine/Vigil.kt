@@ -20,6 +20,7 @@ import dev.vigil.core.journal.ReportMeta
 import dev.vigil.core.machine.Effect
 import dev.vigil.core.machine.HomeStatus
 import dev.vigil.core.machine.Input
+import dev.vigil.core.machine.JummahTestPart
 import dev.vigil.core.machine.Machine
 import dev.vigil.core.machine.MachineEnv
 import dev.vigil.core.machine.MachineState
@@ -28,6 +29,7 @@ import dev.vigil.core.machine.StepView
 import dev.vigil.core.machine.Todo
 import dev.vigil.core.pool.BlockReason
 import dev.vigil.core.pool.PoolDecision
+import dev.vigil.core.protocol.Intensity
 import dev.vigil.core.protocol.Prayer
 import dev.vigil.core.protocol.ProtocolFile
 import dev.vigil.core.protocol.ProtocolKind
@@ -166,8 +168,14 @@ object Vigil {
     /** The current step of run [runId] with its locks and timers, or null. */
     fun stepView(runId: String): StepView? = Machine.stepView(state.value, runId, Graph.env())
 
-    /** True when [run]'s takeover must be silent (QUIET, or a prayer during a class). */
+    /** True when [run]'s takeover must be silent (QUIET, a prayer during a class, the Jummah lock). */
     fun isSilent(run: Run): Boolean = Machine.isSilent(state.value, run)
+
+    /** How loud [run]'s takeover is (its protocol's intensity; the Jummah lock is subtle). */
+    fun intensity(run: Run): Intensity = Machine.intensity(run, file())
+
+    /** The minutes SNOOZE gives promise [run], or null when no snooze is offered. */
+    fun snoozeMinutes(run: Run): Int? = Machine.snoozeMinutes(run, file())
 
     /** Step [index] of run [runId] was finished ([text] for text steps). Stale or locked taps are ignored. */
     fun stepDone(runId: String, index: Int, text: String? = null) {
@@ -187,6 +195,56 @@ object Vigil {
     /** LEAVE held: quit the run early (logged; the pool penalty follows). */
     fun bailOut(runId: String) {
         exec(Input.BailOut(runId))
+    }
+
+    /** ON IT (a promise: the pool lock stays) or NOT YET (I'M AT UNI: it asks again later): the asking takeover closes. */
+    fun dismiss(runId: String) {
+        exec(Input.Dismiss(runId))
+    }
+
+    /** SNOOZE on a promise that came due (once, half its minutes). */
+    fun snooze(runId: String) {
+        exec(Input.Snooze(runId))
+    }
+
+    /**
+     * LATER: a 10-minute promise of [text] in [minutes] ([test]: a TEST preview that counts for nothing). Returns why
+     * none was made (VIGIL suspended, one already running), or null when it runs.
+     */
+    fun promise(text: String, minutes: Int, test: Boolean = false): String? {
+        val outcome = exec(Input.Promise(text, minutes, test))
+        if (outcome.entries.any { it.type == EntryType.FIRED }) return null
+        return skipText(outcome.entries.lastOrNull { it.type == EntryType.SKIPPED }?.reason)
+    }
+
+    /** The answer to the reset offer: START (it starts now) or NOT NOW (costs nothing). */
+    fun answerOffer(start: Boolean) {
+        exec(Input.AnswerOffer(start))
+    }
+
+    /**
+     * Home's RESET: the reset protocol starts now (no penalty, no stage change). Returns what to tell the user when it
+     * did not start at once (it waits behind the protocol on screen, VIGIL is suspended, it is already running), or null.
+     */
+    fun startReset(): String? {
+        val id = Machine.status(state.value, Graph.env()).resetProtocol ?: return skipText(null)
+        val outcome = exec(Input.Manual(id, test = false))
+        val fired = outcome.entries.lastOrNull { it.type == EntryType.FIRED && it.protocol == id }
+        if (fired != null) return fired.detail?.takeIf { it.startsWith("waits behind") }?.let { "It $it, then it starts." }
+        return skipText(outcome.entries.lastOrNull { it.type == EntryType.SKIPPED && it.protocol == id }?.reason)
+    }
+
+    /** Why a protocol or promise asked for from home did not start, from its `skipped` reason. */
+    private fun skipText(reason: String?): String = when (reason) {
+        "suspended" -> "VIGIL is suspended (kill switch)."
+        "already_running" -> "It is already running."
+        "one_at_a_time" -> "A promise is already running: one at a time."
+        else -> "Nothing started."
+    }
+
+    /** TEST > JUMMAH: one part of Jummah as a preview now. */
+    fun testJummah(part: JummahTestPart) {
+        exec(Input.TestJummah(part))
     }
 
     // ------------------------------------------------------------------ home
@@ -293,6 +351,8 @@ object Vigil {
             Log.e(TAG, "Could not journal the exit reasons", e)
         }
         exec(Input.Tick)
+        // Do Not Disturb is never left on by VIGIL once no Jummah lock needs it (the process may have died in one).
+        guard("Do Not Disturb") { Dnd.sync(context, Machine.dndWanted(state.value, Graph.env())) }
         VigilService.start(context)
     }
 
@@ -353,6 +413,9 @@ object Vigil {
                 "${env.protocols.find(r.protocol)?.title ?: r.protocol} RUNNING"
             }
         }
+        s.runs.firstOrNull { it.promise != null && it.phase == RunPhase.WAITING }?.promise?.let {
+            parts += "PROMISE AT ${WallClock.hhmm(it.dueAt, env.zone)}"
+        }
         parts += Machine.poolStatus(s, env)
         Machine.status(s, env).nextStart?.let { parts += "NEXT ${it.start.title} ${WallClock.hhmm(it.start.at, env.zone)}" }
         return parts.joinToString(" · ")
@@ -410,7 +473,8 @@ object Vigil {
                 WakeAlarmService.ring(context, effect.stopAt, effect.test)
             }
             Effect.StopWakeAlarm -> WakeAlarmService.stop(context)
-            is Effect.SetDnd -> Log.i(TAG, "Do Not Disturb is not part of this version (M4): ${effect.on}")
+            // Without Do Not Disturb access the lock shows all the same; the engine journals it (after this step).
+            is Effect.SetDnd -> if (!Dnd.set(context, effect.on) && effect.on) main.post { guard("Do Not Disturb journal") { exec(Input.DndNoAccess) } }
             is Effect.Audio -> when {
                 effect.sound != Effect.Audio.WHITE_NOISE -> Log.i(TAG, "Only white noise is part of this version (M8): ${effect.action} ${effect.sound}")
                 effect.action == Effect.Audio.PLAY -> WhiteNoiseService.start(context)

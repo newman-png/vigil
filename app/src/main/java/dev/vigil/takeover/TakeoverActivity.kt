@@ -240,7 +240,8 @@ class TakeoverActivity : ComponentActivity() {
                 val live = owner?.takeIf { takeoverKey(it) == ticketKey }
                 val file = remember { Vigil.file() }
                 val protocol = remember { file.find(ticket.protocol) }
-                val intensity = protocol?.intensity ?: Intensity.FULL_THEN_SUBTLE
+                // The protocol's intensity; the Jummah lock is a subtle, silent screen.
+                val intensity = remember { Vigil.intensity(live ?: ticket) }
                 val silentAtStart = remember { Vigil.isSilent(live ?: ticket) }
                 val shownSince = remember { shownSince(ticketKey) }
                 val introSeen = remember { ticketKey in introsSeen }
@@ -273,6 +274,7 @@ class TakeoverActivity : ComponentActivity() {
                     initial = ticket,
                     live = live,
                     protocol = protocol,
+                    intensity = intensity,
                     steps = live?.let { Vigil.steps(it) } ?: emptyList(),
                     // The morning shows today's first open to-do (written in last night's wind-down).
                     todo = if (protocol?.kind == ProtocolKind.MORNING) todoLine(Vigil.todos().filter { !it.done }.map { it.text }) else null,
@@ -300,6 +302,9 @@ class TakeoverActivity : ComponentActivity() {
         override fun confirm(runId: String) = Vigil.confirm(runId)
         override fun notOkay(runId: String) = Vigil.notOkay(runId)
         override fun bailOut(runId: String) = Vigil.bailOut(runId)
+        override fun dismiss(runId: String) = Vigil.dismiss(runId)
+        override fun snooze(runId: String) = Vigil.snooze(runId)
+        override fun snoozeMinutes(runId: String): Int? = run(runId)?.let { Vigil.snoozeMinutes(it) }
         override fun goingToSleep(ishaPrayed: Boolean) = Vigil.goingToSleep(ishaPrayed)
         override fun tick() = Vigil.onTick()
         override fun call() {

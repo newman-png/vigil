@@ -15,6 +15,8 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <uses-permission android:name="android.permission.VIBRATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- The Jummah lock silences the phone (Do Not Disturb). The user grants Do Not Disturb access in SETUP. -->
+    <uses-permission android:name="android.permission.ACCESS_NOTIFICATION_POLICY" />
     <!-- Call pause: the phone's call state (TelephonyCallback). Granted in SETUP; without it the audio mode is used. -->
     <uses-permission android:name="android.permission.READ_PHONE_STATE" />
     <!-- Usage access is granted by the user in system settings (SETUP): the front app for a takeover coming back. -->
@@ -154,7 +156,8 @@
             android:name=".engine.QuietToggleReceiver"
             android:exported="false" />
 
-        <!-- CONFIRM / DONE on the engine's notices (prayers, stage-3 reminders). -->
+        <!-- CONFIRM / DONE / I'M AT UNI on the engine's notices (prayers, Jummah, stage-3 reminders, promises), and
+             START / NOT NOW on the reset offer. -->
         <receiver
             android:name=".engine.NoticeActionReceiver"
             android:exported="false" />

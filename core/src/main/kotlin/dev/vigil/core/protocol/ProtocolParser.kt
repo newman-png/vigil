@@ -111,6 +111,10 @@ object ProtocolParser {
             "todos" to Shape.Bool,
             "skip_on_class_days" to Shape.Bool,
             "noise_toggle" to Shape.Bool,
+            "optional" to Shape.Bool,
+            "reenter" to Shape.Bool,
+            "walking_on" to Shape.Bool,
+            "arrival" to Shape.Bool,
         ),
         required = setOf("text"),
     )
@@ -355,6 +359,13 @@ object ProtocolParser {
                 if (p.kind != ProtocolKind.PRAYER && trigger is Trigger.Adhan) {
                     ctx.error("$path.trigger", "event:adhan starts prayer protocols only (kind \"prayer\").")
                 }
+                val jummahSlot = trigger == Trigger.Slot(SlotType.JUMMAH)
+                if (p.kind == ProtocolKind.JUMMAH && !jummahSlot) {
+                    ctx.error("$path.trigger", "a jummah protocol starts from MY TIMES on Fridays: use slot:jummah.")
+                }
+                if (p.kind != ProtocolKind.JUMMAH && jummahSlot) {
+                    ctx.error("$path.trigger", "slot:jummah starts jummah protocols only (kind \"jummah\").")
+                }
                 if (trigger is Trigger.After) {
                     if (trigger.protocolId !in ids) ctx.error("$path.trigger", "there is no protocol \"${trigger.protocolId}\".")
                     if (trigger.protocolId == p.id) ctx.error("$path.trigger", "a protocol cannot start after itself.")
@@ -374,6 +385,9 @@ object ProtocolParser {
             if (lock.minutes == null) ctx.error("$path.lock.minutes", "a prayer lock needs minutes (e.g. 20).")
             if (lock.doneAfterMin == null) ctx.warn("$path.lock.done_after_min", "without it \"I'M NOT OKAY\" cannot shorten the prayer lock.")
             if (lock.type == LockType.NONE) ctx.warn("$path.lock.type", "a prayer without a lock only shows its steps.")
+        }
+        if (p.kind == ProtocolKind.JUMMAH && lock.minutes == null) {
+            ctx.error("$path.lock.minutes", "the Jummah lock needs minutes (e.g. 45, from jummah_time - lock_before_min).")
         }
 
         // Versions.
@@ -440,6 +454,18 @@ object ProtocolParser {
             if (s.type == StepType.DONE) doneCount++
             if (s.todos && s.type != StepType.TEXT) ctx.error("$sp.todos", "only a text step can hold to-dos.")
             if (s.todos && p.kind != ProtocolKind.SLEEP) ctx.warn("$sp.todos", "only sleep protocols turn lines into to-dos; it is ignored here.")
+            if (s.optional && s.type != StepType.TEXT) ctx.warn("$sp.optional", "only a text step can be optional; it is ignored here.")
+            if (s.reenter && p.kind != ProtocolKind.RESET) ctx.error("$sp.reenter", "only reset protocols re-enter the day.")
+            if (s.reenter && i != steps.lastIndex) ctx.error("$sp.reenter", "the re-enter step must be the last step.")
+            if (s.arrival && p.kind != ProtocolKind.JUMMAH) ctx.error("$sp.arrival", "only a jummah protocol has an arrival step.")
+        }
+        if (p.kind == ProtocolKind.JUMMAH) {
+            val arrivals = steps.indices.filter { steps[it].arrival }
+            when {
+                arrivals.size != 1 -> ctx.error(path, "a jummah protocol needs exactly one arrival step (I'M AT UNI) between leaving and the lock.")
+                steps.drop(arrivals[0] + 1).none { it.type == StepType.DONE } ->
+                    ctx.error(path, "a jummah protocol needs a done step after its arrival step (tapping it confirms Jummah).")
+            }
         }
         if (doneCount > 1) ctx.error(path, "has more than one done step.")
         if (steps.isNotEmpty() && steps.all { it.skipOnClassDays }) {

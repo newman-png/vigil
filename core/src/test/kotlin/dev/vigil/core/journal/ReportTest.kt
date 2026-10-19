@@ -10,6 +10,7 @@ import dev.vigil.core.protocol.Prayer
 import dev.vigil.core.protocol.ProtocolKind
 import dev.vigil.core.protocol.Step
 import dev.vigil.core.protocol.StepType
+import dev.vigil.core.times.MyTimes
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
@@ -150,5 +151,63 @@ class ReportTest {
         val csv = Report.csv(entries)
         assertEquals(entries.size + 2, csv.split("\r\n").size)
         assertTrue(csv.contains(",pool_session,"))
+    }
+
+    /** A Friday: Jummah confirmed, a reset offered (NOT NOW) and then done, a promise kept after a snooze, one left. */
+    private fun friday(): List<Entry> {
+        val sim = Sim("2026-10-23T08:00", file = fileWith(testProtocol("alpha")), times = MyTimes())
+        sim.at("2026-10-23T13:20")
+        sim.at("2026-10-23T14:20")
+        val j = sim.state.runs.first { it.jummah != null }.id
+        sim.at("2026-10-23T14:22", Input.Confirm(j))
+        sim.at("2026-10-23T14:35")
+        sim.at("2026-10-23T14:50", Input.StepDone(j, 5))
+        repeat(2) {
+            sim.at("2026-10-23T16:00", Input.Manual("alpha"))
+            sim.step(Input.BailOut(sim.runId("alpha")))
+        }
+        sim.step(Input.AnswerOffer(start = false))
+        sim.at("2026-10-23T16:10", Input.Manual("reset"))
+        val r = sim.runId("reset")
+        sim.after(1, Input.StepDone(r, 1, "Phone in bed"))
+        sim.after(3, Input.StepDone(r, 2))
+        sim.after(5, Input.StepDone(r, 3))
+        sim.after(5, Input.StepDone(r, 4))
+        sim.step(Input.StepDone(r, 5))
+        sim.at("2026-10-23T17:00", Input.Promise("Email the professor", 10))
+        sim.at("2026-10-23T17:10", Input.Snooze(sim.state.runs.first { it.promise != null }.id))
+        sim.at("2026-10-23T17:15")
+        sim.at("2026-10-23T17:16", Input.Confirm(sim.state.runs.first { it.promise != null }.id))
+        sim.at("2026-10-23T18:00", Input.Promise("Tidy the desk", 5))
+        sim.at("2026-10-23T18:05", Input.BailOut(sim.state.runs.first { it.promise != null }.id))
+        sim.at("2026-10-23T23:00", Input.GoingToSleep())
+        return sim.entries.toList()
+    }
+
+    @Test
+    fun jummahResetsAndPromises() {
+        val d = Report.days(friday()).first()
+        assertEquals("confirmed", d.jummah)
+        assertEquals(2, d.arrived!!.minutes)
+        assertEquals(listOf("jummah"), d.prayersConfirmed)
+        assertEquals(1, d.resets.size)
+        assertEquals("Phone in bed", d.resets.single().text)
+        assertEquals(1, d.offers)
+        assertEquals(1, d.offersDeclined)
+        assertEquals(listOf("promised", "due", "snoozed", "due", "kept", "promised", "due", "bailed"), d.promises.map { it.reason })
+        // The named reason is in the resets line, not repeated as a note.
+        assertTrue(d.notes.none { it.text == "Phone in bed" && it.type == EntryType.REENTRY })
+        val md = Report.markdown(friday(), ReportMeta(rome("2026-10-24T10:00"), ROME))
+        assertTrue(md.contains("- Jummah: 1 confirmed, 0 missed"))
+        assertTrue(md.contains("- Resets: 1 done; offered 1 time, 1 not now"))
+        assertTrue(md.contains("- Promises: 2 made, 1 kept, 1 snoozed, 1 bailed, 0 expired at the day end"))
+        assertTrue(md.contains("- **Prayers** confirmed: jummah"))
+        assertTrue(md.contains("- **Jummah** confirmed · at uni 14:22 (2 min after the arrival time)"))
+        assertTrue(md.contains("- **Resets**: 16:24 \"Phone in bed\": NEXT: WIND-DOWN AT 23:30."))
+        assertTrue(md.contains("- **Promises**: 17:10 \"Email the professor\" snoozed; 17:16 \"Email the professor\" kept; 18:05 \"Tidy the desk\" bailed"))
+        assertTrue(md.contains("- `promise`:"))
+        val csv = Report.csv(friday())
+        assertTrue(csv.contains(",promise,promise,"))
+        assertTrue(csv.contains(",reentry,reset,"))
     }
 }

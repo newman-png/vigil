@@ -6,13 +6,18 @@ import dev.vigil.core.pool.PoolDecision
 import dev.vigil.core.pool.PoolRules
 import dev.vigil.core.pool.PoolText
 import dev.vigil.core.pool.WindowSpan
+import dev.vigil.core.protocol.Intensity
 import dev.vigil.core.protocol.Prayer
 import dev.vigil.core.protocol.ProtocolKind
 import dev.vigil.core.protocol.ProtocolFile
 import dev.vigil.core.protocol.Step
 import dev.vigil.core.protocol.StepType
+import dev.vigil.core.run.JummahPart
 import dev.vigil.core.run.Run
 import dev.vigil.core.run.RunPhase
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.intOrNull
 import dev.vigil.core.timeline.StartSource
 import dev.vigil.core.timeline.StartStatus
 import dev.vigil.core.timeline.TimelineItem
@@ -99,8 +104,32 @@ object Machine {
         return v.screenOwner()
     }
 
-    /** True when leaving [run]'s takeover brings it back (stage 1); stage 2 shows once and is not re-asserted. */
-    fun reasserts(run: Run): Boolean = run.stage == 1
+    /**
+     * True when leaving [run]'s takeover brings it back (stage 1); stage 2 shows once and is not re-asserted, and neither
+     * is an asking takeover (I'M AT UNI asks again by itself; a promise keeps its notification).
+     */
+    fun reasserts(run: Run): Boolean = run.stage == 1 && !run.asking
+
+    /** How loud [run]'s takeover is: its protocol's intensity, except the Jummah lock, a subtle and silent screen. */
+    fun intensity(run: Run, file: ProtocolFile): Intensity =
+        if (run.jummah?.part == JummahPart.LOCK) Intensity.SUBTLE else file.find(run.protocol)?.intensity ?: Intensity.FULL_THEN_SUBTLE
+
+    /** True while VIGIL's Do Not Disturb should be on (a Jummah lock holds); the app turns off one it left on otherwise. */
+    fun dndWanted(state: MachineState, env: MachineEnv): Boolean {
+        val v = View(state, env)
+        return state.runs.any { it.jummah?.dnd == true && v.lockActive(it) }
+    }
+
+    /**
+     * The minutes a SNOOZE on promise [run] gives: half its delay (rounded up), at least `snooze_min_min`; null when no
+     * snooze is offered (not due, or already snoozed once).
+     */
+    fun snoozeMinutes(run: Run, file: ProtocolFile): Int? {
+        val promise = run.promise ?: return null
+        if (promise.snoozed || run.phase != RunPhase.ACTIVE) return null
+        val p = file.find(run.protocol) ?: return null
+        return maxOf(p.intParam("snooze_min_min"), (promise.minutes + 1) / 2)
+    }
 
     /** The steps [run] shows: its version on its weekday. */
     fun stepsFor(run: Run, env: MachineEnv): List<Step> = View(MachineState(), env).stepsOf(run)
@@ -122,9 +151,15 @@ object Machine {
         }
         // The wind-down's last step is GOING TO SLEEP: completing it ends the day (an open Isha is asked about first).
         val sleepStep = r.kind == ProtocolKind.SLEEP && !r.test && r.step == steps.lastIndex
+        // A reset's last step says what re-entering does now.
+        val reentry = if (!st.reenter) null else {
+            val line = v.reentryLine(v.reentryPlan(v.protocol(r)?.intParam("next_within_min") ?: 0))
+            if (r.test) "TEST, NOTHING CHANGES. IT WOULD SAY: $line" else line
+        }
         return StepView(
             r.step, steps.size, st, locked, timerEnds, canTap, r.isMinimum, v.lockEndShown(r),
             goingToSleep = sleepStep, ishaToConfirm = if (sleepStep) v.ishaToConfirm()?.id else null,
+            arrival = st.arrival, reentry = reentry,
         )
     }
 
@@ -221,8 +256,20 @@ object Machine {
                 "BEFORE TODAY'S WAKE TIME (${WallClock.hhmm(wake, env.zone)}): THIS DAY BEGAN AT " +
                     "${WallClock.hhmm(day.startedAt, env.zone)} AND GOES ON.",
             missedNights = state.sleep.missedInARow,
+            offer = state.offer,
+            resetProtocol = v.resetProtocol?.id,
+            promise = state.runs.firstOrNull { it.promise != null },
+            promiseDelays = v.promiseProtocol?.let { p ->
+                (p.param("delays") as? JsonArray)?.mapNotNull { (it as? JsonPrimitive)?.intOrNull } ?: DEFAULT_DELAYS
+            } ?: emptyList(),
+            jummah = state.runs.firstOrNull { it.jummah != null && !it.test },
+            jummahToday = day.jummah,
+            dndOn = dndWanted(state, env),
         )
     }
+
+    /** The promise's delays when its protocol lists none. */
+    val DEFAULT_DELAYS = listOf(5, 10, 15, 30)
 
     /**
      * Whether [packageName] is in the pool: listed in the file, or an installed browser when `all_browsers` is on
@@ -250,6 +297,10 @@ data class StepView(
     val goingToSleep: Boolean = false,
     /** On that step: the open Isha run to ask about first (CONFIRM ISHA), or null. */
     val ishaToConfirm: String? = null,
+    /** Jummah's I'M AT UNI step: confirmed like any step (or [Input.Confirm]); NOT YET is [Input.Dismiss]. */
+    val arrival: Boolean = false,
+    /** A reset's re-enter step: what re-entering does now, e.g. "NEXT: ASR AT ~15:20." (null on other steps). */
+    val reentry: String? = null,
 )
 
 /** Everything the home screen shows. */
@@ -293,4 +344,18 @@ data class HomeStatus(
     val sleepTapIgnored: String? = null,
     /** Missed nights in a row (sleep shifting holds the target after hold_after_missed of them). */
     val missedNights: Int = 0,
+    /** A protocol offered now (the reset): START or NOT NOW ([Input.AnswerOffer]); null when none is. */
+    val offer: Offer? = null,
+    /** The reset protocol's id (the RESET button: [Input.Manual]), or null when the file has none. */
+    val resetProtocol: String? = null,
+    /** The 10-minute promise, counting down ([RunPhase.WAITING]) or due, or null. */
+    val promise: Run? = null,
+    /** LATER's choices in minutes (the promise protocol's `delays`); empty when the file has no promise protocol. */
+    val promiseDelays: List<Int> = emptyList(),
+    /** Today's Jummah run (Fridays), or null. */
+    val jummah: Run? = null,
+    /** Today's Jummah outcome: "confirmed", "missed" or null. */
+    val jummahToday: String? = null,
+    /** VIGIL's Do Not Disturb is on (the Jummah lock). */
+    val dndOn: Boolean = false,
 )
