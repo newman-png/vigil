@@ -52,8 +52,9 @@ sealed interface Input {
     /**
      * A protocol started from a button. For a prayer this acts like its adhan (with the same dedupe). [test] = a
      * TEST-screen preview at stage 1: journaled with `test: true`, no stages, memory, penalties or report counts.
+     * [minutes] and [label]: home's START STUDY (the block's length, 5-600, and what to study, optional).
      */
-    data class Manual(val protocolId: String, val test: Boolean = false) : Input
+    data class Manual(val protocolId: String, val test: Boolean = false, val minutes: Int? = null, val label: String? = null) : Input
 
     /** The step [index] of run [runId] was tapped; [text] for text steps. Stale or locked taps are ignored. */
     data class StepDone(val runId: String, val index: Int, val text: String? = null) : Input
@@ -124,6 +125,16 @@ sealed interface Input {
 
     /** The answer to [MachineState.offer]: START (the offered protocol starts now) or NOT NOW (costs nothing). */
     data class AnswerOffer(val start: Boolean) : Input
+
+    /**
+     * LOG SET on run [runId]'s workout: [reps] of [exercise] (any name; one the gym knows in another case is that one)
+     * with [weight] kg. The rest timer starts: [restS] seconds when given (remembered for that exercise), else the
+     * exercise's own rest, else the protocol's `rest_s`.
+     */
+    data class LogSet(val runId: String, val exercise: String, val reps: Int, val weight: Double, val restS: Int? = null) : Input
+
+    /** FINISH WORKOUT: run [runId]'s workout is logged and its next step follows. */
+    data class FinishWorkout(val runId: String) : Input
 
     /** The app could not switch Do Not Disturb (no access granted): journaled; the lock shows all the same. */
     data object DndNoAccess : Input
@@ -210,7 +221,10 @@ sealed interface Effect {
      */
     data class SetDnd(val on: Boolean) : Effect
 
-    /** Audio control: [action] play/stop, [sound] `white_noise` ([WHITE_NOISE]; M8 adds more sounds and uploaded files). */
+    /**
+     * Audio control: [action] play/stop, [sound] `white_noise` ([WHITE_NOISE]; M8 adds more sounds and uploaded files).
+     * Stop without a [sound] stops every VIGIL sound (the attention reset: no sound while you look at one spot).
+     */
     data class Audio(val action: String, val sound: String? = null) : Effect {
         companion object {
             const val PLAY = "play"

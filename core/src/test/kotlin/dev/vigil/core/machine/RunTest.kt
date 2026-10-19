@@ -319,7 +319,8 @@ class RunTest {
     @Test
     fun theNextStartReplacesARunLeftOpen() {
         val meal = testProtocol("meal", trigger = "slot:meal", kind = ProtocolKind.MEAL, lock = Lock(LockType.POOL, 30, null))
-        val sim = Sim("2026-10-19T07:00", file = fileWith(meal))
+        // Without a morning routine (its breakfast step would cover breakfast), slot:meal starts at breakfast too.
+        val sim = Sim("2026-10-19T07:00", file = fileWith(meal, base = PRAYERS_ONLY))
         sim.at("2026-10-19T07:30")
         val breakfast = sim.run("meal")!!
         assertEquals("breakfast", breakfast.slot!!.label)

@@ -22,13 +22,23 @@ val ROME: ZoneId = ZoneId.of("Europe/Rome")
 /** A local wall-clock time in Rome (2026-10-19 is a Monday; clocks go back on Sunday 2026-10-25 at 03:00). */
 fun rome(local: String): Instant = LocalDateTime.parse(local).atZone(ROME).toInstant()
 
+/** The protocol kinds that arrived with M6 and M7 (study block, attention reset, meals, gym). */
+val M6_M7_KINDS = setOf(ProtocolKind.STUDY, ProtocolKind.ATTENTION, ProtocolKind.MEAL, ProtocolKind.GYM)
+
+/**
+ * The bundled file without its M6/M7 protocols: the tests of the earlier rules (prayers, pool, sleep, Jummah, reset,
+ * promise) use it, so lunch, dinner and the attention reset after Dhuhr do not run through them. The M6/M7 tests and
+ * the invariant walk use the whole [BundledProtocols.file].
+ */
+val M5_FILE: ProtocolFile = BundledProtocols.file.copy(protocols = BundledProtocols.file.protocols.filter { it.kind !in M6_M7_KINDS })
+
 /**
  * Drives [Machine] like the Android layer would: keeps the state, collects every entry and effect. Starts the first
  * day with a Tick at [start] unless [startDay] is false.
  */
 class Sim(
     start: String = "2026-10-19T08:00",
-    val file: ProtocolFile = BundledProtocols.file,
+    val file: ProtocolFile = M5_FILE,
     times: MyTimes = MyTimes(),
     startDay: Boolean = true,
 ) {
@@ -110,8 +120,8 @@ fun testProtocol(
     single = single, stages = stages, weekdays = weekdays,
 )
 
-/** The bundled file plus [extra] protocols. */
-fun fileWith(vararg extra: Protocol, base: ProtocolFile = BundledProtocols.file): ProtocolFile =
+/** The bundled file (without its M6/M7 protocols, unless [base] says otherwise) plus [extra] protocols. */
+fun fileWith(vararg extra: Protocol, base: ProtocolFile = M5_FILE): ProtocolFile =
     base.copy(protocols = base.protocols + extra)
 
 /** The bundled file without its prayers, plus [extra]. */

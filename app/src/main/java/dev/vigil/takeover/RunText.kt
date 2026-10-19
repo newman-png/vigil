@@ -67,10 +67,10 @@ internal fun versionLine(run: Run, protocol: Protocol?): String? = when {
 internal const val STEP_DOWN_NOTE = "OKAY. THIS COSTS NOTHING."
 
 /**
- * True for runs whose "I'M NOT OKAY" only says that nothing changes (Jummah and the promise have no shorter version),
- * so it still shows.
+ * True for runs whose "I'M NOT OKAY" says so when nothing changes (Jummah and the promise have no shorter version; the
+ * attention reset none below its 3 minutes), so it still shows.
  */
-internal fun saysNoStepDown(run: Run): Boolean = run.jummah != null || run.promise != null
+internal fun saysNoStepDown(run: Run): Boolean = run.jummah != null || run.promise != null || run.kind == ProtocolKind.ATTENTION
 
 /** What "I'M NOT OKAY" says where there is no shorter version. */
 internal const val NO_STEP_DOWN_NOTE = "THERE IS NO SHORTER VERSION OF THIS ONE. IT STAYS AS IT IS."

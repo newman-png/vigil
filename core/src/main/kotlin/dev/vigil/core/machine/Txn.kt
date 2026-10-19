@@ -23,6 +23,8 @@ import dev.vigil.core.protocol.StepType
 import dev.vigil.core.protocol.ToggleName
 import dev.vigil.core.protocol.Trigger
 import dev.vigil.core.protocol.Version
+import dev.vigil.core.run.GymInfo
+import dev.vigil.core.run.GymSet
 import dev.vigil.core.run.JummahInfo
 import dev.vigil.core.run.JummahPart
 import dev.vigil.core.run.PromiseInfo
@@ -84,12 +86,16 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         scheduled: Instant? = null,
         test: Boolean = false,
         prayerName: String? = null,
+        exercise: String? = null,
+        reps: Int? = null,
+        weight: Double? = null,
     ) {
         entries += Entry(
             ts = WallClock.stamp(at, zone), type = type, protocol = protocol, run = run, step = step, version = version,
             stage = stage, app = app, minutes = minutes, seconds = seconds, reason = reason, detail = detail, text = text,
             day = day, prayer = prayer?.json ?: prayerName, until = until?.let { WallClock.stamp(it, zone) },
             scheduled = scheduled?.let { WallClock.stamp(it, zone) }, test = test.takeIf { it },
+            exercise = exercise, reps = reps, weight = weight,
         )
     }
 
@@ -104,10 +110,13 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         minutes: Int? = null,
         until: Instant? = null,
         scheduled: Instant? = null,
+        exercise: String? = null,
+        reps: Int? = null,
+        weight: Double? = null,
     ) = log(
         type, at = at, protocol = r.protocol, run = r.id, step = step, version = r.version.label, stage = r.stage,
         minutes = minutes, reason = reason, detail = detail, text = text, prayer = r.prayer, until = until, scheduled = scheduled,
-        test = r.test, prayerName = if (r.jummah != null) JUMMAH_PRAYER else null,
+        test = r.test, prayerName = if (r.jummah != null) JUMMAH_PRAYER else null, exercise = exercise, reps = reps, weight = weight,
     )
 
     private fun hhmm(at: Instant) = WallClock.hhmm(at, zone)
@@ -242,6 +251,9 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         dayEnding = true
         closeRunsAtDayEnd(at)
         dayEnding = false
+        for (w in day.deferred) {
+            log(EntryType.SKIPPED, at = at, protocol = w.protocol, reason = "day_end", detail = "waited (${w.reason}) until the day ended")
+        }
         clearOffer("expired", "the day ended", at)
         endSessionAtDayEnd(at)
         log(
@@ -351,6 +363,31 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
     private fun settleRuns() {
         for (id in s.runs.map { it.id }) settleRun(id)
         promoteQueue()
+        settleDeferred()
+    }
+
+    /**
+     * Attention resets waiting to start: from their due time, once no class is in progress and nothing holds the screen;
+     * one that cannot start within [Machine.DEFER_LIMIT] is skipped (not a miss).
+     */
+    private fun settleDeferred() {
+        for (w in day.deferred) {
+            if (now.isBefore(w.due)) continue
+            val limit = w.due.plus(Machine.DEFER_LIMIT)
+            val late = !now.isBefore(limit)
+            val waiting = dayTimes().classAt(now) != null || screenHolder() != null
+            if (waiting && !late) continue
+            updateDay { d -> d.copy(deferred = d.deferred.filterNot { it.protocol == w.protocol }) }
+            val p = file.find(w.protocol) ?: continue
+            if (late) {
+                log(
+                    EntryType.SKIPPED, at = limit, protocol = p.id, reason = "too_late",
+                    detail = "could not start by ${hhmm(limit)} (a class or another protocol held the screen)",
+                )
+            } else {
+                fire(p, w.reason, deferOk = false)
+            }
+        }
     }
 
     private fun settleRun(id: String) {
@@ -391,9 +428,12 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         }
     }
 
-    /** Timer steps that ran out, completion, and the lock's end. */
+    /** Timer steps that ran out, a workout nobody finished, completion, and the lock's end. */
     private fun settleActive(start: Run, p: Protocol) {
-        val r = runTimers(start) ?: return
+        var r = runTimers(start) ?: return
+        val st = stepsOf(r).getOrNull(r.step)
+        val workoutEnd = st?.takeIf { it.type == StepType.WORKOUT }?.let { workoutEnd(r, it) }
+        if (workoutEnd != null && !now.isBefore(workoutEnd)) r = finishWorkout(r, auto = true, at = workoutEnd) ?: return
         val lockEnd = r.lockEndsAt
         if (lockEnd != null && !now.isBefore(lockEnd)) lockEnded(r, p, lockEnd)
     }
@@ -436,6 +476,11 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
             next = next.copy(confirmed = true)
             if (r.prayer != null) logConfirmed(next)
         }
+        // A step that ends the lock (a meal's cleanup): the pool opens, the steps after it go on without a lock.
+        if (st.unlock && next.lock != LockType.NONE && next.step < steps.size) {
+            next = next.copy(lock = LockType.NONE, lockEndsAt = null)
+            logRun(EntryType.LOCK_ENDED, next, at = at, reason = "unlock", detail = "the lock ended at \"${st.text}\"; the rest goes on")
+        }
         while (next.step < steps.size) {
             val following = steps[next.step]
             val lockOver = next.lockEndsAt == null || !runNow.isBefore(next.lockEndsAt)
@@ -455,8 +500,11 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
 
     private fun notifyRun(r: Run) {
         val p = protocol(r) ?: return
-        effects += Effect.Notify(runNotice(r), p.title, currentStepText(r), silent = true, NotifyKind.RUN, r.id)
+        effects += Effect.Notify(runNotice(r), runTitle(r, p), currentStepText(r), silent = true, NotifyKind.RUN, r.id)
     }
+
+    /** A run notice's title: the protocol's, with POOL LOCKED while its pool lock holds (until a meal's cleanup). */
+    private fun runTitle(r: Run, p: Protocol): String = if (r.lock == LockType.POOL && lockActive(r)) "${p.title} · POOL LOCKED" else p.title
 
     private fun logConfirmed(r: Run) {
         val prayer = r.prayer ?: return
@@ -488,8 +536,18 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         remove(r.id)
         logRun(EntryType.COMPLETED, r, at = at, minutes = WallClock.minutesCeil(r.firedAt, at), reason = if (r.clean) "clean" else "done")
         cancelRunNotices(r)
+        if (r.kind == ProtocolKind.STUDY) {
+            logRun(
+                EntryType.STUDY, r, at = at, minutes = workMinutes(r), detail = r.label?.ifBlank { null },
+                text = r.texts.values.filter { it.isNotBlank() }.joinToString(" / ").ifEmpty { null },
+            )
+        }
         if (!r.test) {
             updateDay { it.copy(completed = it.completed + (r.protocol to at)) }
+            // The attention ramp counts the days it was done in full, once a day.
+            if (r.kind == ProtocolKind.ATTENTION && r.version == Version.FULL && s.attention.lastDay != day.key) {
+                s = s.copy(attention = AttentionMemory(s.attention.days + 1, day.key))
+            }
             if (!r.bailed) recordOutcome(r, if (r.clean) RunOutcome.CLEAN else RunOutcome.DONE)
             if (!r.afterFired && !r.bailed) fireAfter(r)
         }
@@ -555,11 +613,15 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         }
     }
 
-    /** Starts the protocols that wait for [r] (`event:after:<id>`), once per run. */
+    /**
+     * Starts the protocols that wait for [r] (`event:after:<id>`), once per run. On Fridays Jummah replaces Dhuhr: what
+     * waits for the Dhuhr protocol follows the Jummah run.
+     */
     private fun fireAfter(r: Run) {
         run(r.id)?.let { put(it.copy(afterFired = true)) }
         if (r.test) return
-        file.protocols.filter { (it.parsedTrigger as? Trigger.After)?.protocolId == r.protocol }.forEach { fire(it, "after:${r.protocol}") }
+        val ids = setOfNotNull(r.protocol, if (r.jummah != null) file.prayerProtocol(Prayer.DHUHR)?.id else null)
+        file.protocols.filter { (it.parsedTrigger as? Trigger.After)?.protocolId in ids }.forEach { fire(it, "after:${r.protocol}") }
     }
 
     private fun newRun(p: Protocol, stage: Int, reason: String, planned: Instant?, slot: SlotInfo?, test: Boolean): Run {
@@ -574,14 +636,31 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         )
     }
 
-    /** A trigger fired for [p]: start a run (or say why not). Returns the run, or null when nothing started. */
-    private fun fire(p: Protocol, reason: String, planned: Instant? = null, slot: SlotInfo? = null, test: Boolean = false): Run? {
+    /**
+     * A trigger fired for [p]: start a run (or say why not). Returns the run, or null when nothing started. [minutes] and
+     * [label]: a manual study block's length and what to study. An attention reset started by its trigger waits first
+     * ([deferOk]: not yet waited).
+     */
+    private fun fire(
+        p: Protocol,
+        reason: String,
+        planned: Instant? = null,
+        slot: SlotInfo? = null,
+        test: Boolean = false,
+        minutes: Int? = null,
+        label: String? = null,
+        deferOk: Boolean = true,
+    ): Run? {
         if (dayEnding) {
             log(EntryType.SKIPPED, protocol = p.id, reason = "day_end", scheduled = planned, detail = "triggered ($reason) while the day ended")
             return null
         }
         if (suspended && !test) {
             log(EntryType.SKIPPED, protocol = p.id, reason = "suspended", scheduled = planned, detail = "VIGIL is suspended")
+            return null
+        }
+        if (p.kind == ProtocolKind.ATTENTION && !test && deferOk && reason !in STARTS_AT_ONCE) {
+            defer(p, reason)
             return null
         }
         if (p.kind == ProtocolKind.PROMISE) {
@@ -601,9 +680,28 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         // Started by any way (home, the offer's START): the offer is answered.
         if (!test && s.offer?.protocol == p.id) clearOffer("started", "started ($reason)")
         if (p.kind == ProtocolKind.JUMMAH) return startJummah(p, reason, planned, test, if (test) JummahPart.LEAVE else null)
-        val r = newRun(p, if (test) 1 else stageOf(p), reason, planned, slot, test)
+        val r = newRun(p, if (test) 1 else stageOf(p), reason, planned, slot, test).copy(
+            lengthMin = lengthFor(p, slot, minutes),
+            label = label?.trim()?.take(MAX_LABEL_CHARS)?.ifEmpty { null } ?: slot?.label?.ifBlank { null },
+            gym = if (p.kind == ProtocolKind.GYM) GymInfo() else null,
+        )
         place(r, p)
         return r
+    }
+
+    /** An attention reset was triggered: it waits offset_min, then for a class to end and the screen to be free. */
+    private fun defer(p: Protocol, reason: String) {
+        if (day.deferred.any { it.protocol == p.id }) {
+            log(EntryType.SKIPPED, protocol = p.id, reason = "already_running", detail = "triggered ($reason) while it already waits")
+            return
+        }
+        val due = now.plus(Duration.ofMinutes(p.intParam("offset_min").toLong()))
+        updateDay { it.copy(deferred = it.deferred + Deferred(p.id, reason, now, due)) }
+        log(
+            EntryType.DEFERRED, protocol = p.id, reason = reason, until = due,
+            detail = "starts at ${hhmm(due)}, after a class or another protocol on the screen; skipped if not started by " +
+                hhmm(due.plus(Machine.DEFER_LIMIT)),
+        )
     }
 
     /**
@@ -629,7 +727,7 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
             }
             r.lock == LockType.SCREEN && owner != null && !prayerFirst -> {
                 add(r.copy(phase = RunPhase.QUEUED))
-                logRun(EntryType.FIRED, r, reason = r.reason, scheduled = r.planned, detail = "waits behind ${title(owner)}")
+                logRun(EntryType.FIRED, r, reason = r.reason, scheduled = r.planned, detail = "waits behind ${title(owner)}", minutes = r.lengthMin)
             }
             else -> {
                 val taken = if (r.lock == LockType.SCREEN && prayerFirst && owner != null) {
@@ -639,7 +737,7 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
                     null
                 }
                 add(r)
-                logRun(EntryType.FIRED, r, reason = r.reason, scheduled = r.planned, detail = taken)
+                logRun(EntryType.FIRED, r, reason = r.reason, scheduled = r.planned, detail = taken, minutes = r.lengthMin)
                 activate(r.id)
             }
         }
@@ -686,10 +784,12 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         if (a.shortened && minimum != null && lockEnd != null) a = a.copy(lockEndsAt = minOf(lockEnd, now.plus(Duration.ofMinutes(minimum.toLong()))))
         put(a)
         if (!r.test) recordStart(p.id)
+        // The attention reset: no sound while you look at one spot.
+        if (p.kind == ProtocolKind.ATTENTION) effects += Effect.Audio(Effect.Audio.STOP)
         if (a.lock == LockType.SCREEN) {
             effects += Effect.ShowTakeover(a.id)
         } else {
-            effects += Effect.Notify(runNotice(a), p.title, currentStepText(a), silent = true, NotifyKind.RUN, a.id)
+            effects += Effect.Notify(runNotice(a), runTitle(a, p), currentStepText(a), silent = true, NotifyKind.RUN, a.id)
         }
     }
 
@@ -857,7 +957,8 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
             val r = fire(p, reason, item.at, item.slot?.let(::slotInfo))
             // A Jummah skipped while VIGIL is suspended starts once the suspension is over.
             if (r == null && suspended && p.kind == ProtocolKind.JUMMAH) continue
-            updateDay { it.copy(handled = it.handled + (item.key to if (r != null) "fired" else "skipped")) }
+            val started = r != null || day.deferred.any { it.protocol == p.id }
+            updateDay { it.copy(handled = it.handled + (item.key to if (started) "fired" else "skipped")) }
         }
     }
 
@@ -1073,7 +1174,7 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
             }
             is Input.TodoDone -> onTodo(input.index, input.done)
             is Input.Toggle -> onToggle(input.name, input.on)
-            is Input.Manual -> onManual(input.protocolId, input.test)
+            is Input.Manual -> onManual(input.protocolId, input.test, input.minutes, input.label)
             is Input.StepDone -> onStepDone(input.runId, input.index, input.text)
             is Input.Confirm -> onConfirm(input.runId)
             is Input.NotOkay -> onNotOkay(input.runId)
@@ -1118,6 +1219,10 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
             is Input.Dismiss -> onDismiss(input.runId)
             is Input.AnswerOffer -> answerOffer(input.start)
             is Input.TestJummah -> testJummah(input.part)
+            is Input.LogSet -> onLogSet(input.runId, input.exercise, input.reps, input.weight, input.restS)
+            is Input.FinishWorkout -> run(input.runId)?.let { r ->
+                if (r.phase == RunPhase.ACTIVE && stepsOf(r).getOrNull(r.step)?.type == StepType.WORKOUT) finishWorkout(r, auto = false)
+            }
             Input.DndNoAccess -> log(
                 EntryType.DND, reason = "no_access",
                 detail = "Do Not Disturb access is not granted (SETUP): the lock shows, the phone is not silenced",
@@ -1237,7 +1342,7 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         }
     }
 
-    private fun onManual(id: String, test: Boolean) {
+    private fun onManual(id: String, test: Boolean, minutes: Int?, label: String?) {
         val p = file.find(id) ?: return
         val prayer = (p.parsedTrigger as? Trigger.Adhan)?.prayer
         when {
@@ -1246,7 +1351,7 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
                 val (end, estimated) = estimateWindowEnd(prayer)
                 place(newRun(p, 1, "test", null, null, true).copy(prayer = prayer, windowEndsAt = end, windowEstimated = estimated), p)
             }
-            else -> fire(p, if (test) "test" else "manual", test = test)
+            else -> fire(p, if (test) "test" else "manual", test = test, minutes = minutes, label = label)
         }
     }
 
@@ -1266,6 +1371,12 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
             // A to-dos step takes up to its lines (at least one); an optional one may stay empty; others need every line.
             StepType.TEXT -> if (nonBlankLines(text) < (if (st.optional) 0 else if (st.todos) 1 else st.lines ?: 1)) return
             StepType.DONE -> if (forced && r.doneAfterAt != null && runNow.isBefore(r.doneAfterAt)) return
+            // Rounds never reach a run as such (they become timers); a workout step is finished like FINISH WORKOUT.
+            StepType.ROUNDS -> return
+            StepType.WORKOUT -> {
+                if (r.phase == RunPhase.ACTIVE) finishWorkout(r, auto = false)
+                return
+            }
         }
         if (r.jummah != null) {
             jummahStep(r, steps, text)
@@ -1335,7 +1446,9 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         }
         if (p.kind.ladder.isEmpty()) return
         val next = p.nextVersion(r.version, r.weekday) ?: return
-        val moved = r.copy(version = next, step = 0, stepStartedAt = now, steppedDown = true)
+        // A study block keeps only what is left of it: the shorter rounds fill the rest, not the whole block again.
+        val length = if (r.kind == ProtocolKind.STUDY) (studyBlock(r, p) - roundMinutesSpent(r)).coerceAtLeast(0) else r.lengthMin
+        val moved = r.copy(version = next, step = 0, stepStartedAt = now, steppedDown = true, lengthMin = length)
         put(moved)
         logRun(EntryType.STEPPED_DOWN, moved, detail = if (next == Version.SINGLE) "minimum" else null)
         if (moved.lock != LockType.SCREEN && moved.phase == RunPhase.ACTIVE) notifyRun(moved)
@@ -1712,6 +1825,8 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
     private fun lockOver(r: Run, end: Instant) {
         logRun(EntryType.JUMMAH_LOCK, r, at = end, reason = "ended", detail = "ended unconfirmed: CONFIRM by ${r.jummah?.missedAt?.let { hhmm(it) }}")
         toConfirm(r, "the Jummah lock ended")
+        // Like a prayer whose lock ends: what follows the lock (the attention reset) starts.
+        run(r.id)?.let { if (!it.afterFired && !it.bailed) fireAfter(it) }
     }
 
     /** No lock and no screen any more: Do Not Disturb off, CONFIRM on home and in a notification until the missed time. */
@@ -1900,6 +2015,65 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
             j != null -> logRun(EntryType.ARRIVAL_CHECK, r, reason = "not_yet", detail = "asks again at ${hhmm((j.askedAt ?: now).plus(askRepeat(r)))}")
         }
     }
+
+    // ------------------------------------------------------------------ the gym (design M7)
+
+    /**
+     * LOG SET: the set joins the workout (an exercise the gym knows in another case is that one), the journal gets it
+     * with whether it beat the best, the pre-fill and best move on (not for a TEST) and the rest timer starts.
+     */
+    private fun onLogSet(runId: String, exercise: String, reps: Int, weight: Double, restS: Int?) {
+        val r = run(runId) ?: return
+        if (r.phase != RunPhase.ACTIVE || stepsOf(r).getOrNull(r.step)?.type != StepType.WORKOUT) return
+        val p = protocol(r) ?: return
+        val typed = exercise.trim().replace(Regex("\\s+"), " ").take(Machine.MAX_EXERCISE_CHARS)
+        if (typed.isEmpty() || reps !in 1..MAX_REPS || weight.isNaN() || weight < 0.0 || weight > MAX_WEIGHT) return
+        val known = (p.textListParam("exercises") + s.gym.last.keys + (r.gym?.sets ?: emptyList()).map { it.exercise })
+        val name = known.firstOrNull { it.equals(typed, ignoreCase = true) } ?: typed
+        val set = GymSet(name, reps, weight, now)
+        val best = s.gym.best[name]
+        val better = best == null || weight > best.weight || (weight == best.weight && reps > best.reps)
+        val rest = (restS ?: s.gym.restS[name] ?: p.intParam("rest_s")).coerceIn(MIN_REST_S, MAX_REST_S)
+        val gym = r.gym ?: GymInfo()
+        put(r.copy(gym = gym.copy(sets = gym.sets + set, restUntil = now.plusSeconds(rest.toLong()))))
+        if (!r.test) {
+            val g = s.gym
+            s = s.copy(
+                gym = g.copy(
+                    last = g.last + (name to set),
+                    best = if (better) g.best + (name to set) else g.best,
+                    restS = if (restS != null) g.restS + (name to rest) else g.restS,
+                ),
+            )
+        }
+        val detail = when {
+            best == null -> "first time"
+            better -> "new best (was ${setText(best)})"
+            else -> "best ${setText(best)}"
+        }
+        logRun(EntryType.GYM_SET, r, detail = detail, exercise = name, reps = reps, weight = weight)
+    }
+
+    /**
+     * FINISH WORKOUT (or, [auto], nobody finished it an hour after its planned minutes): the workout is journaled and the
+     * next step follows. Returns the run, or null when that finished it.
+     */
+    private fun finishWorkout(r: Run, auto: Boolean, at: Instant = now): Run? {
+        val sets = r.gym?.sets ?: emptyList()
+        val exercises = sets.map { it.exercise }.distinct().size
+        logRun(
+            EntryType.WORKOUT, r, at = at, minutes = r.stepStartedAt?.let { WallClock.minutesCeil(it, at) },
+            reason = if (auto) "auto" else null,
+            detail = "${sets.size} sets of $exercises exercises" + if (auto) " (it ended by itself: FINISH WORKOUT was not tapped)" else "",
+        )
+        val stopped = r.copy(gym = r.gym?.copy(restUntil = null))
+        put(stopped)
+        return stepDone(stopped, stepsOf(stopped), auto = auto, at = at)
+    }
+
+    /** 5 x 80 kg, or 12 reps for body weight. */
+    private fun setText(set: GymSet): String =
+        if (set.weight == 0.0) "${set.reps} reps" else "${set.reps} x ${kg(set.weight)} kg"
 
     // ------------------------------------------------------------------ the reset and its offer (design M5)
 
@@ -2219,11 +2393,28 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         /** The journal's `prayer` for Jummah entries. */
         const val JUMMAH_PRAYER = "jummah"
 
+        /** The most repetitions and kilograms a set may log (a typo guard). */
+        const val MAX_REPS = 1000
+        const val MAX_WEIGHT = 1000.0
+
+        /** The rest timer's range in seconds. */
+        const val MIN_REST_S = 10
+        const val MAX_REST_S = 600
+
+        /** 80 for 80.0, 77.5 for 77.5. */
+        fun kg(weight: Double): String = if (weight % 1.0 == 0.0) weight.toLong().toString() else weight.toString()
+
         /** A promise's line is cut to this many characters (it must fit the takeover). */
         const val MAX_PROMISE_CHARS = 120
 
         /** The longest promise delay accepted. */
         const val MAX_PROMISE_MIN = 240
+
+        /** What a manual start's label (START STUDY's "what") is cut to. */
+        const val MAX_LABEL_CHARS = 60
+
+        /** Reasons that start an attention reset at once: a button, the reset's offer, a reset's re-entry. */
+        private val STARTS_AT_ONCE = setOf("manual", "offer", "reenter")
 
         const val OFFER_NOTICE = "offer"
         const val JUMMAH_CARD_NOTICE = "jummah-card"

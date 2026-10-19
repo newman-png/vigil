@@ -34,7 +34,7 @@ class PoolMachineTest {
     private fun Sim.blocked(): PoolDecision.Blocked = decision() as PoolDecision.Blocked
 
     private fun windowsFile(vararg windows: FreeWindowConfig) =
-        BundledProtocols.file.copy(pool = BundledProtocols.file.pool.copy(windows = windows.toList()))
+        M5_FILE.copy(pool = M5_FILE.pool.copy(windows = windows.toList()))
 
     @Test
     fun enteringThePoolAsksForTheWait() {

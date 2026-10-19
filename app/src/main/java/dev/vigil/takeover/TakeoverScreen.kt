@@ -49,6 +49,7 @@ import dev.vigil.core.machine.StepView
 import dev.vigil.core.protocol.BailOutConfig
 import dev.vigil.core.protocol.Intensity
 import dev.vigil.core.protocol.Protocol
+import dev.vigil.core.protocol.ProtocolKind
 import dev.vigil.core.protocol.Step
 import dev.vigil.core.protocol.StepType
 import dev.vigil.core.protocol.TakeoverConfig
@@ -125,6 +126,15 @@ internal interface TakeoverCallbacks {
 
     /** This takeover's intro has played to the open eye: coming back to it later skips the intro. */
     fun introSeen()
+
+    /** LOG SET on gym run [runId]'s workout ([restS]: the rest set for this exercise, when it was changed). */
+    fun logSet(runId: String, exercise: String, reps: Int, weight: Double, restS: Int?)
+
+    /** FINISH WORKOUT on gym run [runId]. */
+    fun finishWorkout(runId: String)
+
+    /** A timer marked `chime` ran out, or the gym's rest did: the soft chime, unless QUIET ([loud]: the alarm stream). */
+    fun chime(loud: Boolean)
 
     /** The takeover has left the screen; show the next one or close. */
     fun finished()
@@ -385,7 +395,7 @@ internal fun TakeoverScreen(
     // A reset's re-enter step as last shown: once it is done, its line (what comes next) is the goodbye.
     val reentry = remember { arrayOfNulls<String>(1) }
     current?.reentry?.let { reentry[0] = it }
-    val holdable = current != null && current.canTap && current.step.type != StepType.TEXT
+    val holdable = current != null && current.canTap && current.step.type != StepType.TEXT && current.step.type != StepType.WORKOUT
     // A promise is answered with its own words (DONE, SNOOZE, ON IT), never by holding.
     val canHold by rememberUpdatedState(
         phase == Phase.STEP && stepVisible && holdable && !checklist && !ended && !appsOpen && !askIsha && live != null &&
@@ -493,9 +503,18 @@ internal fun TakeoverScreen(
     LaunchedEffect(Unit) {
         val ticked = HashSet<Instant>()
         while (true) {
+            val old = view
             val v = cb.stepView(id)
-            if (v != view) view = v
             val now = Instant.now()
+            // A timer marked chime (a study round or break) ran out and the run moved on: the soft chime. Not when it was
+            // left or stepped down early.
+            val oldEnd = old?.timerEndsAt
+            if (old != null && old.step.type == StepType.TIMER && old.step.chime && oldEnd != null && !now.isBefore(oldEnd) &&
+                (v == null || v.index != old.index)
+            ) {
+                cb.chime(loud = intensity == Intensity.FULL)
+            }
+            if (v != old) view = v
             if (now.epochSecond != nowSec) nowSec = now.epochSecond
             if (currentLive != null && !ended && v != null) {
                 val timerEnd = v.timerEndsAt?.takeIf { v.step.type == StepType.TIMER && !v.canTap }
@@ -661,7 +680,28 @@ internal fun TakeoverScreen(
                         TakeoverText(farewell, TakeoverType.Step, Modifier.padding(horizontal = 24.dp))
                     }
                     Phase.DONE -> Unit
-                    else -> {
+                    // The gym's workout: its own panel in place of the eye, so every target is big.
+                    else -> if (phase == Phase.STEP && live != null && !ended && current?.workout != null) {
+                        val workout = current.workout
+                        if (workout != null) {
+                            WorkoutPanel(
+                                workout = workout,
+                                nowSec = { nowSec },
+                                onLog = { exercise, reps, weight, rest ->
+                                    fx.confirmStep()
+                                    cb.logSet(id, exercise, reps, weight, rest)
+                                    view = cb.stepView(id)
+                                },
+                                onFinish = {
+                                    fx.confirmStep()
+                                    cb.finishWorkout(id)
+                                    view = cb.stepView(id)
+                                },
+                                onRestOver = { cb.chime(loud = intensity == Intensity.FULL) },
+                                onTyping = { cb.typing() },
+                            )
+                        }
+                    } else {
                         // A little air above the eye, in proportion to the screen.
                         Spacer(Modifier.fillMaxHeight(EYE_TOP_SHARE))
                         Box(
@@ -724,6 +764,12 @@ internal fun TakeoverScreen(
                                 phase != Phase.STEP || !stepVisible -> Unit
                                 else -> Column(Modifier.fillMaxWidth(), horizontalAlignment = Alignment.CenterHorizontally) {
                                     TakeoverText(if (run.test) "$title · TEST" else title, TakeoverType.Small)
+                                    // What this block is for (the MY TIMES row, or what was typed at START STUDY), big.
+                                    val label = current?.label
+                                    if (label != null && run.kind == ProtocolKind.STUDY) {
+                                        Spacer(Modifier.height(12.dp))
+                                        TakeoverText(label, TakeoverType.Title)
+                                    }
                                     Spacer(Modifier.height(20.dp))
                                     val promise = run.promise
                                     if (promise != null) {
@@ -776,6 +822,12 @@ internal fun TakeoverScreen(
                                     if (todo != null) {
                                         Spacer(Modifier.height(12.dp))
                                         TakeoverText(todo, TakeoverType.Small)
+                                    }
+                                    // A meal's short or minimal version: the simple meals of its fallback list.
+                                    val fallback = current?.fallback.orEmpty()
+                                    if (fallback.isNotEmpty()) {
+                                        Spacer(Modifier.height(12.dp))
+                                        TakeoverText("SIMPLE MEALS: " + fallback.joinToString(" · "), TakeoverType.Small)
                                     }
                                 }
                             }

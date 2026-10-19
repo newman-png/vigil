@@ -141,8 +141,11 @@ class ReportTest {
         val csv = Report.csv(listOf(e))
         val lines = csv.split("\r\n")
         assertEquals(Report.CSV_COLUMNS.joinToString(","), lines[0])
-        assertEquals("2026-10-19T12:40:00+02:00,step_done,x,,0,,,,,,,\" padded\",\"a, \"\"b\"\"\nc\",,,,,", csv.removePrefix(lines[0] + "\r\n").removeSuffix("\r\n"))
-        assertEquals(18, Report.CSV_COLUMNS.size)
+        assertEquals("2026-10-19T12:40:00+02:00,step_done,x,,0,,,,,,,\" padded\",\"a, \"\"b\"\"\nc\",,,,,,,,", csv.removePrefix(lines[0] + "\r\n").removeSuffix("\r\n"))
+        assertEquals(21, Report.CSV_COLUMNS.size)
+        // A gym set fills the last three columns.
+        val set = Entry("2026-10-19T18:10:00+02:00", EntryType.GYM_SET, protocol = "gym", exercise = "Squat", reps = 5, weight = 77.5)
+        assertTrue(Report.csv(listOf(set)).split("\r\n")[1].endsWith(",Squat,5,77.5"))
     }
 
     @Test

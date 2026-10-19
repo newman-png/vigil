@@ -107,6 +107,23 @@ data class PromiseInfo(
     val snoozed: Boolean = false,
 )
 
+/** One logged gym set: [reps] of [exercise] with [weight] kg (0 = body weight). */
+@Serializable
+data class GymSet(
+    val exercise: String,
+    val reps: Int,
+    val weight: Double = 0.0,
+    val at: Instant? = null,
+)
+
+/** A gym run's workout: the sets logged in it and the rest timer after the last one. */
+@Serializable
+data class GymInfo(
+    val sets: List<GymSet> = emptyList(),
+    /** The rest after the last set ends then (the app counts it down and sounds its end). */
+    @SerialName("rest_until") val restUntil: Instant? = null,
+)
+
 /** The MY TIMES slot a `slot:` trigger started a run for. */
 @Serializable
 data class SlotInfo(
@@ -192,6 +209,15 @@ data class Run(
     val jummah: JummahInfo? = null,
     /** A 10-minute promise: its line and timer. */
     val promise: PromiseInfo? = null,
+    /**
+     * The run's length in minutes, fixed when it fired: a study block (its rounds fill it; a step-down keeps only what is
+     * left), the attention reset's ramp minutes (its timer without `min` lasts them), a gym session's planned workout.
+     */
+    @SerialName("length_min") val lengthMin: Int? = null,
+    /** What it is for: the MY TIMES row's label (what to study, the meal) or what was typed for a manual start. */
+    val label: String? = null,
+    /** A gym run: the sets logged and the rest timer. */
+    val gym: GymInfo? = null,
 ) {
     /** The single-step version, shown marked "minimum". */
     val isMinimum: Boolean get() = version == Version.SINGLE

@@ -72,10 +72,11 @@ class HomeActions(
 
 /**
  * HOME: the day, the pool, the flags, tonight's bedtime and the next wake alarm, a red line while a protocol (or the
- * night lock) owns the screen, the reset offer (START RESET / NOT NOW), LATER and RESET, the running promise and
- * today's Jummah, a running morning to open, today's to-dos with tick boxes, prayers waiting for CONFIRM and today's
- * timeline (with when each protocol last fired); then QUIET, GOING TO SLEEP (CONFIRM ISHA first when Isha is still
- * open), MY TIMES, SETUP, TEST and EXPORT.
+ * night lock) owns the screen, the reset offer (START RESET / NOT NOW), LATER and RESET, START STUDY (a block of 50,
+ * 100 or 150 minutes), the running promise and today's Jummah, an attention reset waiting to start, a running morning,
+ * meal or gym to open, today's to-dos with tick boxes, prayers waiting for CONFIRM and today's timeline (study blocks
+ * with what to study, with when each protocol last fired); then QUIET, GOING TO SLEEP (CONFIRM ISHA first when Isha is
+ * still open), MY TIMES, SETUP, TEST and EXPORT.
  * Everything shown comes from the engine ([Vigil.status], [Vigil.timeline]); nothing is decided here.
  *
  * [refreshKey] changes on every resume, so the permission count is re-read after a visit to system settings;
@@ -98,6 +99,7 @@ fun HomeScreen(refreshKey: Int, laterRequest: Int, actions: HomeActions) {
     var exporting by remember { mutableStateOf(false) }
     var askIsha by remember { mutableStateOf(false) }
     var laterOpen by remember { mutableStateOf(false) }
+    var studyOpen by remember { mutableStateOf(false) }
     LaunchedEffect(laterRequest) {
         if (laterRequest > 0) laterOpen = true
     }
@@ -223,8 +225,29 @@ fun HomeScreen(refreshKey: Int, laterRequest: Int, actions: HomeActions) {
                 },
             )
         }
+        // START STUDY: a block now, with what to study (optional) and its length.
+        if (status.studyProtocol != null) {
+            Spacer(Modifier.height(8.dp))
+            PixelButton(if (studyOpen) "CLOSE" else "START STUDY", { studyOpen = !studyOpen }, Modifier.fillMaxWidth())
+            if (studyOpen) {
+                StudySheet(
+                    lengths = status.studyLengths,
+                    default = status.studyDefault,
+                    onStart = { label, minutes ->
+                        val notStarted = Vigil.startStudy(minutes, label)
+                        studyOpen = false
+                        Toast.makeText(context, notStarted ?: "Study block: $minutes min.", Toast.LENGTH_SHORT).show()
+                    },
+                )
+            }
+        }
         status.promise?.let { PromiseRow(it, nowAt, zone) }
         status.jummah?.let { JummahRow(it, zone) }
+        // An attention reset triggered after Dhuhr, waiting for its time, a class to end or the screen to be free.
+        for (w in status.deferred) {
+            val title = (Vigil.file().find(w.protocol)?.title ?: w.protocol).uppercase()
+            PixelText("WAITING: $title FROM ${Format.clock(w.due, zone)} · ONCE NO CLASS OR TAKEOVER IS ON", Type.Label)
+        }
         // A run without a screen lock (the morning): its takeover opens from here, like from its notification. The
         // promise has its own row above.
         val others = status.runs.filter {
@@ -377,6 +400,37 @@ private fun prayersLine(status: HomeStatus): String? {
     return parts.takeIf { it.isNotEmpty() }?.joinToString(" · ")
 }
 
+/**
+ * START STUDY's sheet: what to study (optional; the takeover shows it big and the report logs it) and the block's
+ * length from [lengths] ([default] picked first).
+ */
+@Composable
+private fun StudySheet(lengths: List<Int>, default: Int?, onStart: (String, Int) -> Unit) {
+    var text by remember { mutableStateOf("") }
+    var minutes by remember { mutableIntStateOf(default?.takeIf { it in lengths } ?: lengths.firstOrNull() ?: 100) }
+    Spacer(Modifier.height(12.dp))
+    Label("STUDY BLOCK")
+    TextInput(text, { text = it.replace('\n', ' ') }, placeholder = "What to study? (optional)")
+    Spacer(Modifier.height(8.dp))
+    ChoiceChips(
+        options = lengths.map { "$it MIN" },
+        selected = "$minutes MIN",
+        onSelect = { choice -> choice.removeSuffix(" MIN").toIntOrNull()?.let { minutes = it } },
+    )
+    Spacer(Modifier.height(8.dp))
+    PixelText("Work rounds with short breaks fill the block. The screen stays locked: APPS has PoliTO, WhatsApp and calls.", Type.Small)
+    Spacer(Modifier.height(8.dp))
+    PixelButton("START", { onStart(text.trim(), minutes) }, Modifier.fillMaxWidth())
+}
+
+/** What a planned start is for: a study block's subject and length, a gym session's minutes (meals say it in the title). */
+private fun startLabel(item: TimelineItem): String? {
+    val slot = item.start.slot ?: return null
+    val label = slot.label.takeIf { it.isNotBlank() && !it.equals(item.start.title, ignoreCase = true) }?.uppercase()
+    val minutes = slot.minutes ?: slot.end?.let { Duration.between(slot.start, it).toMinutes().toInt() }
+    return listOfNotNull(label, minutes?.let { "$it MIN" }).joinToString(" · ").ifEmpty { null }
+}
+
 /** A planned start's time; a prayer whose adhan has not come yet today is an estimate (~). */
 private fun startTime(item: TimelineItem, zone: ZoneId): String =
     (if (item.start.estimated) "~" else "") + Format.clock(item.start.at, zone)
@@ -488,7 +542,10 @@ private fun TimelineRow(item: TimelineItem, stage: Int, now: Instant, zone: Zone
     Column(Modifier.fillMaxWidth().padding(vertical = 5.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             PixelText(startTime(item, zone), Type.Body, Modifier.width(64.dp))
-            PixelText(item.start.title.uppercase(), Type.Body, Modifier.weight(1f), maxLines = 1)
+            PixelText(
+                item.start.title.uppercase() + (startLabel(item)?.let { " · $it" } ?: ""),
+                Type.Body, Modifier.weight(1f), maxLines = 1,
+            )
             Spacer(Modifier.width(8.dp))
             TierPips(stagePips(stage))
             Spacer(Modifier.width(8.dp))

@@ -115,6 +115,10 @@ object ProtocolParser {
             "reenter" to Shape.Bool,
             "walking_on" to Shape.Bool,
             "arrival" to Shape.Bool,
+            "break_min" to Shape.Whole,
+            "break_text" to Shape.Text,
+            "chime" to Shape.Bool,
+            "unlock" to Shape.Bool,
         ),
         required = setOf("text"),
     )
@@ -389,6 +393,9 @@ object ProtocolParser {
         if (p.kind == ProtocolKind.JUMMAH && lock.minutes == null) {
             ctx.error("$path.lock.minutes", "the Jummah lock needs minutes (e.g. 45, from jummah_time - lock_before_min).")
         }
+        if (p.kind == ProtocolKind.ATTENTION && p.intParam("max_min") < p.intParam("start_min")) {
+            ctx.error("$path.params.max_min", "must be at least start_min (${p.intParam("start_min")}): the ramp grows from start_min up to max_min.")
+        }
 
         // Versions.
         checkSteps(p.steps, "$path.steps", p, required = true, ctx = ctx)
@@ -438,19 +445,33 @@ object ProtocolParser {
             if (s.text.isBlank()) ctx.error("$sp.text", "must not be blank.")
             if (s.text.length > MAX_STEP_TEXT_CHARS) ctx.warn("$sp.text", "longer than $MAX_STEP_TEXT_CHARS characters; keep steps short.")
             s.min?.let {
-                if (s.type == StepType.CHECK || s.type == StepType.TIMER) {
+                if (s.type == StepType.CHECK || s.type == StepType.TIMER || s.type == StepType.ROUNDS || s.type == StepType.WORKOUT) {
                     range(ctx, "$sp.min", it, 1, MAX_STEP_MIN)
                 } else {
-                    ctx.warn("$sp.min", "only check and timer steps use min; it is ignored here.")
+                    ctx.warn("$sp.min", "only check, timer, rounds and workout steps use min; it is ignored here.")
                 }
             }
             s.lines?.let {
                 if (s.type == StepType.TEXT) range(ctx, "$sp.lines", it, 1, MAX_LINES)
                 else ctx.warn("$sp.lines", "only text steps use lines; it is ignored here.")
             }
-            if (s.type == StepType.TIMER && s.min == null && p.lock.minutes == null) {
+            // An attention protocol's timer without min lasts the day's ramp length instead.
+            if (s.type == StepType.TIMER && s.min == null && p.lock.minutes == null && p.kind != ProtocolKind.ATTENTION) {
                 ctx.error("$sp.min", "a timer without min lasts until the lock ends, but this lock has no minutes.")
             }
+            if (s.type == StepType.ROUNDS) {
+                if (p.kind != ProtocolKind.STUDY) ctx.error("$sp.type", "only study protocols have rounds (they fill the study block).")
+                if (s.min == null) ctx.error("$sp.min", "a rounds step needs min: the minutes of work per round (e.g. 50).")
+                s.breakMin?.let { range(ctx, "$sp.break_min", it, 0, 60) }
+            } else {
+                if (s.breakMin != null) ctx.warn("$sp.break_min", "only rounds steps use break_min; it is ignored here.")
+                if (s.breakText != null) ctx.warn("$sp.break_text", "only rounds steps use break_text; it is ignored here.")
+            }
+            if (s.type == StepType.WORKOUT && p.kind != ProtocolKind.GYM) ctx.error("$sp.type", "only gym protocols have a workout step.")
+            if (s.chime && s.type != StepType.TIMER && s.type != StepType.ROUNDS) {
+                ctx.warn("$sp.chime", "only timer and rounds steps chime when they end; it is ignored here.")
+            }
+            if (s.unlock && p.lock.type == LockType.NONE) ctx.warn("$sp.unlock", "this protocol has no lock to end.")
             if (s.type == StepType.DONE) doneCount++
             if (s.todos && s.type != StepType.TEXT) ctx.error("$sp.todos", "only a text step can hold to-dos.")
             if (s.todos && p.kind != ProtocolKind.SLEEP) ctx.warn("$sp.todos", "only sleep protocols turn lines into to-dos; it is ignored here.")
@@ -468,6 +489,8 @@ object ProtocolParser {
             }
         }
         if (doneCount > 1) ctx.error(path, "has more than one done step.")
+        if (steps.count { it.type == StepType.ROUNDS } > 1) ctx.error(path, "has more than one rounds step (one fills the whole block).")
+        if (steps.count { it.type == StepType.WORKOUT } > 1) ctx.error(path, "has more than one workout step.")
         if (steps.isNotEmpty() && steps.all { it.skipOnClassDays }) {
             ctx.error(path, "every step is skip_on_class_days: on class days nothing would be left.")
         }
@@ -497,9 +520,6 @@ object ProtocolParser {
                 }
                 ParamSpec.TextList -> if (!(value is JsonArray && value.all { it is JsonPrimitive && it.isString && it.content.isNotBlank() })) {
                     ctx.error(vp, "must be a list of texts.")
-                }
-                ParamSpec.TextMap -> if (!(value is JsonObject && value.values.all { it is JsonPrimitive && it.isString })) {
-                    ctx.error(vp, "must be an object of label: text.")
                 }
                 is ParamSpec.IntList -> {
                     if (value !is JsonArray || value.isEmpty()) {

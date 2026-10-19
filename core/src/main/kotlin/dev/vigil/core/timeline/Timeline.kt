@@ -4,6 +4,7 @@ import dev.vigil.core.common.WallClock
 import dev.vigil.core.protocol.Prayer
 import dev.vigil.core.protocol.Protocol
 import dev.vigil.core.protocol.ProtocolFile
+import dev.vigil.core.protocol.ProtocolKind
 import dev.vigil.core.protocol.SlotType
 import dev.vigil.core.protocol.Trigger
 import dev.vigil.core.run.JummahInfo
@@ -97,8 +98,8 @@ object Timeline {
                     jummah(p, times)?.let { out += PlannedStart(p.id, p.title, it.leaveAt, StartSource.SLOT) }
                     next?.let { jummah(p, it) }?.leaveAt?.let { if (early(it, next)) out += PlannedStart(p.id, p.title, it, StartSource.SLOT) }
                 } else {
-                    times.slots(t.type).forEach { out += PlannedStart(p.id, p.title, it.start, StartSource.SLOT, slot = it) }
-                    next?.slots(t.type)?.filter { early(it.start, next) }
+                    rows(file, p, t, times).forEach { out += PlannedStart(p.id, p.title, it.start, StartSource.SLOT, slot = it) }
+                    next?.let { rows(file, p, t, it) }?.filter { early(it.start, next) }
                         ?.forEach { out += PlannedStart(p.id, p.title, it.start, StartSource.SLOT, slot = it) }
                 }
                 is Trigger.Adhan -> {
@@ -136,6 +137,20 @@ object Timeline {
             lockAt = lockAt, missedAt = jummahAt.plus(param("missed_after_min")),
         )
     }
+
+    /**
+     * The MY TIMES rows slot trigger [t] of [p] starts from on [times]' day: the trigger's label only (`slot:meal:lunch`),
+     * and no breakfast for a meal protocol while the file has a morning routine (its breakfast step covers it).
+     */
+    private fun rows(file: ProtocolFile, p: Protocol, t: Trigger.Slot, times: DayTimes): List<ResolvedSlot> =
+        times.slots(t.type).filter { row ->
+            val label = t.label
+            (label == null || row.label.equals(label, ignoreCase = true)) &&
+                !(p.kind == ProtocolKind.MEAL && t.type == SlotType.MEAL && row.label.equals(BREAKFAST, ignoreCase = true) &&
+                    file.has(ProtocolKind.MORNING))
+        }
+
+    private const val BREAKFAST = "breakfast"
 
     /** A start on [next]'s own date (its morning; the [until] filter keeps those this day can still reach). */
     private fun early(at: Instant, next: DayTimes): Boolean = WallClock.date(at, next.zone) == next.date

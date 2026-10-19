@@ -84,6 +84,8 @@ object Format {
             e.version?.uppercase(),
             e.stage?.let { "STAGE $it" },
             e.app,
+            // A gym set: SQUAT 5 × 60 KG.
+            e.exercise?.let { ex -> "${ex.uppercase()} ${e.reps ?: 0} × ${e.weight?.let { w -> if (w % 1.0 == 0.0) w.toLong().toString() else w.toString() } ?: "0"} KG" },
             e.minutes?.let { "$it MIN" },
             e.reason?.uppercase()?.replace('_', ' '),
             e.detail,

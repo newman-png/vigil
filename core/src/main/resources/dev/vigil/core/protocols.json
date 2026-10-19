@@ -145,6 +145,78 @@
       "stages": true
     },
     {
+      "id": "attention",
+      "_note": "Right after the Dhuhr lock ends (Fridays: the Jummah lock) + offset_min; a class in progress or another protocol on the screen makes it wait, and if it cannot start within 2 hours it is skipped (not a miss). The look lasts 3 minutes on the first 2 days it is done in full, then 1 minute more every 2 such days, up to 10. VIGIL's sounds stop; a soft chime at the end (QUIET silences it).",
+      "kind": "attention",
+      "title": "ATTENTION RESET",
+      "trigger": "event:after:prayer-dhuhr",
+      "intensity": "full",
+      "lock": { "type": "screen" },
+      "steps": [
+        { "text": "Face a wall or a window, sitting or standing.", "type": "check" },
+        { "text": "Phone face-down.", "type": "check" },
+        { "text": "Look at one spot. No input, no sound.", "type": "timer", "chime": true }
+      ],
+      "short": [
+        { "text": "Look at one spot. No input, no sound.", "type": "timer", "min": 3, "chime": true }
+      ],
+      "params": { "offset_min": 0, "start_min": 3, "max_min": 10, "ramp_every_days": 2 },
+      "stages": true
+    },
+    {
+      "id": "lunch",
+      "_note": "MY TIMES lunch. The pool stays locked until the kitchen is clean; the walk follows without a lock. No dishes are planned: put simple meals into fallback to see them in the short and minimal versions.",
+      "kind": "meal",
+      "title": "LUNCH",
+      "trigger": "slot:meal:lunch",
+      "intensity": "subtle",
+      "lock": { "type": "pool" },
+      "steps": [
+        { "text": "Go to the kitchen.", "type": "check" },
+        { "text": "Take out the ingredients.", "type": "check" },
+        { "text": "Cook.", "type": "check" },
+        { "text": "Eat at the table, phone face-down.", "type": "check" },
+        { "text": "Clean up the kitchen.", "type": "check", "unlock": true },
+        { "text": "Walk.", "type": "timer", "min": 10 }
+      ],
+      "short": [
+        { "text": "A simple meal: make it, eat it at the table.", "type": "check" },
+        { "text": "Clean up the kitchen.", "type": "check", "unlock": true }
+      ],
+      "minimal": [
+        { "text": "Eat something simple.", "type": "check" },
+        { "text": "Clean up.", "type": "check", "unlock": true }
+      ],
+      "params": { "fallback": [] },
+      "stages": true
+    },
+    {
+      "id": "study",
+      "_note": "Each MY TIMES study row (its length = end - start, or its minutes; its label = what to study), or START STUDY on home (50, 100 or 150 min). The rounds step becomes 50-minute work rounds with 10-minute breaks that fill the block exactly; the last round is cut to fit. The screen stays locked (APPS: PoliTO, WhatsApp, calls); every round and break ends with a soft chime (QUIET silences it).",
+      "kind": "study",
+      "title": "STUDY",
+      "trigger": "slot:study",
+      "intensity": "subtle",
+      "lock": { "type": "screen" },
+      "steps": [
+        { "text": "Go to your spot: desk or library.", "type": "check" },
+        { "text": "Notebook and pen out on the table.", "type": "check" },
+        { "text": "Open the book or laptop.", "type": "check" },
+        { "text": "Open the one study material for this block.", "type": "check" },
+        { "text": "Work. Only this material.", "type": "rounds", "min": 50, "break_min": 10, "break_text": "Break: stand up, drink water, look out a window. The phone stays locked.", "chime": true },
+        { "text": "Close: one line on what you did.", "type": "text", "lines": 1 }
+      ],
+      "short": [
+        { "text": "Work. Only this material.", "type": "rounds", "min": 25, "break_min": 5, "break_text": "Break: stand up, drink water, look out a window. The phone stays locked.", "chime": true },
+        { "text": "Close: one line on what you did.", "type": "text", "lines": 1 }
+      ],
+      "minimal": [
+        { "text": "One 25-minute round. Only this material.", "type": "timer", "min": 25, "chime": true }
+      ],
+      "params": { "default_min": 100 },
+      "stages": true
+    },
+    {
       "id": "prayer-asr",
       "kind": "prayer",
       "title": "ASR",
@@ -160,6 +232,35 @@
       "stages": true
     },
     {
+      "id": "gym",
+      "_note": "Each MY TIMES gym row (its minutes, or start to end = the planned workout). Pool lock: the phone stays usable and the notification leads back. The workout pre-fills each exercise with the last reps and weight; a rest timer (rest_s, or the exercise's own) follows every set. Edit exercises to change the list; more can be added by name in the app.",
+      "kind": "gym",
+      "title": "GYM",
+      "trigger": "slot:gym",
+      "intensity": "subtle",
+      "lock": { "type": "pool" },
+      "steps": [
+        { "text": "Change clothes, shoes on.", "type": "check" },
+        { "text": "Pack the bag: water, towel.", "type": "check" },
+        { "text": "Leave now. The gym is about 5 minutes away.", "type": "check" },
+        { "text": "Workout. Log every set.", "type": "workout" },
+        { "text": "Back home: shower.", "type": "check" }
+      ],
+      "short": [
+        { "text": "Shoes on, bag, go.", "type": "check" },
+        { "text": "A 20-minute session. Log every set.", "type": "workout", "min": 20 },
+        { "text": "Back home: shower.", "type": "check" }
+      ],
+      "minimal": [
+        { "text": "A 10-minute walk.", "type": "timer", "min": 10 }
+      ],
+      "params": {
+        "rest_s": 90,
+        "exercises": ["Squat", "Bench press", "Barbell row", "Overhead press", "Romanian deadlift", "Lat pulldown"]
+      },
+      "stages": true
+    },
+    {
       "id": "prayer-maghrib",
       "kind": "prayer",
       "title": "MAGHRIB",
@@ -172,6 +273,33 @@
         { "text": "Quiet time until the lock ends: dhikr or sit still.", "type": "timer" }
       ],
       "params": { "heads_up_min": 10, "window_warn_min": 15 },
+      "stages": true
+    },
+    {
+      "id": "dinner",
+      "_note": "MY TIMES dinner. The pool stays locked until the kitchen is clean; the walk follows without a lock. No dishes are planned: put simple meals into fallback to see them in the short and minimal versions.",
+      "kind": "meal",
+      "title": "DINNER",
+      "trigger": "slot:meal:dinner",
+      "intensity": "subtle",
+      "lock": { "type": "pool" },
+      "steps": [
+        { "text": "Go to the kitchen.", "type": "check" },
+        { "text": "Take out the ingredients.", "type": "check" },
+        { "text": "Cook.", "type": "check" },
+        { "text": "Eat at the table, phone face-down.", "type": "check" },
+        { "text": "Clean up the kitchen.", "type": "check", "unlock": true },
+        { "text": "Walk.", "type": "timer", "min": 10 }
+      ],
+      "short": [
+        { "text": "A simple meal: make it, eat it at the table.", "type": "check" },
+        { "text": "Clean up the kitchen.", "type": "check", "unlock": true }
+      ],
+      "minimal": [
+        { "text": "Eat something simple.", "type": "check" },
+        { "text": "Clean up.", "type": "check", "unlock": true }
+      ],
+      "params": { "fallback": [] },
       "stages": true
     },
     {

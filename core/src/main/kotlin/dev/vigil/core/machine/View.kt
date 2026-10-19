@@ -18,9 +18,12 @@ import dev.vigil.core.protocol.ProtocolKind
 import dev.vigil.core.protocol.Step
 import dev.vigil.core.protocol.StepType
 import dev.vigil.core.protocol.Version
+import dev.vigil.core.protocol.MAX_BLOCK_MIN
+import dev.vigil.core.run.GymSet
 import dev.vigil.core.run.JummahInfo
 import dev.vigil.core.run.Run
 import dev.vigil.core.run.RunPhase
+import dev.vigil.core.run.SlotInfo
 import dev.vigil.core.timeline.PlannedStart
 import dev.vigil.core.timeline.StartSource
 import dev.vigil.core.timeline.Timeline
@@ -141,12 +144,126 @@ internal open class View(var s: MachineState, val env: MachineEnv) {
 
     /**
      * The steps a run shows: its version on its weekday (the full steps if that version vanished), without the steps
-     * marked `skip_on_class_days` on a class or commute day.
+     * marked `skip_on_class_days` on a class or commute day; a study block's `rounds` step becomes its work rounds and
+     * breaks, an attention reset's timer without `min` lasts the ramp length, a workout without `min` the planned minutes.
      */
-    fun stepsOf(r: Run): List<Step> {
+    fun stepsOf(r: Run): List<Step> = shaped(r).map { it.first }
+
+    /** Which study round (or break after it) step [index] of [r] is, or null for any other step. */
+    fun roundOf(r: Run, index: Int): Round? = shaped(r).getOrNull(index)?.second
+
+    private fun shaped(r: Run): List<Pair<Step, Round?>> {
         val p = protocol(r) ?: return emptyList()
-        val steps = p.stepsFor(r.version, r.weekday) ?: p.stepsFor(Version.FULL, r.weekday) ?: p.steps
-        return if (r.classDay) steps.filterNot { it.skipOnClassDays } else steps
+        val version = p.stepsFor(r.version, r.weekday) ?: p.stepsFor(Version.FULL, r.weekday) ?: p.steps
+        val steps = if (r.classDay) version.filterNot { it.skipOnClassDays } else version
+        val out = mutableListOf<Pair<Step, Round?>>()
+        for (st in steps) {
+            when {
+                st.type == StepType.ROUNDS -> out += rounds(st, studyBlock(r, p))
+                st.type == StepType.TIMER && st.min == null && r.kind == ProtocolKind.ATTENTION ->
+                    out += st.copy(min = r.lengthMin ?: attentionMinutes(p)) to null
+                st.type == StepType.WORKOUT && st.min == null -> out += st.copy(min = r.lengthMin ?: Machine.DEFAULT_WORKOUT_MIN) to null
+                else -> out += st to null
+            }
+        }
+        return out
+    }
+
+    /**
+     * A `rounds` step filling [block] minutes: work rounds of its `min` minutes with its `break_min` breaks between them,
+     * the last round cut to fit. When less than a break and [Machine.MIN_ROUND] minutes would be left after a round, that
+     * round takes them instead (no break at the end, no tiny last round). Each becomes a timer step.
+     */
+    private fun rounds(st: Step, block: Int): List<Pair<Step, Round?>> {
+        val work = (st.min ?: return emptyList()).coerceAtLeast(1)
+        val rest = (st.breakMin ?: 0).coerceAtLeast(0)
+        val lengths = mutableListOf<Int>()
+        var left = block
+        while (left > 0) {
+            var w = minOf(work, left)
+            left -= w
+            if (left <= rest + Machine.MIN_ROUND) {
+                w += left
+                left = 0
+            }
+            lengths += w
+            if (left > 0) left -= rest
+        }
+        val out = mutableListOf<Pair<Step, Round?>>()
+        lengths.forEachIndexed { i, w ->
+            out += Step(st.text, StepType.TIMER, min = w, chime = st.chime) to Round(i + 1, lengths.size, false)
+            if (i < lengths.lastIndex && rest > 0) {
+                out += Step(st.breakText ?: DEFAULT_BREAK_TEXT, StepType.TIMER, min = rest, chime = st.chime) to Round(i + 1, lengths.size, true)
+            }
+        }
+        return out
+    }
+
+    /** A study run's block length: fixed when it fired, else the protocol's `default_min`. */
+    fun studyBlock(r: Run, p: Protocol): Int = r.lengthMin ?: p.intParam("default_min")
+
+    /**
+     * The attention reset's length today: `start_min` on the first `ramp_every_days` days it was completed in full, then
+     * one minute more every `ramp_every_days` such days, up to `max_min`.
+     */
+    fun attentionMinutes(p: Protocol): Int {
+        val every = p.intParam("ramp_every_days").coerceAtLeast(1)
+        return minOf(p.intParam("max_min"), p.intParam("start_min") + s.attention.days / every).coerceAtLeast(1)
+    }
+
+    /**
+     * The length a run of [p] gets when it fires: a study block from its MY TIMES row (minutes, or start to end) or the
+     * manual [minutes], else `default_min`; the attention reset's ramp; a gym session's planned minutes from its row.
+     */
+    fun lengthFor(p: Protocol, slot: SlotInfo?, minutes: Int?): Int? {
+        val row = slot?.minutes ?: slot?.end?.let { Duration.between(slot.start, it).toMinutes().toInt() }
+        return when (p.kind) {
+            ProtocolKind.STUDY -> (minutes ?: row ?: p.intParam("default_min")).coerceIn(1, MAX_BLOCK_MIN)
+            ProtocolKind.ATTENTION -> attentionMinutes(p)
+            ProtocolKind.GYM -> row?.coerceIn(1, MAX_BLOCK_MIN)
+            else -> null
+        }
+    }
+
+    /** The minutes of work in [r]'s current steps (the rounds, or plain timers that are not breaks), for its study entry. */
+    fun workMinutes(r: Run): Int = shaped(r).filter { (st, round) -> st.type == StepType.TIMER && round?.isBreak != true }.sumOf { it.first.min ?: 0 }
+
+    /** The whole minutes of study rounds and breaks [r] has been through (the current one counted so far). */
+    fun roundMinutesSpent(r: Run): Int {
+        val shaped = shaped(r)
+        var spent = shaped.take(r.step).filter { it.second != null }.sumOf { it.first.min ?: 0 }
+        if (shaped.getOrNull(r.step)?.second != null) {
+            r.stepStartedAt?.let { spent += Duration.between(it, runNow).toMinutes().toInt().coerceAtLeast(0) }
+        }
+        return spent
+    }
+
+    /** When the workout step [st] of [r] finishes by itself (forgotten FINISH): its planned end + [Machine.WORKOUT_GRACE]. */
+    fun workoutEnd(r: Run, st: Step): Instant? =
+        r.stepStartedAt?.plus(Duration.ofMinutes((st.min ?: Machine.DEFAULT_WORKOUT_MIN).toLong()))?.plus(Machine.WORKOUT_GRACE)
+
+    /** The workout of gym run [r] on its workout step [st], as the takeover shows it. */
+    fun workoutView(r: Run, st: Step): WorkoutView {
+        val p = protocol(r)
+        val sets = r.gym?.sets ?: emptyList()
+        val names = mutableListOf<String>()
+        for (name in (p?.textListParam("exercises") ?: emptyList()) + s.gym.last.keys + sets.map { it.exercise }) {
+            if (names.none { it.equals(name, ignoreCase = true) }) names += name
+        }
+        val rest = p?.intParam("rest_s") ?: 90
+        val exercises = names.map { name ->
+            val mine = sets.filter { it.exercise.equals(name, ignoreCase = true) }
+            val prefill = mine.lastOrNull() ?: s.gym.last[name]
+            ExerciseView(name, prefill?.reps, prefill?.weight, s.gym.restS[name] ?: rest, mine, s.gym.best[name])
+        }
+        val planned = st.min ?: Machine.DEFAULT_WORKOUT_MIN
+        return WorkoutView(
+            exercises = exercises,
+            plannedMin = planned,
+            plannedEnd = r.stepStartedAt?.plus(Duration.ofMinutes(planned.toLong()))?.plus(callShift(r)),
+            restUntil = r.gym?.restUntil,
+            lastExercise = sets.lastOrNull()?.exercise,
+        )
     }
 
     /** The stage a protocol fires at now. */
@@ -332,7 +449,7 @@ internal open class View(var s: MachineState, val env: MachineEnv) {
         return when (st.type) {
             StepType.CHECK -> st.min?.let { m -> r.stepStartedAt?.plus(Duration.ofMinutes(m.toLong())) }?.takeIf { runNow.isBefore(it) }?.plus(ext)
             StepType.TIMER -> timerEnd(r, st)?.plus(ext)
-            StepType.TEXT -> null
+            StepType.TEXT, StepType.ROUNDS, StepType.WORKOUT -> null
             StepType.DONE -> doneLockedUntil(r)?.plus(ext)
         }
     }
@@ -351,6 +468,11 @@ internal open class View(var s: MachineState, val env: MachineEnv) {
         }
         val plan = plan()
         plan.filter { it.source != StartSource.ADHAN && it.key !in day.handled }.forEach { c += it.at }
+        for (d in day.deferred) {
+            c += d.due
+            c += d.due.plus(Machine.DEFER_LIMIT)
+            dayTimes().classBlockEnd(now)?.let { c += it }
+        }
         if (!suspended) {
             for (prayer in Prayer.entries) {
                 val p = file.prayerProtocol(prayer) ?: continue
@@ -377,8 +499,9 @@ internal open class View(var s: MachineState, val env: MachineEnv) {
             if (r.phase == RunPhase.WAITING) r.promise?.let { c += it.dueAt }
             if (r.phase == RunPhase.ACTIVE && s.callSince == null) {
                 r.lockEndsAt?.let { c += it }
-                val steps = stepsOf(r)
-                steps.getOrNull(r.step)?.takeIf { it.type == StepType.TIMER }?.let { st -> timerEnd(r, st)?.let { c += it } }
+                val st = stepsOf(r).getOrNull(r.step)
+                if (st?.type == StepType.TIMER) timerEnd(r, st)?.let { c += it }
+                if (st?.type == StepType.WORKOUT) workoutEnd(r, st)?.let { c += it }
             }
         }
         val session = s.pool.session
@@ -399,6 +522,9 @@ internal open class View(var s: MachineState, val env: MachineEnv) {
         return c.filter { it.isAfter(now) }.minOrNull()
     }
 }
+
+/** The text of a study break when its rounds step has no `break_text`. */
+internal const val DEFAULT_BREAK_TEXT = "Break: stand up, drink water, look out a window. The phone stays locked."
 
 /** What re-entering the day does ([View.reentryPlan]). */
 internal sealed interface Reentry {

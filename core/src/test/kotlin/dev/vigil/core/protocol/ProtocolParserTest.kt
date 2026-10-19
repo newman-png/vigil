@@ -270,9 +270,13 @@ class ProtocolParserTest {
         val ok = listOf(
             "manual", "event:wake_alarm", "event:after:prayer-fajr", "event:misses:2", "slot:study", "slot:meal", "slot:gym",
             "slot:call", "slot:commute", "time:21:30", "time:wake+60", "time:bedtime-60", "time:meal:dinner+45",
-            "time:class_start-75", "time:class_end", "toggle:walking", "toggle:friends",
+            "time:class_start-75", "time:class_end", "toggle:walking", "toggle:friends", "slot:meal:lunch", "slot:meal:breakfast",
         )
         ok.forEachIndexed { i, t -> assertOk(withProtocols(protocol(id = "t$i", trigger = t))) }
+        assertEquals(Trigger.Slot(SlotType.MEAL, "dinner"), (Trigger.parse("slot:meal:dinner") as Parsed.Ok).value)
+        assertEquals(Trigger.Slot(SlotType.MEAL), (Trigger.parse("slot:meal") as Parsed.Ok).value)
+        assertError(withProtocols(protocol(trigger = "slot:meal:snack")), "trigger", "not a meal")
+        assertError(withProtocols(protocol(trigger = "slot:study:math")), "trigger", "not a slot")
         assertError(withProtocols(protocol(trigger = "event:adhan:duhr")), "trigger", "not a prayer")
         assertError(withProtocols(protocol(trigger = "event:adhan:fajr")), "trigger", "prayer protocols only")
         assertError(withProtocols(protocol(trigger = "event:after:nothing")), "trigger", "no protocol \"nothing\"")
@@ -290,6 +294,30 @@ class ProtocolParserTest {
         assertError(withProtocols(protocol(trigger = "event:sunrise")), "trigger", "not a known event")
         assertError(withProtocols(protocol(trigger = "cron:5")), "trigger", "not a trigger")
         assertError(withProtocols(protocol(trigger = " manual")), "trigger", "no spaces")
+    }
+
+    @Test
+    fun roundsWorkoutChimeAndUnlock() {
+        fun rounds(min: Int? = 50, breakMin: Int? = 10) =
+            JsonObject(obj("text" to "Work.", "type" to "rounds", "min" to min, "break_min" to breakMin).filterValues { it !is kotlinx.serialization.json.JsonNull })
+        val study = protocol(kind = "study", lock = obj("type" to "screen"), steps = listOf(rounds(), step("Line.", "text")))
+        assertOk(withProtocols(study))
+        assertError(withProtocols(protocol(kind = "reset", steps = listOf(rounds()))), "steps[0].type", "only study protocols")
+        assertError(withProtocols(protocol(kind = "study", steps = listOf(rounds(min = null)))), "steps[0].min", "minutes of work per round")
+        assertError(withProtocols(protocol(kind = "study", steps = listOf(rounds(breakMin = 61)))), "steps[0].break_min", "from 0 to 60")
+        assertError(withProtocols(protocol(kind = "study", steps = listOf(rounds(), rounds()))), "steps", "more than one rounds step")
+        assertTrue(warnings(withProtocols(protocol(steps = listOf(obj("text" to "x", "break_min" to 5))))).any { it.path.endsWith("break_min") })
+        val workout = obj("text" to "Workout.", "type" to "workout")
+        assertOk(withProtocols(protocol(kind = "gym", lock = obj("type" to "pool"), steps = listOf(workout, step()))))
+        assertError(withProtocols(protocol(kind = "study", steps = listOf(workout))), "steps[0].type", "only gym protocols")
+        assertError(withProtocols(protocol(kind = "gym", steps = listOf(workout, workout))), "steps", "more than one workout step")
+        // An attention timer without min lasts the ramp: no lock minutes needed.
+        val look = obj("text" to "Look.", "type" to "timer", "chime" to true)
+        assertOk(withProtocols(protocol(kind = "attention", lock = obj("type" to "screen"), steps = listOf(look))))
+        assertError(withProtocols(protocol(kind = "reset", lock = obj("type" to "screen"), steps = listOf(look))), "steps[0].min", "lock has no minutes")
+        assertTrue(warnings(withProtocols(protocol(steps = listOf(obj("text" to "x", "chime" to true))))).any { it.path.endsWith("chime") })
+        assertTrue(warnings(withProtocols(protocol(lock = obj("type" to "none"), steps = listOf(obj("text" to "x", "unlock" to true))))).any { it.path.endsWith("unlock") })
+        assertError(withProtocols(protocol(steps = listOf(obj("text" to "x", "unlock" to "yes")))), "unlock", "true or false")
     }
 
     @Test
@@ -392,12 +420,18 @@ class ProtocolParserTest {
         assertTrue(warnings(prayerWith(obj("snooze" to 3))).any { it.path.endsWith("params.snooze") && it.message.contains("known: heads_up_min, window_warn_min") })
         assertError(withProtocols(protocol(kind = "sleep", extra = mapOf("params" to obj("white_noise" to "yes")))), "white_noise", "true or false")
         assertError(withProtocols(protocol(kind = "meal", extra = mapOf("params" to obj("fallback" to listOf("Toast", 3))))), "fallback", "list of texts")
-        assertError(withProtocols(protocol(kind = "meal", extra = mapOf("params" to obj("dishes" to obj("lunch" to 3))))), "dishes", "label: text")
+        // No dishes are planned (the user does not want them): an old "dishes" is only a warning.
+        assertTrue(warnings(withProtocols(protocol(kind = "meal", extra = mapOf("params" to obj("dishes" to obj("lunch" to "x")))))).any { it.path.endsWith("params.dishes") })
         assertError(withProtocols(protocol(kind = "promise", extra = mapOf("params" to obj("delays" to listOf(5, 0))))), "delays[1]", "from 1 to 240")
         assertError(withProtocols(protocol(kind = "promise", extra = mapOf("params" to obj("delays" to emptyList<Int>())))), "delays", "list of whole numbers")
-        val file = assertOk(withProtocols(protocol(kind = "study", extra = mapOf("params" to obj("work_min" to 40)))))
-        assertEquals(40, file.find("test")!!.intParam("work_min"))
-        assertEquals(10, file.find("test")!!.intParam("break_min"))
+        val file = assertOk(withProtocols(protocol(kind = "study", extra = mapOf("params" to obj("default_min" to 120)))))
+        assertEquals(120, file.find("test")!!.intParam("default_min"))
+        assertEquals(90, assertOk(withProtocols(protocol(kind = "gym"))).find("test")!!.intParam("rest_s"))
+        assertError(withProtocols(protocol(kind = "study", extra = mapOf("params" to obj("default_min" to 601)))), "default_min", "from 5 to 600")
+        assertError(
+            withProtocols(protocol(kind = "attention", extra = mapOf("params" to obj("start_min" to 5, "max_min" to 4)))),
+            "params.max_min", "at least start_min",
+        )
         assertError(withProtocols(protocol(extra = mapOf("params" to JsonPrimitive(3)))), "params", "object")
     }
 

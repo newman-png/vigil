@@ -217,9 +217,11 @@ where it was (`resumed`) as soon as the screen is free again, before any queued 
 | `type` | Finished when | Extra fields |
 |---|---|---|
 | `check` (default) | Tapped. With `min`, locked for `min` minutes (1-240) from when it appeared (stage 1). | `min` |
-| `timer` | It ends by itself after `min` minutes (1-240), or when the lock ends if it has no `min` (then the lock needs `minutes`). Cannot be tapped through at stage 1. | `min` |
+| `timer` | It ends by itself after `min` minutes (1-240), or when the lock ends if it has no `min` (then the lock needs `minutes`; in an attention protocol it lasts the ramp length instead). Cannot be tapped through at stage 1. | `min`, `chime` |
 | `text` | The user typed `lines` non-empty lines (1-10, default 1). The text goes into the run and the journal. With `todos` (sleep protocols): up to `lines` lines (at least one), and they become the next day's to-dos. | `lines`, `todos` |
 | `done` | Tapped once the lock's `done_after_min` has passed (stage 1). It confirms the run (a prayer: confirmed). At most one per version. If it is the last step the run completes and its lock ends ("done unlock"); otherwise the remaining steps follow (e.g. a quiet timer until the lock ends). | |
+| `rounds` | Study protocols only, at most one per version: work rounds of `min` minutes (required, 1-240) with breaks of `break_min` minutes (0-60, default 0) between them, filling the study block's length ([study](#study-block)). The run shows one timer per round and per break (ROUND 2/3); each ends by itself. | `min`, `break_min`, `break_text`, `chime` |
+| `workout` | Gym protocols only, at most one per version: the sets are logged here and FINISH WORKOUT ends it ([gym](#gym)). `min` = the planned minutes (1-240); without it, the MY TIMES gym row's minutes (or 60). | `min` |
 
 Optional on any step: `skip_on_class_days` (`true`): the step is left out on days with a MY TIMES class or commute
 (the morning walk: the commute counts as the walk); a version may not consist only of such steps. `noise_toggle`
@@ -228,6 +230,10 @@ text step of a sleep protocol): see `text` above. `optional` (`true`, a text ste
 reset's "name it". `walking_on` (`true`): finishing the step switches the walking switch on (Jummah's leave-by).
 `arrival` (`true`, jummah protocols only): the I'M AT UNI step ([jummah](#jummah-friday)). `reenter` (`true`, reset
 protocols only, the last step of its version): finishing it re-enters the day ([reset](#reset-and-its-offer)).
+`break_text` (a rounds step): what each break says (default "Break: stand up, drink water, look out a window. The phone
+stays locked."). `chime` (`true`, a timer or rounds step): a soft chime when it ends (each round and break), unless QUIET
+is on. `unlock` (`true`): finishing the step ends the run's lock, logged as `lock_ended` with reason `unlock` (a meal's
+cleanup: the pool opens); the steps after it go on without a lock.
 
 A run completes when its last step is done. If its timed lock ends first, the screen and the pool are released and the
 run stays open (home shows it; a prayer shows CONFIRM). Without a screen lock (pool or none) its notification shows the
@@ -246,9 +252,10 @@ weekday) is skipped. Each tap restarts at the first step of the new version; the
 |---|---|
 | `event:adhan:<prayer>` | When the adhan app posts its notification for `fajr`, `dhuhr`, `asr`, `maghrib` or `isha` (a repeat within 30 minutes, or while that prayer's run is still open and less than 12 hours old, is ignored; a run of it 12 hours old or more is closed like any earlier prayer's). Prayer kind only, one protocol per prayer. |
 | `event:wake_alarm` | When VIGIL's wake alarm is dismissed (or, if it was never answered, at the first unlock after it). See [morning](#morning-wake-alarm-morning-routine). |
-| `event:after:<protocol-id>` | Right after that protocol's run completes or its lock ends (not after a bail-out or a miss). The id must exist and not be the protocol itself. |
+| `event:after:<protocol-id>` | Right after that protocol's run completes or its lock ends (not after a bail-out or a miss). The id must exist and not be the protocol itself. On Fridays Jummah replaces Dhuhr: what waits for the Dhuhr protocol follows the Jummah run (its DONE, or its lock ending). An attention protocol does not start at once ([attention reset](#attention-reset)). |
 | `event:misses:<n>` | After `n` (1-10) missed or bailed protocols in a row (any protocols, prayers and Jummah too; step-downs are neither; a completion resets the count): the protocol is **offered**, not started: a full-intensity card (home and a notification) with START and NOT NOW. NOT NOW costs nothing; the count starts again, so the next offer needs `n` more. The offer ends when answered, when the protocol starts any other way, when the day ends or VIGIL is suspended. |
-| `slot:study`, `slot:meal`, `slot:gym`, `slot:call`, `slot:commute` | At the start of every MY TIMES row of that list on the day's weekday (the run carries the row's label, end and minutes). |
+| `slot:study`, `slot:meal`, `slot:gym`, `slot:call`, `slot:commute` | At the start of every MY TIMES row of that list on the day's weekday (the run carries the row's label, end and minutes). A meal protocol never starts at breakfast while the file has a morning protocol (the morning's breakfast step covers it). |
+| `slot:meal:<label>` | Like `slot:meal`, only the rows labelled `breakfast`, `lunch` or `dinner` (one meal protocol per meal: `slot:meal:lunch`). |
 | `slot:jummah` | Fridays: the Jummah sequence, from its leave-by time ([jummah](#jummah-friday)). Jummah kind only, and a jummah protocol must use it. It still starts late (the phone was off at leave-by) at whatever part is due, until its missed time; skipped while VIGIL is suspended, it starts when the suspension ends. |
 | `time:<expr>` | At the time the [expression](#anchors-and-time-expressions) resolves to each day (skipped on days its anchor does not exist). |
 | `toggle:walking`, `toggle:friends` | When that home switch goes on; the run completes when it goes off. The friends switch goes off by itself after the friends protocol's `cap_min` (240 without one); the walking switch after 3 hours (until step detection ends a walk). |
@@ -264,8 +271,8 @@ expected adhan that never came, as `not_fired`.
 
 ### kinds
 
-Every kind below is accepted now; the behaviour beyond the generic run mechanics arrives with its milestone. Params
-show `name (default, range)`.
+Every kind below is accepted now; the behaviour beyond the generic run mechanics arrives with its milestone (walk,
+friends and call: M8). Params show `name (default, range)`.
 
 | Kind | Ladder | Params | Notes |
 |---|---|---|---|
@@ -273,18 +280,17 @@ show `name (default, range)`.
 | `sleep` | short, minimal, single | `shift_min` (20, 0-120), `hold_after_missed` (2, 0-7), `late_min` (30, 0-240), `night_lock_grace_min` (120, 10-600), `white_noise` (false) | M2, see [sleep](#sleep-wind-down-night-lock-sleep-shifting). Its run's start is wind-down. |
 | `morning` | short, minimal, single | `ring_max_min` (10, 1-60), `snooze_min` (5, 1-60), `max_rings` (3, 1-10) | M3, see [morning](#morning-wake-alarm-morning-routine). |
 | `jummah` | none | `leave_buffer_min` (15), `arrive_before_min` (15), `arrive_repeat_min` (10, 1-60), `card_before_end_min` (5), `lock_before_min` (5), `missed_after_min` (50), `prep_todos` (list of texts) | M4, see [jummah](#jummah-friday). Trigger must be `slot:jummah`; `lock.minutes` required. Always stage 1. |
-| `study` | short, minimal, single | `work_min` (50, 1-240), `break_min` (10, 0-60), `short_work_min` (25), `short_break_min` (5) | M6. |
-| `attention` | short only | `start_min` (3, 1-30), `max_min` (10, 1-60), `ramp_every_days` (2, 1-30), `short_min` (3, 1-30) | M6. |
-| `meal` | short, minimal, single | `walk_min` (10, 0-120), `dishes` (object label: text), `fallback` (list of texts) | M7. |
-| `gym` | short, minimal, single | `rest_s` (90, 10-600), `exercises` (list of texts) | M7. |
+| `study` | short, minimal, single | `default_min` (100, 5-600) | M6, see [study](#study-block). Its `rounds` step fills the block. |
+| `attention` | short only | `offset_min` (0, 0-240), `start_min` (3, 1-30), `max_min` (10, 1-60, at least `start_min`), `ramp_every_days` (2, 1-30) | M6, see [attention reset](#attention-reset). A timer without `min` lasts the ramp length. |
+| `meal` | short, minimal, single | `fallback` (list of texts, empty by default) | M7, see [meals](#meals). |
+| `gym` | short, minimal, single | `rest_s` (90, 10-600), `exercises` (list of texts) | M7, see [gym](#gym). Its `workout` step logs the sets. |
 | `walk` | none | `still_end_min` (10, 1-120) | M8. |
 | `friends` | none | `cap_min` (240, 10-720) | M8. |
 | `call` | short only | `min_call_min` (3, 1-60), `return_after_min` (30, 1-240), `wrap_up_min` (20, 1-120) | M8. |
 | `promise` | none | `delays` (list of whole numbers 1-240), `snooze_min_min` (2, 1-60) | M5, see [promise](#the-10-minute-promise). Always stage 1. |
 | `reset` | short, minimal, single | `next_within_min` (60, 0-240) | M5, see [reset](#reset-and-its-offer). |
 
-Unlisted ranges for jummah are 0-120 (`card_before_end_min`, `lock_before_min`: 0-60; `missed_after_min`: 0-240);
-study `short_work_min` 1-240, `short_break_min` 0-60.
+Unlisted ranges for jummah are 0-120 (`card_before_end_min`, `lock_before_min`: 0-60; `missed_after_min`: 0-240).
 
 Open runs (unconfirmed stage-3 reminders too) are missed when the day ends, except prayers: a prayer's window follows
 the adhans (only Isha's window closes with the day, so a Fajr that came before the 06:00 fallback stays open into the
@@ -428,6 +434,82 @@ before it is due) = kept. LEAVE = bailed, with the usual penalty. At the day end
 (`expired_at_day_end`, no penalty, no miss). No step-down. Journal: `promise` entries (promised, due, snoozed, on_it,
 kept, bailed, expired_at_day_end).
 
+### study block
+
+The protocol of kind `study` (bundled: `study`, trigger `slot:study`, intensity `subtle`, screen lock: only the APPS
+button's apps (PoliTO, WhatsApp, calls) are usable, the pool (Brave too) is blocked):
+
+1. **Block length**: a MY TIMES study row's `minutes`, else its end - start (at most 600); home's START STUDY: 50, 100
+   or 150 minutes (and `default_min`), with what to study typed in; TEST and other starts: `default_min`. The row's
+   label (or what was typed) is what to study: the takeover shows it big.
+2. **Steps**: go to your spot, notebook and pen out, open the book or laptop, open the one study material, the rounds,
+   then close: one line on what you did (a text step).
+3. **Rounds**: the `rounds` step (bundled: 50 minutes of work, 10 of break, `chime`) becomes work rounds and breaks that
+   fill the block exactly: 100 min = 50, break 10, 40; 150 = 50, 10, 50, 10, 30. The last round is cut to fit; when less
+   than `break_min` + 5 minutes would be left after a round, that round takes them instead (no break at the end, no tiny
+   last round). Rounds and breaks are timers: at stage 1 they cannot be tapped through; calls and a prayer taking the
+   screen pause them.
+4. **Ends** when the rounds are over and the closing line is saved: `study` in the journal (detail = what, minutes =
+   the work minutes of the version it finished in, text = the line).
+5. **Step-down**: short = 25-minute rounds with 5-minute breaks, then the closing line; minimal = one 25-minute round.
+   A step-down keeps only what is left of the block: the shorter rounds fill the minutes not yet used, not the whole
+   block again. No single version (a third tap changes nothing).
+
+QUIET is only the manual switch: nothing turns it on by itself.
+
+### attention reset
+
+The protocol of kind `attention` (bundled: `attention`, trigger `event:after:prayer-dhuhr`, intensity `full`, screen
+lock):
+
+1. **When**: right after the Dhuhr lock ends, confirmed or not (also when the lock is left after its minimum, and at
+   stage 3 when the reminder is confirmed; Fridays: after the Jummah lock, at DONE or its end), it is triggered and
+   waits (`deferred`): it starts `offset_min` later, once no MY TIMES class is in progress and no other protocol holds
+   the screen. If it cannot start within 2 hours of that time, it is skipped (`skipped`, reason `too_late`): not a
+   miss. Not after Dhuhr was left before its minimum (a bail-out). Any attention protocol started by its trigger waits
+   like this; a manual or TEST start, the reset's offer and its re-entry start at once. A wait still open when the day
+   ends is `skipped` (reason `day_end`).
+2. **Steps**: face a wall or a window, phone face-down, then look at one spot: a timer that ends with a soft chime
+   (`chime`; QUIET silences it). VIGIL's own sounds (white noise) stop when it starts.
+3. **Ramp**: a timer without `min` lasts `start_min` on the first `ramp_every_days` days the reset was completed in
+   full, then one minute more every `ramp_every_days` such days, up to `max_min` (bundled: 3 minutes on days 1 and 2, 4
+   on days 3 and 4 ... 10). It counts completed days, not calendar days (once per day, never for a step-down or a
+   TEST), and is kept across days. The `fired` entry has the minutes.
+4. **Step-down**: short = 3 minutes whatever the ramp says. No minimal version: a second NOT OKAY changes nothing.
+
+### meals
+
+Protocols of kind `meal`, one per meal (bundled: `lunch` with `slot:meal:lunch`, `dinner` with `slot:meal:dinner`; no
+breakfast run, the morning routine has its breakfast step), intensity `subtle`, pool lock:
+
+1. **Steps**: go to the kitchen, take out the ingredients, cook, eat at the table (phone face-down), clean up the
+   kitchen (`unlock`: the pool lock ends here), walk 10 minutes (a timer). Without a screen lock the meal is a
+   notification (POOL LOCKED until the cleanup) that opens its takeover.
+2. **Ends** when the walk is over. Dinner's id is `dinner`, so the evening window's `done:dinner` opens when dinner is
+   done.
+3. **No dishes**: the app does not plan meals. `fallback` (a list of simple meals, empty by default) is shown under the
+   steps of the short and minimal versions when it has something.
+4. **Step-down**: short = a simple meal, eaten at the table, then the cleanup (no walk); minimal = eat something simple
+   and clean up.
+
+### gym
+
+The protocol of kind `gym` (bundled: `gym`, trigger `slot:gym`, intensity `subtle`, pool lock: the phone stays usable,
+and the run's notification leads back to the workout):
+
+1. **Planned minutes**: the MY TIMES gym row's minutes (or its end - start); the `workout` step's own `min` wins.
+2. **Steps**: change clothes and shoes on, pack the bag, leave (the gym is about 5 minutes away), the workout, back home
+   and shower.
+3. **Workout**: the list is the protocol's `exercises`, then every other name logged before (any name can be added in
+   the app; a name the gym knows in another case is that one). Each exercise is pre-filled with its last logged reps and
+   weight. LOG SET journals `gym_set` (exercise, reps, weight; detail: first time, new best, or the best so far) and
+   starts the rest timer: the exercise's own rest (set in the app, kept per exercise), else `rest_s`. FINISH WORKOUT
+   journals `workout` (minutes, sets) and the next step follows; nobody finishing it ends it by itself an hour after its
+   planned minutes (reason `auto`). The last set, the best set and the rest are kept per exercise (not for a TEST).
+4. **Ends** when the workout is logged and the last step is done. The report shows the sets per day and, per exercise,
+   the best set of the last day it was trained against the best before.
+5. **Step-down**: short = a 20-minute session (`workout` with `min` 20); minimal = a 10-minute walk.
+
 ## Validation rules (errors fail the build)
 
 Known kinds, step types, lock types, intensities, triggers and anchors; unique protocol and window ids; references
@@ -436,8 +518,11 @@ kind allows them, `single` with exactly one step, at most one `done` step per ve
 tapping it confirms the prayer); `todos` only on text steps; `reenter` only in reset protocols, as the last step;
 `arrival` only in jummah protocols, which need exactly one and a done step after it, `lock.minutes` and the
 `slot:jummah` trigger (and `slot:jummah` only for them); not every step of a version `skip_on_class_days`; a timer
-without `min` needs `lock.minutes`; `done_after_min` not above `minutes`;
+without `min` needs `lock.minutes` (except in attention protocols); `done_after_min` not above `minutes`; `rounds` only
+in study protocols, with `min`, at most one per version; `workout` only in gym protocols, at most one per version; an
+attention protocol's `max_min` at least its `start_min`;
 every number in its range; package names that look like package names; each `apps_button` entry with exactly one key. Warnings: unknown fields and params, long titles and step texts,
 `min`/`lines` on step types that ignore them, a `none` lock with minutes, `done:`/`start:` references to protocols not
 in the file, an empty pool, an empty APPS button, a weekday entry that changes nothing, `todos` outside a sleep protocol,
-`optional` on a step that is not a text step.
+`optional` on a step that is not a text step, `break_min`/`break_text` outside a rounds step, `chime` outside a timer or
+rounds step, `unlock` in a protocol without a lock.

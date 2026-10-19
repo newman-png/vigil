@@ -229,6 +229,8 @@ object Notifications {
             NotifyKind.REMINDER -> builder.setCategory(Notification.CATEGORY_REMINDER)
             NotifyKind.RUN -> {
                 builder.setCategory(Notification.CATEGORY_STATUS)
+                // While the run goes on it stays (the way back to a meal or the gym's workout); its end removes it.
+                if (openable != null) builder.setOngoing(true)
                 openable?.let { id ->
                     builder.addAction(Notification.Action.Builder(Icon.createWithResource(context, R.drawable.ic_stat_eye), "OPEN", openRun(context, id)).build())
                 }

@@ -42,7 +42,7 @@ enum class ToggleName(val json: String) {
 /**
  * What starts a protocol. Written in the data file as text:
  * `event:adhan:<prayer>`, `event:wake_alarm`, `event:after:<protocol-id>`, `event:misses:<n>`,
- * `slot:study|meal|gym|call|commute|jummah`, `time:<expr>`, `toggle:walking|friends`, `manual`.
+ * `slot:study|meal|gym|call|commute|jummah`, `slot:meal:<label>`, `time:<expr>`, `toggle:walking|friends`, `manual`.
  */
 sealed interface Trigger {
     /** The adhan app's notification for [prayer] (30-minute dedupe). */
@@ -57,8 +57,8 @@ sealed interface Trigger {
     /** After [count] missed or bailed protocols in a row: the protocol is offered (START / NOT NOW), not forced. */
     data class Misses(val count: Int) : Trigger
 
-    /** At the start of every MY TIMES slot of [type] that day. */
-    data class Slot(val type: SlotType) : Trigger
+    /** At the start of every MY TIMES slot of [type] that day; with [label] only the rows with that label (meals). */
+    data class Slot(val type: SlotType, val label: String? = null) : Trigger
 
     /** At the time [expr] resolves to each day. */
     data class Time(val expr: TimeExpr) : Trigger
@@ -98,10 +98,18 @@ sealed interface Trigger {
                         Parsed.Error("event:misses needs a whole number from 1 to $MAX_MISSES, e.g. event:misses:2.")
                     }
                 }
+                t.startsWith("slot:meal:") -> {
+                    val label = t.removePrefix("slot:meal:")
+                    if (label in TimeExpr.MEAL_LABELS) {
+                        Parsed.Ok(Slot(SlotType.MEAL, label))
+                    } else {
+                        Parsed.Error("\"$label\" is not a meal; use slot:meal:breakfast, slot:meal:lunch or slot:meal:dinner.")
+                    }
+                }
                 t.startsWith("slot:") -> {
                     val name = t.removePrefix("slot:")
                     SlotType.fromJson(name)?.let { Parsed.Ok(Slot(it)) }
-                        ?: Parsed.Error("\"$name\" is not a slot; use study, meal, gym, call, commute or jummah.")
+                        ?: Parsed.Error("\"$name\" is not a slot; use study, meal, meal:<label>, gym, call, commute or jummah.")
                 }
                 t.startsWith("time:") -> when (val e = TimeExpr.parse(t.removePrefix("time:"))) {
                     is Parsed.Ok -> Parsed.Ok(Time(e.value))

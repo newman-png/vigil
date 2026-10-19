@@ -12,6 +12,8 @@ import dev.vigil.core.protocol.ProtocolKind
 import dev.vigil.core.protocol.ProtocolFile
 import dev.vigil.core.protocol.Step
 import dev.vigil.core.protocol.StepType
+import dev.vigil.core.protocol.Version
+import dev.vigil.core.run.GymSet
 import dev.vigil.core.run.JummahPart
 import dev.vigil.core.run.Run
 import dev.vigil.core.run.RunPhase
@@ -74,6 +76,24 @@ object Machine {
 
     /** The night lock starts only when the wake alarm is due within this long (GOING TO SLEEP at night, not at 08:00). */
     val MAX_NIGHT: Duration = Duration.ofHours(16)
+
+    /** An attention reset that cannot start within this long after its time (a class, the screen taken) is skipped. */
+    val DEFER_LIMIT: Duration = Duration.ofHours(2)
+
+    /** A study block's last round is never shorter than this: fewer minutes left go to the round before. */
+    const val MIN_ROUND = 5
+
+    /** A workout without planned minutes (no `min`, no MY TIMES row minutes) plans this many. */
+    const val DEFAULT_WORKOUT_MIN = 60
+
+    /** A workout nobody finished ends by itself this long after its planned minutes (the sets logged count). */
+    val WORKOUT_GRACE: Duration = Duration.ofMinutes(60)
+
+    /** Home's START STUDY offers these block lengths (and the study protocol's `default_min`). */
+    val STUDY_LENGTHS = listOf(50, 100, 150)
+
+    /** An exercise name is cut to this many characters. */
+    const val MAX_EXERCISE_CHARS = 40
 
     /** Applies [input] to [state] at `env.now`. Pure: same arguments, same outcome. */
     fun step(state: MachineState, input: Input, env: MachineEnv): Outcome {
@@ -156,10 +176,15 @@ object Machine {
             val line = v.reentryLine(v.reentryPlan(v.protocol(r)?.intParam("next_within_min") ?: 0))
             if (r.test) "TEST, NOTHING CHANGES. IT WOULD SAY: $line" else line
         }
+        val p = v.protocol(r)
         return StepView(
             r.step, steps.size, st, locked, timerEnds, canTap, r.isMinimum, v.lockEndShown(r),
             goingToSleep = sleepStep, ishaToConfirm = if (sleepStep) v.ishaToConfirm()?.id else null,
             arrival = st.arrival, reentry = reentry,
+            label = r.label,
+            round = v.roundOf(r, r.step),
+            fallback = if (r.kind == ProtocolKind.MEAL && r.version != Version.FULL) p?.textListParam("fallback") ?: emptyList() else emptyList(),
+            workout = if (st.type == StepType.WORKOUT) v.workoutView(r, st) else null,
         )
     }
 
@@ -265,6 +290,11 @@ object Machine {
             jummah = state.runs.firstOrNull { it.jummah != null && !it.test },
             jummahToday = day.jummah,
             dndOn = dndWanted(state, env),
+            studyProtocol = env.protocols.protocols.firstOrNull { it.kind == ProtocolKind.STUDY }?.id,
+            studyLengths = env.protocols.protocols.firstOrNull { it.kind == ProtocolKind.STUDY }
+                ?.let { (STUDY_LENGTHS + it.intParam("default_min")).distinct().sorted() } ?: emptyList(),
+            studyDefault = env.protocols.protocols.firstOrNull { it.kind == ProtocolKind.STUDY }?.intParam("default_min"),
+            deferred = day.deferred,
         )
     }
 
@@ -301,6 +331,42 @@ data class StepView(
     val arrival: Boolean = false,
     /** A reset's re-enter step: what re-entering does now, e.g. "NEXT: ASR AT ~15:20." (null on other steps). */
     val reentry: String? = null,
+    /** What the run is for: what to study (the MY TIMES row, or typed at START STUDY), the meal's row label. */
+    val label: String? = null,
+    /** A study round or break (ROUND 2/3), or null. */
+    val round: Round? = null,
+    /** A meal's short or minimal version: the simple meals of its `fallback` param (empty when none). */
+    val fallback: List<String> = emptyList(),
+    /** The gym's workout step: the exercises, pre-filled, and the rest timer ([Input.LogSet], [Input.FinishWorkout]). */
+    val workout: WorkoutView? = null,
+)
+
+/** A study round ([isBreak] false) or the break after it: round [number] of [total]. */
+data class Round(val number: Int, val total: Int, val isBreak: Boolean)
+
+/** A gym workout as the takeover shows it. */
+data class WorkoutView(
+    /** The protocol's exercises, then every other name logged before or in this workout. */
+    val exercises: List<ExerciseView>,
+    val plannedMin: Int,
+    /** When the planned minutes are over (live during a call); the workout goes on until FINISH. */
+    val plannedEnd: Instant?,
+    /** The rest after the last set ends then (in the past once it is over); null before the first set. */
+    val restUntil: Instant?,
+    /** The exercise of the last set logged (the rest screen's "next"), or null. */
+    val lastExercise: String?,
+)
+
+/** One exercise of a workout: the pre-fill (the last set logged: this workout's, else the last time's), its rest, its sets. */
+data class ExerciseView(
+    val name: String,
+    val reps: Int?,
+    val weight: Double?,
+    val restS: Int,
+    /** The sets logged for it in this workout. */
+    val sets: List<GymSet>,
+    /** Its best set so far (weight first, then reps), or null. */
+    val best: GymSet?,
 )
 
 /** Everything the home screen shows. */
@@ -358,4 +424,12 @@ data class HomeStatus(
     val jummahToday: String? = null,
     /** VIGIL's Do Not Disturb is on (the Jummah lock). */
     val dndOn: Boolean = false,
+    /** The study protocol's id (home's START STUDY: [Input.Manual] with minutes and label), or null without one. */
+    val studyProtocol: String? = null,
+    /** START STUDY's block lengths in minutes. */
+    val studyLengths: List<Int> = emptyList(),
+    /** The study protocol's `default_min` (START STUDY's preselected length). */
+    val studyDefault: Int? = null,
+    /** Attention resets triggered and waiting to start (from their `due`). */
+    val deferred: List<Deferred> = emptyList(),
 )

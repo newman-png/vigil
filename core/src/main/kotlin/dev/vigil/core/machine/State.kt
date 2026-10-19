@@ -5,6 +5,7 @@ package dev.vigil.core.machine
 import dev.vigil.core.common.InstantIso
 import dev.vigil.core.pool.PoolState
 import dev.vigil.core.protocol.Prayer
+import dev.vigil.core.run.GymSet
 import dev.vigil.core.run.Run
 import dev.vigil.core.run.StageMemory
 import dev.vigil.core.times.MyTimesStore
@@ -44,6 +45,8 @@ data class DayState(
     @SerialName("sleep_bailed") val sleepBailed: Boolean = false,
     /** Today's Jummah: [JUMMAH_CONFIRMED] or [JUMMAH_MISSED] (a missed one lets Dhuhr run); null before either. */
     val jummah: String? = null,
+    /** Attention resets triggered and waiting to start (offset, a class or another protocol on the screen). */
+    val deferred: List<Deferred> = emptyList(),
 ) {
     val date: LocalDate get() = LocalDate.parse(key)
 
@@ -63,6 +66,37 @@ data class Offer(
     val at: Instant,
     /** Why: misses:<n> or jummah_missed. */
     val reason: String,
+)
+
+/**
+ * A protocol triggered but not started yet (the attention reset): it may start from [due], once no class is in progress
+ * and nothing else holds the screen, until [due] + [Machine.DEFER_LIMIT]; then it is skipped.
+ */
+@Serializable
+data class Deferred(
+    val protocol: String,
+    /** What triggered it (after:prayer-dhuhr ...), kept for its run. */
+    val reason: String,
+    /** When it was triggered. */
+    val at: Instant,
+    val due: Instant,
+)
+
+/** The attention reset's ramp (design M6): the days it was completed in full, counted once per day. */
+@Serializable
+data class AttentionMemory(
+    val days: Int = 0,
+    /** The day key of the last day that counted. */
+    @SerialName("last_day") val lastDay: String? = null,
+)
+
+/** What the gym remembers per exercise name: the last set (the pre-fill), the best set, and its own rest. */
+@Serializable
+data class GymMemory(
+    val last: Map<String, GymSet> = emptyMap(),
+    val best: Map<String, GymSet> = emptyMap(),
+    /** Rest seconds set for an exercise (else the gym protocol's `rest_s`). */
+    @SerialName("rest_s") val restS: Map<String, Int> = emptyMap(),
 )
 
 /** What the prayer rules remember across days. */
@@ -158,6 +192,8 @@ data class MachineState(
     val todos: Map<String, List<Todo>> = emptyMap(),
     /** The protocol offered now (the reset), or null. */
     val offer: Offer? = null,
+    val attention: AttentionMemory = AttentionMemory(),
+    val gym: GymMemory = GymMemory(),
 ) {
     /**
      * The state as JSON. Nulls are written out: a field whose default is not null (a pool session's `inSince`) would

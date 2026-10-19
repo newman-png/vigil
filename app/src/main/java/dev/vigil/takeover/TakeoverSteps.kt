@@ -60,11 +60,17 @@ internal fun SingleStep(view: StepView, nowSec: () -> Long, onTyping: () -> Unit
                 }
             }
             StepType.TIMER -> {
+                // A study round or its break: which one, then the step, then a large countdown.
+                val round = view.round
+                if (round != null) {
+                    TakeoverText(if (round.isBreak) "BREAK" else "ROUND ${round.number}/${round.total}", TakeoverType.Choice)
+                    Spacer(Modifier.height(16.dp))
+                }
                 TakeoverText(step.text, TakeoverType.Step)
                 val ends = view.timerEndsAt
                 if (ends != null) {
                     Spacer(Modifier.height(24.dp))
-                    TakeoverText(countdown(secondsUntil(ends, nowSec())), TakeoverType.Timer)
+                    TakeoverText(countdown(secondsUntil(ends, nowSec())), if (round != null) TakeoverType.BigTimer else TakeoverType.Timer)
                 }
                 // Only where the engine lets a timer be tapped through (not in a forced run).
                 if (view.canTap) {
@@ -78,6 +84,8 @@ internal fun SingleStep(view: StepView, nowSec: () -> Long, onTyping: () -> Unit
                 TextLines(step.lines ?: 1, requiredLines(step), onTyping, onSave)
                 if (step.optional) SkipWord { onSave("") }
             }
+            // A run never shows these as such: rounds become timers, and the workout has its own panel.
+            StepType.ROUNDS, StepType.WORKOUT -> TakeoverText(step.text, TakeoverType.Step)
         }
         if (step.noiseToggle) {
             Spacer(Modifier.height(16.dp))

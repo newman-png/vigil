@@ -234,6 +234,29 @@ object Vigil {
         return skipText(outcome.entries.lastOrNull { it.type == EntryType.SKIPPED && it.protocol == id }?.reason)
     }
 
+    /**
+     * Home's START STUDY: a study block of [minutes] on [label] (what to study; may be blank) starts now. Returns what to
+     * tell the user when it did not start at once (it waits behind the protocol on screen, VIGIL is suspended, a block is
+     * already running), or null.
+     */
+    fun startStudy(minutes: Int, label: String): String? {
+        val id = Machine.status(state.value, Graph.env()).studyProtocol ?: return skipText(null)
+        val outcome = exec(Input.Manual(id, test = false, minutes = minutes, label = label))
+        val fired = outcome.entries.lastOrNull { it.type == EntryType.FIRED && it.protocol == id }
+        if (fired != null) return fired.detail?.takeIf { it.startsWith("waits behind") }?.let { "It $it, then it starts." }
+        return skipText(outcome.entries.lastOrNull { it.type == EntryType.SKIPPED && it.protocol == id }?.reason)
+    }
+
+    /** LOG SET on gym run [runId]'s workout: [reps] of [exercise] with [weight] kg; [restS] = this exercise's rest. */
+    fun logSet(runId: String, exercise: String, reps: Int, weight: Double, restS: Int?) {
+        exec(Input.LogSet(runId, exercise, reps, weight, restS))
+    }
+
+    /** FINISH WORKOUT on gym run [runId]: the workout is logged and its next step follows. */
+    fun finishWorkout(runId: String) {
+        exec(Input.FinishWorkout(runId))
+    }
+
     /** Why a protocol or promise asked for from home did not start, from its `skipped` reason. */
     private fun skipText(reason: String?): String = when (reason) {
         "suspended" -> "VIGIL is suspended (kill switch)."
@@ -476,6 +499,8 @@ object Vigil {
             // Without Do Not Disturb access the lock shows all the same; the engine journals it (after this step).
             is Effect.SetDnd -> if (!Dnd.set(context, effect.on) && effect.on) main.post { guard("Do Not Disturb journal") { exec(Input.DndNoAccess) } }
             is Effect.Audio -> when {
+                // Stop without a sound: every VIGIL sound (the attention reset). White noise is the only one so far.
+                effect.sound == null && effect.action == Effect.Audio.STOP -> WhiteNoiseService.stop(context)
                 effect.sound != Effect.Audio.WHITE_NOISE -> Log.i(TAG, "Only white noise is part of this version (M8): ${effect.action} ${effect.sound}")
                 effect.action == Effect.Audio.PLAY -> WhiteNoiseService.start(context)
                 else -> WhiteNoiseService.stop(context)

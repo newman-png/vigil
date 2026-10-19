@@ -44,6 +44,12 @@ data class Entry(
     val scheduled: String? = null,
     /** True for entries of a TEST-screen preview run: kept in the journal, never counted in the report. */
     val test: Boolean? = null,
+    /** gym_set: the exercise. */
+    val exercise: String? = null,
+    /** gym_set: the repetitions. */
+    val reps: Int? = null,
+    /** gym_set: the weight in kg (0 = body weight). */
+    val weight: Double? = null,
 )
 
 /** Every entry type the v2 core writes, with a description for the report's legend. */
@@ -104,6 +110,10 @@ object EntryType {
     const val JUMMAH_CARD = "jummah_card"
     const val JUMMAH_LOCK = "jummah_lock"
     const val DND = "dnd"
+    const val DEFERRED = "deferred"
+    const val STUDY = "study"
+    const val GYM_SET = "gym_set"
+    const val WORKOUT = "workout"
 
     val DESCRIPTIONS: Map<String, String> = linkedMapOf(
         DAY_START to "A day started (day = its key; reason = how the previous day ended, or first_start).",
@@ -115,7 +125,8 @@ object EntryType {
         COMPLETED to "A run finished (minutes since it fired; reason clean or done = not clean for promotion).",
         BAILED to "A lock or run was quit early (10 s hold on LEAVE). The pool penalty follows (see penalty).",
         RELEASED to "A prayer lock was left after its minimum: no penalty, the prayer stays open for confirmation.",
-        LOCK_ENDED to "A run's lock ended before it was finished: the screen is free, the run waits (prayer: CONFIRM on home).",
+        LOCK_ENDED to "A run's lock ended before it was finished: the screen is free, the run waits (prayer: CONFIRM on home). " +
+            "Reason unlock = a step that ends the lock was done (a meal's cleanup): the pool opens, the rest goes on.",
         MISSED to "A run ended unfinished (reason day_end, replaced = its protocol started again, prayer: window_closed or " +
             "next_adhan, unconfirmed; an unconfirmed stage-3 reminder too; Jummah: not_confirmed by its missed time). " +
             "Counts for stages and for the reset offer.",
@@ -124,7 +135,8 @@ object EntryType {
         SKIPPED to "A trigger happened but nothing started (reason: suspended, already_running, day_end = set off while the " +
             "day ended; sleep_tap = GOING TO SLEEP before the day's wake time, the day goes on; wake_alarm = a dismissal with no " +
             "alarm ringing; jummah = a Friday Dhuhr adhan, Jummah replaces it; window_closed = Jummah missed after Asr came, " +
-            "no Dhuhr; not_friday; needs_text = a promise needs LATER; one_at_a_time = a promise is already running).",
+            "no Dhuhr; not_friday; needs_text = a promise needs LATER; one_at_a_time = a promise is already running; " +
+            "too_late = an attention reset that could not start within 2 hours of its time, not a miss).",
         DROPPED to "A run was closed without an outcome (reason: kill_switch, day_end for a test run or an expired promise, " +
             "protocol_removed, reset = dropped when a reset re-entered the day).",
         CONFIRMED to "A prayer was confirmed (Done, or CONFIRM on home / the card); prayer jummah = Jummah.",
@@ -186,6 +198,14 @@ object EntryType {
             "or ended unconfirmed (reason ended).",
         DND to "Do Not Disturb switched by VIGIL (reason on or off; detail = why; no_access = the phone did not allow it, the " +
             "lock showed all the same). It is never left on after the Jummah lock.",
+        DEFERRED to "An attention reset was triggered (reason = by what) and waits: until = when it may start (offset_min " +
+            "after the trigger); a class in progress or another protocol on the screen makes it wait longer.",
+        STUDY to "A study block was finished: detail = what was studied (the MY TIMES label, or typed at START STUDY), " +
+            "minutes = the work minutes of the version it finished in, text = the line on what was done.",
+        GYM_SET to "A gym set was logged: exercise, reps, weight (kg, 0 = body weight); detail says whether it beat the best set " +
+            "of that exercise so far.",
+        WORKOUT to "A workout was finished (FINISH WORKOUT, or by itself an hour after its planned minutes): minutes in the " +
+            "workout, detail = sets and exercises.",
     )
 }
 

@@ -218,7 +218,10 @@ data class Lock(
 data class Step(
     val text: String,
     val type: StepType = StepType.CHECK,
-    /** check: locked for this many minutes; timer: lasts this many minutes (none = until the lock ends). */
+    /**
+     * check: locked for this many minutes; timer: lasts this many minutes (none = until the lock ends; attention: the
+     * day's ramp length); rounds: minutes of work per round; workout: the planned minutes (none = the MY TIMES row's).
+     */
     val min: Int? = null,
     /** text: how many lines to type (default 1); with [todos], up to this many (at least one). */
     val lines: Int? = null,
@@ -236,6 +239,14 @@ data class Step(
     @SerialName("walking_on") val walkingOn: Boolean = false,
     /** Jummah: the I'M AT UNI step. Steps before it are the leave-by takeover, steps after it the Jummah lock. */
     val arrival: Boolean = false,
+    /** rounds: minutes of break between two work rounds (0 = none). */
+    @SerialName("break_min") val breakMin: Int? = null,
+    /** rounds: what the break says (stand up, drink water ...). */
+    @SerialName("break_text") val breakText: String? = null,
+    /** timer or rounds: a soft chime when it ends (each round and break), unless QUIET. */
+    val chime: Boolean = false,
+    /** Finishing this step ends the run's lock (meals: the pool opens at cleanup); the steps after it go on unlocked. */
+    val unlock: Boolean = false,
 )
 
 /** Step types: what a step asks for and when it is finished. */
@@ -252,6 +263,15 @@ enum class StepType(val json: String) {
 
     /** The final confirmation; locked until the lock's `done_after_min` (stage 1). */
     @SerialName("done") DONE("done"),
+
+    /**
+     * Study protocols: work rounds of `min` minutes with `break_min` breaks between them, generated to fill the block's
+     * length (the run becomes one timer per round and break).
+     */
+    @SerialName("rounds") ROUNDS("rounds"),
+
+    /** Gym protocols: the sets are logged here; finished with FINISH WORKOUT. `min` = the planned minutes. */
+    @SerialName("workout") WORKOUT("workout"),
     ;
 
     companion object {
@@ -373,36 +393,27 @@ enum class ProtocolKind(val json: String, val ladder: Set<Version>, val params: 
             "prep_todos" to ParamSpec.TextList,
         ),
     ),
-    @SerialName("study") STUDY(
-        "study", ALL_LADDER,
-        mapOf(
-            "work_min" to ParamSpec.IntRange(1, 240, 50),
-            "break_min" to ParamSpec.IntRange(0, 60, 10),
-            "short_work_min" to ParamSpec.IntRange(1, 240, 25),
-            "short_break_min" to ParamSpec.IntRange(0, 60, 5),
-        ),
-    ),
-    @SerialName("meal") MEAL(
-        "meal", ALL_LADDER,
-        mapOf(
-            "walk_min" to ParamSpec.IntRange(0, 120, 10),
-            "dishes" to ParamSpec.TextMap,
-            "fallback" to ParamSpec.TextList,
-        ),
-    ),
+    /** A manual START (home, TEST) without a length gets `default_min`; a MY TIMES row has its own length. */
+    @SerialName("study") STUDY("study", ALL_LADDER, mapOf("default_min" to ParamSpec.IntRange(5, MAX_BLOCK_MIN, 100))),
+    /** `fallback`: simple meals shown in the short and minimal versions (none by default). */
+    @SerialName("meal") MEAL("meal", ALL_LADDER, mapOf("fallback" to ParamSpec.TextList)),
+    /** `exercises`: the workout's list (more can be added by name in the app); `rest_s`: the rest after a set. */
     @SerialName("gym") GYM(
         "gym", ALL_LADDER,
         mapOf("rest_s" to ParamSpec.IntRange(10, 600, 90), "exercises" to ParamSpec.TextList),
     ),
     @SerialName("walk") WALK("walk", emptySet(), mapOf("still_end_min" to ParamSpec.IntRange(1, 120, 10))),
-    /** Spec: "short = 3 minutes, whatever the ramp says. There is no minimal version below that." */
+    /**
+     * Spec: "short = 3 minutes, whatever the ramp says. There is no minimal version below that." It starts
+     * `offset_min` after its trigger; its timer without `min` lasts the ramp length.
+     */
     @SerialName("attention") ATTENTION(
         "attention", setOf(Version.SHORT),
         mapOf(
+            "offset_min" to ParamSpec.IntRange(0, 240, 0),
             "start_min" to ParamSpec.IntRange(1, 30, 3),
             "max_min" to ParamSpec.IntRange(1, 60, 10),
             "ramp_every_days" to ParamSpec.IntRange(1, 30, 2),
-            "short_min" to ParamSpec.IntRange(1, 30, 3),
         ),
     ),
     @SerialName("friends") FRIENDS("friends", emptySet(), mapOf("cap_min" to ParamSpec.IntRange(10, 720, 240))),
@@ -428,6 +439,9 @@ enum class ProtocolKind(val json: String, val ladder: Set<Version>, val params: 
 
 private val ALL_LADDER = setOf(Version.SHORT, Version.MINIMAL, Version.SINGLE)
 
+/** The longest study block, in minutes (a MY TIMES row or a manual START). */
+const val MAX_BLOCK_MIN = 600
+
 /** The shape and range of one kind param, for validation and defaults. */
 sealed interface ParamSpec {
     /** A whole number from [min] to [max]. */
@@ -437,9 +451,6 @@ sealed interface ParamSpec {
 
     /** A list of texts. */
     data object TextList : ParamSpec
-
-    /** An object of label -> text. */
-    data object TextMap : ParamSpec
 
     /** A list of whole numbers from [min] to [max]. */
     data class IntList(val min: Int, val max: Int) : ParamSpec

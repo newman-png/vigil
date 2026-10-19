@@ -66,7 +66,10 @@ class BundledProtocolsTest {
     @Test
     fun fivePrayersAsTheDesignSays() {
         assertEquals(
-            listOf("prayer-fajr", "morning", "prayer-dhuhr", "prayer-asr", "prayer-maghrib", "prayer-isha", "sleep", "jummah", "reset", "promise"),
+            listOf(
+                "prayer-fajr", "morning", "prayer-dhuhr", "attention", "lunch", "study", "prayer-asr", "gym", "prayer-maghrib",
+                "dinner", "prayer-isha", "sleep", "jummah", "reset", "promise",
+            ),
             file.protocols.map { it.id },
         )
         assertEquals(Prayer.entries.map { "prayer-${it.json}" }, file.protocols.filter { it.kind == ProtocolKind.PRAYER }.map { it.id })
@@ -191,6 +194,83 @@ class BundledProtocolsTest {
         assertEquals(listOf(StepType.CHECK, StepType.CHECK, StepType.DONE), p.minimal!!.map { it.type })
         for (v in listOf(p.steps, p.short!!, p.minimal!!, p.single!!)) assertTrue(v.last().reenter && v.dropLast(1).none { it.reenter })
         assertEquals(60, p.intParam("next_within_min"))
+    }
+
+    @Test
+    fun studyAsTheDecisionsSay() {
+        val p = file.find("study")!!
+        assertEquals(ProtocolKind.STUDY, p.kind)
+        assertEquals(Trigger.Slot(SlotType.STUDY), p.parsedTrigger)
+        assertEquals(Intensity.SUBTLE, p.intensity)
+        assertEquals(Lock(LockType.SCREEN), p.lock)
+        // Spot, notebook, book or laptop, the material, the rounds (50/10, chime), the closing line.
+        assertEquals(
+            listOf(StepType.CHECK, StepType.CHECK, StepType.CHECK, StepType.CHECK, StepType.ROUNDS, StepType.TEXT),
+            p.steps.map { it.type },
+        )
+        val rounds = p.steps[4]
+        assertEquals(listOf(50, 10), listOf(rounds.min, rounds.breakMin))
+        assertTrue(rounds.chime && rounds.breakText!!.contains("water"))
+        assertEquals(1, p.steps[5].lines)
+        // Short: 25/5 rounds and the line; minimal: one 25-minute round; no single.
+        assertEquals(listOf(StepType.ROUNDS, StepType.TEXT), p.short!!.map { it.type })
+        assertEquals(listOf(25, 5), listOf(p.short!![0].min, p.short!![0].breakMin))
+        assertEquals(listOf(StepType.TIMER to 25), p.minimal!!.map { it.type to it.min })
+        assertEquals(null, p.single)
+        assertEquals(100, p.intParam("default_min"))
+    }
+
+    @Test
+    fun attentionResetAsTheDecisionsSay() {
+        val p = file.find("attention")!!
+        assertEquals(ProtocolKind.ATTENTION, p.kind)
+        assertEquals(Trigger.After("prayer-dhuhr"), p.parsedTrigger)
+        assertEquals(Intensity.FULL, p.intensity)
+        assertEquals(Lock(LockType.SCREEN), p.lock)
+        // Face a wall, phone face-down, look at one spot (the ramp's minutes, a chime at the end).
+        assertEquals(listOf(StepType.CHECK, StepType.CHECK, StepType.TIMER), p.steps.map { it.type })
+        assertEquals(null, p.steps[2].min)
+        assertTrue(p.steps[2].chime)
+        assertEquals(listOf(StepType.TIMER to 3), p.short!!.map { it.type to it.min })
+        assertEquals(null, p.minimal)
+        assertEquals(listOf(0, 3, 10, 2), listOf("offset_min", "start_min", "max_min", "ramp_every_days").map { p.intParam(it) })
+    }
+
+    @Test
+    fun mealsAsTheDecisionsSay() {
+        for ((id, label) in listOf("lunch" to "lunch", "dinner" to "dinner")) {
+            val p = file.find(id)!!
+            assertEquals(ProtocolKind.MEAL, p.kind)
+            assertEquals(Trigger.Slot(SlotType.MEAL, label), p.parsedTrigger)
+            assertEquals(Intensity.SUBTLE, p.intensity)
+            assertEquals(Lock(LockType.POOL), p.lock)
+            // Kitchen, ingredients, cook, eat, clean up (the pool opens), walk 10.
+            assertEquals(listOf(null, null, null, null, null, 10), p.steps.map { it.min })
+            assertEquals(listOf(4), p.steps.indices.filter { p.steps[it].unlock })
+            assertEquals(StepType.TIMER, p.steps[5].type)
+            // Short: a simple meal, no walk; minimal: eat something simple and clean up. Both end at the cleanup.
+            for (v in listOf(p.short!!, p.minimal!!)) assertTrue(v.last().unlock && v.none { it.type == StepType.TIMER })
+            assertEquals(emptyList<String>(), p.textListParam("fallback"))
+        }
+        // No breakfast protocol: the morning routine has its breakfast step.
+        assertTrue(file.protocols.none { (it.parsedTrigger as? Trigger.Slot)?.label == "breakfast" })
+        // The evening window opens when dinner is done.
+        assertTrue(file.pool.windows.single { it.id == "evening" }.opens.startsWith("done:dinner|"))
+    }
+
+    @Test
+    fun gymAsTheDecisionsSay() {
+        val p = file.find("gym")!!
+        assertEquals(ProtocolKind.GYM, p.kind)
+        assertEquals(Trigger.Slot(SlotType.GYM), p.parsedTrigger)
+        assertEquals(Intensity.SUBTLE, p.intensity)
+        assertEquals(Lock(LockType.POOL), p.lock)
+        assertEquals(listOf(StepType.CHECK, StepType.CHECK, StepType.CHECK, StepType.WORKOUT, StepType.CHECK), p.steps.map { it.type })
+        assertEquals(null, p.steps[3].min)
+        assertEquals(20, p.short!!.single { it.type == StepType.WORKOUT }.min)
+        assertEquals(listOf(StepType.TIMER to 10), p.minimal!!.map { it.type to it.min })
+        assertEquals(90, p.intParam("rest_s"))
+        assertTrue(p.textListParam("exercises").containsAll(listOf("Squat", "Bench press")))
     }
 
     @Test

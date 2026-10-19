@@ -28,7 +28,7 @@ VIGIL opens on **SETUP**.
 
 ## What it does today
 
-M1 is the engine and the five prayers, M2 the sleep wind-down and the night lock, M3 the wake alarm and the morning routine, M4 Jummah, M5 the reset and the 10-minute promise. The other protocols come with later milestones.
+M1 is the engine and the five prayers, M2 the sleep wind-down and the night lock, M3 the wake alarm and the morning routine, M4 Jummah, M5 the reset and the 10-minute promise, M6 the study block and the attention reset, M7 the gym and meals. The other protocols come with M8.
 
 ### Prayers
 
@@ -86,6 +86,32 @@ Starting a reset costs nothing and never moves a protocol back a stage; leaving 
 
 When it is due a full takeover shows exactly your line, with **DONE**, **SNOOZE** (once per promise: half the time, at least 2 minutes) and **ON IT** (the takeover closes). From then on the pool stays locked until DONE (on home, the promise's notification or the takeover); the screen stays free, since the task may be on the phone. LEAVE is the usual bail-out. A promise that is still open when the day ends expires without a penalty. There is no shorter version.
 
+### Study block
+
+Each MY TIMES study row (FROM-TO, and WHAT to study), or **START STUDY** on home (what to study, optional, and 50, 100 or 150 minutes). A quiet takeover with the screen locked (APPS: PoliTO, WhatsApp, calls) and the pool blocked, Brave included. What to study shows big on every step.
+
+1. *Go to your spot* (desk or library), *notebook and pen out*, *open the book or laptop*, *open the one study material for this block*.
+2. **Rounds** fill the block exactly: 50 minutes of work, a 10-minute break (*stand up, drink water, look out a window*; the phone stays locked), again, the last round cut to fit (100 min = 50, break, 40). Each shows **ROUND 2/3** or **BREAK** with a large countdown, and ends with a soft chime (silent under QUIET).
+3. *Close:* one line on what you did. It goes in the report with what you studied.
+
+NOT OKAY: 25-minute rounds with 5-minute breaks for what is left of the block, then one 25-minute round. A prayer pauses the block and it goes on after. QUIET is only the switch on home: nothing turns it on by itself.
+
+### Attention reset
+
+Right after the Dhuhr lock ends (Fridays: the Jummah lock), unless you left Dhuhr before its minimum. If a MY TIMES class is in progress, or another protocol is on the screen, it waits; if it cannot start within 2 hours it is skipped (not a miss). A very plain full takeover: *face a wall or a window*, *phone face-down* (a tap each), then **LOOK AT ONE SPOT** and the countdown, nothing else to touch, and a soft chime at the end (silent under QUIET). VIGIL's white noise stops when it starts.
+
+It lasts 3 minutes on the first 2 days you complete it in full, then a minute more every 2 such days, up to 10 minutes. NOT OKAY makes it 3 minutes whatever the day; there is nothing shorter.
+
+### Meals
+
+Lunch and dinner at their MY TIMES time (breakfast is part of the morning routine): *go to the kitchen*, *take out the ingredients*, *cook*, *eat at the table, phone face-down*, *clean up the kitchen*, *walk* (10 min). The screen stays free: the notification (**POOL LOCKED** until the cleanup) shows the step and opens the takeover. The pool opens at the cleanup; the meal is done after the walk, and dinner done opens the evening free window. VIGIL plans no dishes. NOT OKAY: a simple meal, eaten at the table, then the cleanup (no walk); then eat something simple and clean up. Simple meals written into the meal's `fallback` list in `protocols.json` show in those versions.
+
+### Gym
+
+At each MY TIMES gym time (FROM and the workout's minutes): *change clothes, shoes on*, *pack the bag*, *leave now* (the gym is about 5 minutes away), the **workout**, then *back home: shower*. The pool is blocked; the phone stays usable, and the gym notification brings the takeover back.
+
+The workout screen is made for sweaty hands: the exercise on top, pre-filled with the reps and weight you logged last time, **REPS**, **KG** and **REST** steppers and a big **LOG SET**. After each set a rest screen counts down (90 seconds, or the rest you set for that exercise, which is kept) and chimes at the end (silent under QUIET); **SKIP REST** goes back. The list shows every exercise with its last set and today's sets; **+ ADD EXERCISE** takes any name. **FINISH WORKOUT** (tap twice) logs it; forgotten, it ends by itself an hour after the planned minutes. The default exercises are a simple full-body list in `protocols.json`. NOT OKAY: a 20-minute session; then a 10-minute walk. Every set goes into the report and the CSV, with each exercise's progress.
+
 ### The takeover
 
 Black, a red slit with the heartbeat, the eye opens into silence, the protocol's title, then one step at a time. Hold anywhere above the bottom strip for 1.5 s to confirm a step once its lock is over; a timer step counts down and ends by itself; a text step is typed. The eye slowly fills with red as the run goes on.
@@ -105,7 +131,7 @@ At stage 1, a takeover you leave for an app that is not on the whitelist comes b
 
 The distracting apps share one counter: TikTok, Facebook (and Facebook Lite), YouTube, Instagram, Pinterest, Brave, and every browser installed on the phone (any app that opens `https://` links; your home screen app is never closed). **SETUP › POOL AND APPS** lists what VIGIL found on your phone.
 
-- **Free windows.** The pool opens only inside a free window; outside one it is blocked outright. *Morning:* once the morning routine is done and at least 60 minutes after you got up, until the next planned start, usually Dhuhr. *Evening:* from 45 minutes after dinner in MY TIMES (from M7: once the dinner protocol is done) until wind-down. Each window allows 30 minutes of use a day.
+- **Free windows.** The pool opens only inside a free window; outside one it is blocked outright. *Morning:* once the morning routine is done and at least 60 minutes after you got up, until the next planned start, usually Dhuhr. *Evening:* once dinner is done (45 minutes after dinner in MY TIMES at the latest, if dinner did not run) until wind-down. Each window allows 30 minutes of use a day.
 - **Waits.** The Nth open of the day waits N minutes (1, 2, 3 ..., at most 10) on a wait screen. Stay on it and the app opens at zero; leave it and the next wait is the same length.
 - **Sessions and cooldowns.** Switching between pool apps, or leaving the pool for less than 60 seconds, keeps the session going. When it ends, the pool locks for twice the minutes you used (at most 60).
 - **Heavy use.** 10 minutes in one session, or the 3rd open within 30 minutes, closes the app (**ENOUGH FOR NOW**) and starts the cooldown early.
@@ -136,24 +162,22 @@ A protocol moves up a stage after 10 clean completions in a row (the full versio
 
 ### Home
 
-The **VIGIL** title, the day (since when, and when it ends at the latest), the pool's status, flags (quiet, suspended, in a call, walking, the phone silent for Jummah), the prayers prayed and missed today (and Jummah), the next planned start, tonight's target bedtime and the next wake alarm (with missed nights in a row), a red **A PROTOCOL IS RUNNING · OPEN** (or **NIGHT LOCK**) while a takeover owns the screen, the reset offer (**START RESET** / **NOT NOW**), **LATER** and **RESET**, the running promise with **DONE**, today's Jummah (where it is, with **I'M AT UNI** or **CONFIRM**), a running morning with **OPEN**, today's **TO-DOS** with tick boxes, open prayers with **CONFIRM**, and **TODAY**: the day's timeline (prayers at their adhan, `~` when estimated) with each protocol's stage and when it last fired. Below that:
+The **VIGIL** title, the day (since when, and when it ends at the latest), the pool's status, flags (quiet, suspended, in a call, walking, the phone silent for Jummah), the prayers prayed and missed today (and Jummah), the next planned start, tonight's target bedtime and the next wake alarm (with missed nights in a row), a red **A PROTOCOL IS RUNNING · OPEN** (or **NIGHT LOCK**) while a takeover owns the screen, the reset offer (**START RESET** / **NOT NOW**), **LATER** and **RESET**, **START STUDY**, the running promise with **DONE**, today's Jummah (where it is, with **I'M AT UNI** or **CONFIRM**), an attention reset waiting to start, a running morning, meal or gym with **OPEN**, today's **TO-DOS** with tick boxes, open prayers with **CONFIRM**, and **TODAY**: the day's timeline (prayers at their adhan, `~` when estimated; study blocks with what to study, gym sessions with their minutes) with each protocol's stage and when it last fired. Below that:
 
 | item | what it does |
 |---|---|
 | **QUIET** | Tap to make every takeover silent (no sound, vibration or Glyph), whatever its intensity. Also on the always-on notification. |
 | **WALKING** | Shows only while walking is on (Jummah's leave-by switches it on; it blocks the pool): tap to end it. It also ends by itself at I'M AT UNI, or after 3 hours. |
 | **GOING TO SLEEP** | Hold 2 s: the day ends now and the night lock starts (CONFIRM ISHA first while Isha is open). |
-| **MY TIMES** | Your week: wake time per weekday (the wake alarm), bedtime start and goal (sleep shifting), classes, meals, study, gym, calls, commute and the Jummah time, with **+ ADD** rows and weekday chips. A change **applies from tomorrow** (only the very first save applies at once). Used so far: wake, bedtime, dinner, classes, commute (the morning walk and Jummah's leave-by) and the Jummah time; the rest is for later milestones. |
+| **MY TIMES** | Your week: wake time per weekday (the wake alarm), bedtime start and goal (sleep shifting), classes, meals, study, gym, calls, commute and the Jummah time, with **+ ADD** rows and weekday chips. A change **applies from tomorrow** (only the very first save applies at once). Used so far: wake, bedtime, meals, classes, study, gym, commute (the morning walk and Jummah's leave-by) and the Jummah time; calls are for M8. |
 | **SETUP** | Permissions (with the count missing, Do Not Disturb access included), restricted settings, battery, **POOL AND APPS** (the pool, the browsers found, the rules, the APPS button), **ADHAN**, **TAKEOVER** (switches for sound, vibration and the Glyph lights) and **SAFETY**. |
 | **TEST** | **START** any protocol as a test preview: stage 1, logged as a test, and left out of stages, penalties, prayer times and the report. **FIRE IN 60 S (LOCK THE PHONE)**: a real exact alarm starts a preview of the next prayer, to try the whole path with the screen off. **RING WAKE ALARM NOW**: the real wake alarm as a test; I'M UP starts a morning preview. **JUMMAH · EACH PART NOW**: the leave-by takeover, I'M AT UNI, the class-end card or the lock (with Do Not Disturb; LEAVE ends a preview at no cost). **1-MINUTE PROMISE**: a test promise due in a minute. **POOL CHECK**: what the pool would do right now for each pool app. **LAST EVENTS**: the newest 30 journal entries. |
-| **EXPORT** | A progress report (markdown: totals, then each day's prayers, Jummah, pool use, protocols, bail-outs, resets with what derailed the day, promises kept, snoozed or left, app exits, late alarms and stage changes) and the whole journal as CSV, through the share sheet. |
+| **EXPORT** | A progress report (markdown: totals, gym progress per exercise, then each day's prayers, Jummah, pool use, protocols, bail-outs, resets with what derailed the day, promises kept, snoozed or left, study blocks with what you did, gym sets, app exits, late alarms and stage changes) and the whole journal as CSV (gym sets with exercise, reps and weight), through the share sheet. |
 
 ## Coming next
 
 Each milestone adds its protocols to `protocols.json` (with core, app and tests) and ships through the same release.
 
-- **M6 Study block and attention reset** (coming): timed work and break rounds, and a few still minutes facing a wall after Dhuhr.
-- **M7 Gym and meals** (coming): workout logging with a rest timer and your last weights pre-filled; cook, eat, clean up.
 - **M8 Walk and commute, friends mode, calls, audio and wellness nudges** (coming): switches that block the pool, the daily call, white noise, a metronome and your own audio files.
 
 ## Changing the protocols

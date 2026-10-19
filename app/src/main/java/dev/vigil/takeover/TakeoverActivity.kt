@@ -172,9 +172,13 @@ class TakeoverActivity : ComponentActivity() {
         Vigil.state.value.runs.firstOrNull { it.id == id && it.phase == RunPhase.ACTIVE && it.lock != LockType.SCREEN }
     }
 
-    /** No run owns the screen any more while the takeover is behind other apps (finished, lock over, kill switch). */
+    /**
+     * No run owns the screen any more while the takeover is behind other apps (finished, lock over, kill switch). A run
+     * without a screen lock opened from its notification (the gym between sets, a meal) stays behind the lock screen or
+     * other apps while it runs: its notification brings it back, and its timers still sound.
+     */
     fun finishIfHidden() {
-        if (!TakeoverLauncher.visible) close()
+        if (!TakeoverLauncher.visible && current() == null) close()
     }
 
     @Composable
@@ -232,6 +236,35 @@ class TakeoverActivity : ComponentActivity() {
                         onKillSwitch = { GuardScreens.killSwitch(this@TakeoverActivity) },
                         onLeave = { Vigil.bailOut(it) },
                         onFinished = onFinished,
+                    )
+                }
+                return@Box
+            }
+            if (ticket.kind == ProtocolKind.ATTENTION) {
+                key(ticketKey, generation) {
+                    val file = remember { Vigil.file() }
+                    val silent = remember { Vigil.isSilent(ticket) }
+                    val fx = remember {
+                        val s = Graph.settings
+                        TakeoverFx(this@TakeoverActivity, tierFor(Vigil.intensity(ticket)), silent, s.soundEnabled, s.vibrationEnabled, s.glyphEnabled)
+                    }
+                    DisposableEffect(Unit) {
+                        this@TakeoverActivity.fx = fx
+                        fx.start()
+                        onDispose {
+                            if (this@TakeoverActivity.fx === fx) this@TakeoverActivity.fx = null
+                            fx.release()
+                        }
+                    }
+                    // A very plain screen: LOOK AT ONE SPOT and the countdown, a chime at the end.
+                    AttentionScreen(
+                        initial = ticket,
+                        live = owner?.takeIf { takeoverKey(it) == ticketKey },
+                        protocol = remember { file.find(ticket.protocol) },
+                        penaltyToday = penaltyToday,
+                        bailOut = file.pool.bailOut,
+                        fx = fx,
+                        callbacks = callbacks(onIntroSeen = { rememberIntroSeen(ticketKey) }, onFinished = onFinished),
                     )
                 }
                 return@Box
@@ -318,6 +351,12 @@ class TakeoverActivity : ComponentActivity() {
         }
         override fun typing() = keepScreenOn()
         override fun introSeen() = onIntroSeen()
+        override fun logSet(runId: String, exercise: String, reps: Int, weight: Double, restS: Int?) =
+            Vigil.logSet(runId, exercise, reps, weight, restS)
+        override fun finishWorkout(runId: String) = Vigil.finishWorkout(runId)
+        override fun chime(loud: Boolean) {
+            if (!Vigil.state.value.toggles.quiet) Chime.play(this@TakeoverActivity, loud)
+        }
         override fun finished() = onFinished()
     }
 

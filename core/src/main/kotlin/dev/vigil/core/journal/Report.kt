@@ -73,6 +73,12 @@ data class DaySummary(
     val offersDeclined: Int = 0,
     /** 10-minute promises: every `promise` entry (reason promised, due, snoozed, on_it, kept, bailed, expired_at_day_end). */
     val promises: List<Entry> = emptyList(),
+    /** Study blocks finished (detail = what, minutes = work minutes, text = the closing line). */
+    val study: List<Entry> = emptyList(),
+    /** Gym sets logged (exercise, reps, weight). */
+    val gymSets: List<Entry> = emptyList(),
+    /** Workouts finished. */
+    val workouts: List<Entry> = emptyList(),
 )
 
 /** Facts written at the top of the report. */
@@ -86,7 +92,7 @@ object Report {
     /** CSV columns, in [Entry] field order. */
     val CSV_COLUMNS = listOf(
         "ts", "type", "protocol", "run", "step", "version", "stage", "app", "minutes", "seconds", "reason", "detail",
-        "text", "day", "prayer", "until", "scheduled", "test",
+        "text", "day", "prayer", "until", "scheduled", "test", "exercise", "reps", "weight",
     )
 
     /** Splits [entries] into days at each day_start (entries before the first one form a day with a null key). */
@@ -109,6 +115,8 @@ object Report {
             if (id == null) return
             counts[id] = f(counts[id] ?: ProtocolCounts())
         }
+        // A study block's closing line has its own line (with what was studied), so it is not repeated as a note.
+        val studyRuns = list.filter { it.type == EntryType.STUDY }.mapNotNull { it.run }.toSet()
         for (e in list) {
             when (e.type) {
                 EntryType.FIRED -> bump(e.protocol) { it.copy(fired = it.fired + 1) }
@@ -144,7 +152,7 @@ object Report {
             appExits = list.filter { it.type == EntryType.APP_EXIT },
             lateAlarms = list.filter { it.type == EntryType.ALARM_LATE },
             stageChanges = list.filter { it.type == EntryType.STAGE_UP || it.type == EntryType.STAGE_DOWN },
-            notes = list.filter { !it.text.isNullOrBlank() && it.type !in NOT_NOTES },
+            notes = list.filter { !it.text.isNullOrBlank() && it.type !in NOT_NOTES && !(it.type == EntryType.STEP_DONE && it.run in studyRuns) },
             entries = all,
             sleepTarget = list.lastOrNull { it.type == EntryType.SLEEP_TARGET }?.scheduled,
             slept = list.lastOrNull { it.type == EntryType.SLEEP },
@@ -159,6 +167,9 @@ object Report {
             offers = list.count { it.type == EntryType.OFFER && (it.reason?.startsWith("misses:") == true || it.reason == "jummah_missed") },
             offersDeclined = list.count { it.type == EntryType.OFFER && it.reason == "not_now" },
             promises = list.filter { it.type == EntryType.PROMISE },
+            study = list.filter { it.type == EntryType.STUDY },
+            gymSets = list.filter { it.type == EntryType.GYM_SET },
+            workouts = list.filter { it.type == EntryType.WORKOUT },
         )
     }
 
@@ -166,7 +177,9 @@ object Report {
     private const val JUMMAH = "jummah"
 
     /** Entries with text that have their own lines (to-dos, resets, promises), so they are not repeated as notes. */
-    private val NOT_NOTES = setOf(EntryType.TODO_DONE, EntryType.TODO_SET, EntryType.REENTRY, EntryType.PROMISE, EntryType.SKIPPED)
+    private val NOT_NOTES = setOf(
+        EntryType.TODO_DONE, EntryType.TODO_SET, EntryType.REENTRY, EntryType.PROMISE, EntryType.SKIPPED, EntryType.STUDY,
+    )
 
     /** The markdown progress report. */
     fun markdown(entries: List<Entry>, meta: ReportMeta): String {
@@ -227,12 +240,21 @@ object Report {
                     "${n("expired_at_day_end")} expired at the day end",
             )
         }
+        val study = days.flatMap { it.study }
+        if (study.isNotEmpty()) {
+            sb.appendLine("- Study: ${count(study.size, "block")}, ${duration(study.sumOf { (it.minutes ?: 0) * 60L })} of work")
+        }
+        val sets = days.flatMap { it.gymSets }
+        if (sets.isNotEmpty() || days.any { it.workouts.isNotEmpty() }) {
+            sb.appendLine("- Gym: ${count(days.sumOf { it.workouts.size }, "workout")}, ${count(sets.size, "set")}")
+        }
         sb.appendLine(
             "- Kill switch: ${days.sumOf { d -> d.killSwitch.count { it.reason == "suspended" } }} · " +
                 "speed bumps: ${days.sumOf { it.speedBumps.size }} · app exits: ${days.sumOf { it.appExits.size }} · " +
                 "late alarms: ${days.sumOf { it.lateAlarms.size }}",
         )
         sb.appendLine()
+        gymProgress(sb, days)
 
         for (d in days) {
             sb.appendLine("## ${dayTitle(d.key)}")
@@ -294,6 +316,14 @@ object Report {
             listLine(sb, "Promises", d.promises.filter { it.reason != "promised" && it.reason != "due" }) {
                 "${time(it.ts)} \"${it.text ?: ""}\" ${it.reason?.replace('_', ' ') ?: ""}"
             }
+            listLine(sb, "Study", d.study) {
+                "${time(it.ts)} ${it.detail?.let { w -> "$w, " } ?: ""}${it.minutes ?: 0} min" + (it.text?.let { t -> ": \"$t\"" } ?: "")
+            }
+            if (d.gymSets.isNotEmpty()) {
+                val byExercise = d.gymSets.groupBy { it.exercise ?: "?" }
+                sb.appendLine("- **Gym**: " + byExercise.entries.joinToString("; ") { (name, list) -> "$name ${list.joinToString(", ") { setText(it) }}" })
+                sb.appendLine()
+            }
             listLine(sb, "Notes", d.notes) { "${time(it.ts)} ${it.protocol ?: ""}: \"${it.text!!.replace("\n", " / ")}\"" }
         }
 
@@ -313,7 +343,7 @@ object Report {
             val cells = listOf(
                 e.ts, e.type, e.protocol, e.run, e.step?.toString(), e.version, e.stage?.toString(), e.app,
                 e.minutes?.toString(), e.seconds?.toString(), e.reason, e.detail, e.text, e.day, e.prayer, e.until, e.scheduled,
-                e.test?.toString(),
+                e.test?.toString(), e.exercise, e.reps?.toString(), e.weight?.let(::kg),
             )
             sb.append(cells.joinToString(",") { csvCell(it) }).append("\r\n")
         }
@@ -325,6 +355,47 @@ object Report {
         val needsQuotes = value.any { it == ',' || it == '"' || it == '\n' || it == '\r' } || value != value.trim()
         return if (needsQuotes) "\"" + value.replace("\"", "\"\"") + "\"" else value
     }
+
+    /**
+     * Gym progress per exercise: the best set of the last day it was trained against the best set before that day (weight
+     * first, then reps).
+     */
+    private fun gymProgress(sb: StringBuilder, days: List<DaySummary>) {
+        val sets = days.flatMap { d -> d.gymSets.map { (d.key ?: "") to it } }.filter { it.second.exercise != null }
+        if (sets.isEmpty()) return
+        sb.appendLine("## Gym progress")
+        sb.appendLine()
+        for ((name, list) in sets.groupBy { it.second.exercise!! }) {
+            val lastDay = list.last().first
+            val last = best(list.filter { it.first == lastDay }.map { it.second })
+            val before = best(list.filter { it.first < lastDay }.map { it.second })
+            val then = when {
+                before == null -> "first time"
+                score(last) > score(before) -> "previous best ${setText(before)}: better"
+                score(last) == score(before) -> "previous best ${setText(before)}: the same"
+                else -> "previous best ${setText(before)}"
+            }
+            sb.appendLine("- $name: ${last?.let { setText(it) } ?: "-"} on $lastDay ($then)")
+        }
+        sb.appendLine()
+    }
+
+    /** The best of [sets]: the heaviest, then the most reps. */
+    private fun best(sets: List<Entry>): Entry? = sets.maxWithOrNull(compareBy({ it.weight ?: 0.0 }, { it.reps ?: 0 }))
+
+    private fun score(e: Entry?): Pair<Double, Int> = (e?.weight ?: 0.0) to (e?.reps ?: 0)
+
+    private operator fun Pair<Double, Int>.compareTo(other: Pair<Double, Int>): Int =
+        compareValuesBy(this, other, { it.first }, { it.second })
+
+    /** 5 x 80 kg, or 12 reps for body weight. */
+    private fun setText(e: Entry): String {
+        val w = e.weight ?: 0.0
+        return if (w == 0.0) "${e.reps ?: 0} reps" else "${e.reps ?: 0} x ${kg(w)} kg"
+    }
+
+    /** 80 for 80.0, 77.5 for 77.5. */
+    private fun kg(weight: Double): String = if (weight % 1.0 == 0.0) weight.toLong().toString() else weight.toString()
 
     /** 12 -> "12 min after the alarm", -5 -> "5 min before the alarm", 0 -> "at the alarm". */
     private fun relative(minutes: Int, what: String): String = when {

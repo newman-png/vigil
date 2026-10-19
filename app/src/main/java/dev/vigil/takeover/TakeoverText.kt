@@ -38,6 +38,9 @@ internal object TakeoverType {
     /** A timer step counting itself down. */
     val Timer = style(fontSize = 44, lineHeight = 52, tracking = 0.12)
 
+    /** The large countdown of a study round, the attention reset and the gym's rest. */
+    val BigTimer = style(fontSize = 72, lineHeight = 80, tracking = 0.08)
+
     /** One row of the stage-2 checklist. */
     val Item = style(fontSize = 16, lineHeight = 24, tracking = 0.12).copy(textAlign = TextAlign.Start)
 

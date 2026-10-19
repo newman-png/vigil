@@ -32,6 +32,8 @@ class InvariantTest {
         testProtocol("meal", trigger = "slot:meal", kind = ProtocolKind.MEAL, lock = Lock(LockType.POOL, 20, null)),
         testProtocol("friends", trigger = "toggle:friends", kind = ProtocolKind.FRIENDS, lock = Lock(LockType.POOL)),
         testProtocol("free", trigger = "event:after:prayer-dhuhr", kind = ProtocolKind.ATTENTION, lock = Lock(LockType.SCREEN, 5, null)),
+        // The whole bundled file: study, the attention reset, lunch, dinner and the gym run through these days too.
+        base = dev.vigil.core.protocol.BundledProtocols.file,
     )
     private val file = file0.copy(pool = file0.pool.copy(windows = listOf(dev.vigil.core.protocol.FreeWindowConfig("day", "05:00", "23:30", 60), dev.vigil.core.protocol.FreeWindowConfig("x", "12:00", "next", 20))))
     private val times = MyTimes(classes = listOf(Slot(listOf("tue", "fri"), "13:00", "14:30", label = "Analysis")))

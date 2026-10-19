@@ -13,6 +13,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import dev.vigil.core.common.WallClock
+import dev.vigil.core.machine.Machine
 import dev.vigil.core.protocol.TimeExpr
 import dev.vigil.core.times.MyTimes
 import dev.vigil.core.times.Slot
@@ -57,18 +58,21 @@ internal enum class SlotListSpec(
     ),
     MEALS(
         "meals", "MEALS", "MEAL",
-        "Breakfast, lunch and dinner. Dinner opens the evening free window (after dinner, until wind-down).",
+        "Breakfast, lunch and dinner. Lunch and dinner start their meal (kitchen, eat at the table, clean up, a short " +
+            "walk); breakfast is part of the morning routine. Dinner done opens the evening free window (until wind-down).",
         "+ ADD MEAL", "AT",
     ),
     STUDY(
         "study", "STUDY", "STUDY BLOCK",
-        "Study blocks and what to study in each (used by the study protocol once it is added).",
+        "Study blocks: FROM-TO is the block (filled with 50-minute rounds and 10-minute breaks, the screen locked) and " +
+            "WHAT is what to study, shown big on the takeover.",
         "+ ADD STUDY BLOCK", "FROM", endCaption = "TO", labelCaption = "WHAT", labelPlaceholder = "e.g. Analysis 1",
     ),
     GYM(
         "gym", "GYM", "GYM SESSION",
-        "When you train (used by the gym protocol once it is added).",
-        "+ ADD GYM SESSION", "FROM", endCaption = "TO",
+        "When you train: FROM and the planned workout minutes. The gym takeover gets you out the door, logs your sets " +
+            "and times your rests.",
+        "+ ADD GYM SESSION", "FROM", minutesCaption = "WORKOUT",
     ),
     CALLS(
         "calls", "CALLS", "CALL",
@@ -219,6 +223,7 @@ private fun SlotRow(
                 Caption(minutesCaption)
                 val placeholder = when (spec) {
                     SlotListSpec.CALLS -> MyTimes.DEFAULT_CALL_WRAP_UP_MIN.toString()
+                    SlotListSpec.GYM -> Machine.DEFAULT_WORKOUT_MIN.toString()
                     else -> commuteMinutes
                 }
                 NumberField(
