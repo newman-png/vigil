@@ -122,8 +122,8 @@ An **anchor** is one of:
 | `max(<anchor>,<anchor>)` | The later of the two anchors (no spaces; neither may be `next` or another `max`). If either does not exist that day, the window does not open. The morning window: `max(done:morning\|woke+60,woke+60)` = when the morning routine is done, but not before an hour after waking. |
 | `next` | (`closes` only) The next timeline start after the window opened (a time or slot trigger, or a prayer's adhan or its estimate), else the day's latest end (`fallback_end`). |
 
-A `done:`/`start:` reference to a protocol that is not in the file is a warning (useful while later milestones are
-not written yet; also catches typos).
+A `done:`/`start:` reference to a protocol that is not in the file is a warning (it catches typos, and the
+reference falls back to its expression).
 
 ## apps_button
 
@@ -275,20 +275,20 @@ Every kind below has its behaviour in code and its numbers in `params`. Params s
 
 | Kind | Ladder | Params | Notes |
 |---|---|---|---|
-| `prayer` | none | `heads_up_min` (10, 0-60), `window_warn_min` (15, 0-120) | M1, see [prayers](#prayers). Trigger must be `event:adhan:<prayer>`; `lock.minutes` required; `done_after_min` recommended. |
-| `sleep` | short, minimal, single | `shift_min` (20, 0-120), `hold_after_missed` (2, 0-7), `late_min` (30, 0-240), `night_lock_grace_min` (120, 10-600), `white_noise` (false) | M2, see [sleep](#sleep-wind-down-night-lock-sleep-shifting). Its run's start is wind-down. |
-| `morning` | short, minimal, single | `ring_max_min` (10, 1-60), `snooze_min` (5, 1-60), `max_rings` (3, 1-10) | M3, see [morning](#morning-wake-alarm-morning-routine). |
-| `jummah` | none | `leave_buffer_min` (15), `arrive_before_min` (15), `arrive_repeat_min` (10, 1-60), `card_before_end_min` (5), `lock_before_min` (5), `missed_after_min` (50), `prep_todos` (list of texts) | M4, see [jummah](#jummah-friday). Trigger must be `slot:jummah`; `lock.minutes` required. Always stage 1. |
-| `study` | short, minimal, single | `default_min` (100, 5-600) | M6, see [study](#study-block). Its `rounds` step fills the block. |
-| `attention` | short only | `offset_min` (0, 0-240), `start_min` (3, 1-30), `max_min` (10, 1-60, at least `start_min`), `ramp_every_days` (2, 1-30) | M6, see [attention reset](#attention-reset). A timer without `min` lasts the ramp length. |
-| `meal` | short, minimal, single | `fallback` (list of texts, empty by default) | M7, see [meals](#meals). |
-| `gym` | short, minimal, single | `rest_s` (90, 10-600), `exercises` (list of texts) | M7, see [gym](#gym). Its `workout` step logs the sets. |
-| `walk` | none | `still_end_min` (10, 1-120), `commute_grace_min` (15, 0-120), `manual_max_min` (180, 10-720) | M8, see [walk](#walk-and-commute). Trigger `toggle:walking`, lock `pool`. Always stage 1; its outcomes count for nothing. |
-| `friends` | none | `cap_min` (240, 10-720) | M8, see [friends](#friends-mode). Trigger `toggle:friends`, lock `pool`. Always stage 1; its outcomes count for nothing. |
-| `call` | short only | `min_call_min` (3, 1-60), `return_after_min` (30, 1-240), `wrap_up_min` (20, 1-120) | M8, see [call](#call). Trigger `slot:call`, lock `none`, a done step in every version. |
-| `nudge` | none | `nudges` (list of texts), `move_nudges` (list of texts), `seconds` (45, 10-120), `move_seconds` (60, 10-180), `per_day` (4, 0-12), `min_gap_min` (90, 15-600), `still_min` (90, 15-600), `after_wake_min` (90, 0-600) | M8, see [nudges](#wellness-nudges). Trigger `manual`, lock `screen`. Never a miss, never counted. |
-| `promise` | none | `delays` (list of whole numbers 1-240), `snooze_min_min` (2, 1-60) | M5, see [promise](#the-10-minute-promise). Always stage 1. |
-| `reset` | short, minimal, single | `next_within_min` (60, 0-240) | M5, see [reset](#reset-and-its-offer). |
+| `prayer` | none | `heads_up_min` (10, 0-60), `window_warn_min` (15, 0-120) | See [prayers](#prayers). Trigger must be `event:adhan:<prayer>`; `lock.minutes` required; `done_after_min` recommended. |
+| `sleep` | short, minimal, single | `shift_min` (20, 0-120), `hold_after_missed` (2, 0-7), `late_min` (30, 0-240), `night_lock_grace_min` (120, 10-600), `white_noise` (false) | See [sleep](#sleep-wind-down-night-lock-sleep-shifting). Its run's start is wind-down. |
+| `morning` | short, minimal, single | `ring_max_min` (10, 1-60), `snooze_min` (5, 1-60), `max_rings` (3, 1-10) | See [morning](#morning-wake-alarm-morning-routine). |
+| `jummah` | none | `leave_buffer_min` (15), `arrive_before_min` (15), `arrive_repeat_min` (10, 1-60), `card_before_end_min` (5), `lock_before_min` (5), `missed_after_min` (50), `prep_todos` (list of texts) | See [jummah](#jummah-friday). Trigger must be `slot:jummah`; `lock.minutes` required. Always stage 1. |
+| `study` | short, minimal, single | `default_min` (100, 5-600) | See [study](#study-block). Its `rounds` step fills the block. |
+| `attention` | short only | `offset_min` (0, 0-240), `start_min` (3, 1-30), `max_min` (10, 1-60, at least `start_min`), `ramp_every_days` (2, 1-30) | See [attention reset](#attention-reset). A timer without `min` lasts the ramp length. |
+| `meal` | short, minimal, single | `fallback` (list of texts, empty by default) | See [meals](#meals). |
+| `gym` | short, minimal, single | `rest_s` (90, 10-600), `exercises` (list of texts) | See [gym](#gym). Its `workout` step logs the sets. |
+| `walk` | none | `still_end_min` (10, 1-120), `commute_grace_min` (15, 0-120), `manual_max_min` (180, 10-720) | See [walk](#walk-and-commute). Trigger `toggle:walking`, lock `pool`. Always stage 1; its outcomes count for nothing. |
+| `friends` | none | `cap_min` (240, 10-720) | See [friends](#friends-mode). Trigger `toggle:friends`, lock `pool`. Always stage 1; its outcomes count for nothing. |
+| `call` | short only | `min_call_min` (3, 1-60), `return_after_min` (30, 1-240), `wrap_up_min` (20, 1-120) | See [call](#call). Trigger `slot:call`, lock `none`, a done step in every version. |
+| `nudge` | none | `nudges` (list of texts), `move_nudges` (list of texts), `seconds` (45, 10-120), `move_seconds` (60, 10-180), `per_day` (4, 0-12), `min_gap_min` (90, 15-600), `still_min` (90, 15-600), `after_wake_min` (90, 0-600) | See [nudges](#wellness-nudges). Trigger `manual`, lock `screen`. Never a miss, never counted. |
+| `promise` | none | `delays` (list of whole numbers 1-240), `snooze_min_min` (2, 1-60) | See [promise](#the-10-minute-promise). Always stage 1. |
+| `reset` | short, minimal, single | `next_within_min` (60, 0-240) | See [reset](#reset-and-its-offer). |
 
 Unlisted ranges for jummah are 0-120 (`card_before_end_min`, `lock_before_min`: 0-60; `missed_after_min`: 0-240). The
 walk, friends, call, nudge, sleep and jummah kinds may each appear once in the file (the engine runs one of each).
