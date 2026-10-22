@@ -30,8 +30,11 @@ object GuardScreens {
     }
 
     private fun start(context: Context, request: GuardRequest) {
+        val intent = BlockActivity.intent(context, request)
+        // Through the Guard's own context when it runs (it may start screens from the background).
+        if (GuardService.startActivity(intent)) return
         try {
-            context.startActivity(BlockActivity.intent(context, request))
+            context.startActivity(intent)
         } catch (e: RuntimeException) {
             // The system refused (rare: the Guard may start screens from the background). A blocked app was already
             // sent home; for a wait, GuardService sends the app home when the screen did not appear.

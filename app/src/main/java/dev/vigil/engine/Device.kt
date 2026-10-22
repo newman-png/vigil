@@ -57,6 +57,15 @@ object Device {
     }
 
     /**
+     * The apps whose call notification is up (a WhatsApp or Instagram call, ringing or connected), read from the
+     * notification keys ("user|package|id|tag|uid"). The Guard never closes them, even when one is a pool app.
+     */
+    fun callOwners(): Set<String> = callNotifications.mapNotNullTo(HashSet()) { it.split('|').getOrNull(1)?.takeIf { p -> p.isNotEmpty() } }
+
+    /** The phone rings (or a VoIP call rings) and no call is connected yet: nothing of VIGIL's may pop up then. */
+    fun ringing(context: Context): Boolean = inCall(context) && !callConnected(context)
+
+    /**
      * A call is connected (or being dialled): a phone call (call state off-hook, or the audio in call mode), a VoIP
      * call (the audio in communication mode, or another app's ongoing call notification). Ringing is not connected.
      * Protocol timers and locks pause while this is true.

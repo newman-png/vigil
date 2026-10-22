@@ -14,6 +14,7 @@ import dev.vigil.core.run.RunPhase
 import dev.vigil.engine.Device
 import dev.vigil.engine.Notifications
 import dev.vigil.engine.Vigil
+import dev.vigil.guard.GuardService
 import dev.vigil.service.VigilService
 import java.lang.ref.WeakReference
 
@@ -35,8 +36,10 @@ import java.lang.ref.WeakReference
  * How it gets on screen: on a locked phone or a dark screen, the notification's full-screen intent opens it (the
  * system acts on that intent only when the notification is newly added, so it is posted again when the phone has
  * been locked since). On an unlocked phone in use, that intent only shows a banner, so the activity is started
- * directly, which Android allows from the background only with "display over other apps" (or while VIGIL itself
- * is in front). The system refuses a start silently, so a check a few seconds later falls back to the notification
+ * directly: through the Guard's context while the Guard runs (Android lets an app with a connected accessibility
+ * service start activities from the background), else with "display over other apps" (which newer Android versions
+ * honour only with a visible overlay) or while VIGIL itself is in front. Without the Guard the notification path below
+ * is what works. The system refuses a start silently, so a check a few seconds later falls back to the notification
  * and tries again. A periodic retry only updates a notification that is showing: one the user swiped away comes
  * back with the next screen-on or unlock, never every few seconds.
  *
@@ -272,7 +275,9 @@ object TakeoverLauncher {
             return
         }
 
-        val canStart = Settings.canDrawOverlays(context) || vigilInFront
+        // The Guard (a connected accessibility service) may start it from the background; so may "display over other
+        // apps" on older Android versions, or VIGIL itself in front.
+        val canStart = GuardService.connected || Settings.canDrawOverlays(context) || vigilInFront
         // Only when the front app is known: otherwise the call-app check above proved nothing.
         if (present && front != null && canStart && startTried != id) {
             // Unlocked and in use: the full-screen intent would only show a banner (over the takeover, once it is
@@ -310,9 +315,16 @@ object TakeoverLauncher {
         return s.foreground.takeIf { s.screenOn }
     }
 
+    /**
+     * Starts the takeover directly: through the Guard's context while it runs (an accessibility service may start
+     * activities from the background, so the takeover gets the whole screen even on a phone in use), else from VIGIL's.
+     * The safety rules above decided already that it may start now.
+     */
     private fun start(context: Context) {
+        val intent = TakeoverActivity.intent(context)
+        if (GuardService.startActivity(intent)) return
         try {
-            context.startActivity(TakeoverActivity.intent(context))
+            context.startActivity(intent)
         } catch (e: RuntimeException) {
             Log.w(TAG, "Could not start the takeover directly: ${e.message}")
         }

@@ -6,12 +6,9 @@ import dev.vigil.core.pool.Block
 import dev.vigil.core.pool.BlockReason
 import dev.vigil.core.pool.PoolDecision
 import dev.vigil.core.pool.PoolRules
-import dev.vigil.core.pool.WindowSpan
-import dev.vigil.core.protocol.Anchor
 import dev.vigil.core.protocol.Trigger
 import dev.vigil.core.protocol.LockType
 import dev.vigil.core.protocol.ParamSpec
-import dev.vigil.core.protocol.Parsed
 import dev.vigil.core.protocol.Prayer
 import dev.vigil.core.protocol.Protocol
 import dev.vigil.core.protocol.ProtocolKind
@@ -471,35 +468,6 @@ internal open class View(var s: MachineState, val env: MachineEnv) {
     fun plan(): List<PlannedStart> =
         Timeline.plan(file, dayTimes(), s.prayers.lastAdhan, day.adhans, day.startedAt, fallback(), nextDayTimes())
 
-    /** The free windows placed on today. */
-    fun windows(plan: List<PlannedStart> = plan()): List<WindowSpan> {
-        val dt = dayTimes()
-        return cfg.windows.map { w ->
-            val opens = resolveAnchor(w.opens, false, dt, null, plan)
-            val closes = if (opens == null) null else resolveAnchor(w.closes, true, dt, opens, plan)
-            WindowSpan(w.id, opens, closes, w.capMin)
-        }
-    }
-
-    private fun resolveAnchor(text: String, allowNext: Boolean, dt: DayTimes, opened: Instant?, plan: List<PlannedStart>): Instant? {
-        val anchor = (Anchor.parse(text, allowNext) as? Parsed.Ok)?.value ?: return null
-        return resolve(anchor, dt, opened, plan)
-    }
-
-    private fun resolve(anchor: Anchor, dt: DayTimes, opened: Instant?, plan: List<PlannedStart>): Instant? {
-        return when (anchor) {
-            is Anchor.At -> dt.resolve(anchor.expr)
-            is Anchor.Max -> {
-                val a = resolve(anchor.first, dt, opened, plan) ?: return null
-                val b = resolve(anchor.second, dt, opened, plan) ?: return null
-                maxOf(a, b)
-            }
-            is Anchor.Done -> (if (file.find(anchor.protocolId) != null) completedToday(anchor.protocolId) else null) ?: dt.resolve(anchor.fallback)
-            is Anchor.Start -> (if (file.find(anchor.protocolId) != null) startedToday(anchor.protocolId) else null) ?: dt.resolve(anchor.fallback)
-            Anchor.Next -> plan.firstOrNull { opened != null && it.at.isAfter(opened) }?.at ?: fallback()
-        }
-    }
-
     /** Run locks, toggles and the night lock that block the pool, in design order. */
     fun lockBlocks(): List<Block> {
         val out = mutableListOf<Block>()
@@ -521,7 +489,7 @@ internal open class View(var s: MachineState, val env: MachineEnv) {
 
     fun decision(isPool: Boolean): PoolDecision {
         if (!isPool) return PoolDecision.Allowed
-        return PoolRules.decide(cfg, s.pool, now, windows(), lockBlocks(), suspended)
+        return PoolRules.decide(cfg, s.pool, now, lockBlocks(), suspended)
     }
 
     /** When a prayer's window closes: Isha at the day's end, the others at the next prayer's (estimated) adhan. */
@@ -624,13 +592,9 @@ internal open class View(var s: MachineState, val env: MachineEnv) {
             if (inSince == null) {
                 session.leftAt?.let { c += it.plusSeconds(cfg.sessionGapS.toLong()) }
             } else {
+                // Heavy use (one long session), and today's budget running out.
                 c += inSince.plusSeconds(cfg.heavyUse.continuousMin * 60L - session.usedSeconds)
-                val own = windows(plan).firstOrNull { it.id == session.windowId }
-                if (own != null) {
-                    own.closesAt?.let { c += it }
-                    val before = (s.pool.windowUsed[own.id] ?: 0) + session.usedSeconds
-                    c += inSince.plusSeconds(own.capSeconds - before)
-                }
+                c += inSince.plusSeconds(PoolRules.budgetSeconds(cfg) - s.pool.usedSeconds - session.usedSeconds)
             }
         }
         return c.filter { it.isAfter(now) }.minOrNull()

@@ -12,7 +12,7 @@ Conventions:
 
 - Keys starting with `_` are comments anywhere (`"_note": "..."`). Unknown keys are warnings and are ignored.
 - Times are `HH:MM`, two digits each, 00:00 to 23:59. Minutes are whole numbers.
-- Ids (protocols, windows) are lowercase letters, digits, `-` and `_`, starting with a letter or digit, at most 48.
+- Protocol ids are lowercase letters, digits, `-` and `_`, starting with a letter or digit, at most 48.
 - Package names look like `com.example.app` (two or more dot-separated parts, the first starting with a letter).
 
 ## Top level
@@ -30,68 +30,48 @@ Conventions:
 
 ## pool
 
-The pool is one shared counter for all its apps. Outside a lock, the pool can only be opened inside a free window,
-after a wait, and every session is followed by a cooldown.
+The pool is one shared counter for all its apps (v2.1): a **daily budget** of minutes, usable at any time nothing else
+blocks the pool, a flat wait before each open, and a break after one long session.
 
 | Field | Default | Range | Meaning |
 |---|---|---|---|
-| `apps` | (required) | package names | The pool apps (TikTok `com.zhiliaoapp.musically` and `com.ss.android.ugc.trill`, Facebook `com.facebook.katana` and `com.facebook.lite`, YouTube, Instagram, Pinterest, Brave ...). Listing one twice is a warning. |
+| `apps` | (required) | package names | The pool apps (TikTok `com.zhiliaoapp.musically` and `com.ss.android.ugc.trill`, Facebook `com.facebook.katana` and `com.facebook.lite`, YouTube, Instagram, Pinterest, Brave, Reddit `com.reddit.frontpage` ...). Listing one twice is a warning. |
 | `all_browsers` | `true` | | Also every installed browser (apps that open `https://` links, detected on the phone). |
-| `wait_step_min` | `1` | 1-60 | The Nth open of the day waits N x this many minutes ... |
-| `wait_cap_min` | `10` | 1-120, at least `wait_step_min` | ... but never longer than this. |
-| `cooldown_factor` | `2` | 0-10 (decimals allowed) | After a session the pool locks for this many times the minutes used ... |
-| `cooldown_cap_min` | `60` | 0-480 | ... but never longer than this. |
+| `daily_budget_min` | `90` | 0-1440 | Minutes of pool use a day. 0 is a warning: the pool never opens. |
+| `wait_min` | `1` | 1-60 | Every open first waits this many minutes on the wait screen. |
 | `session_gap_s` | `60` | 0-600 | Leaving the pool for less than this keeps the session going. |
-| `windows` | (required) | | The free windows ([windows](#windows)). An empty list is a warning: the pool can never open. |
-| `heavy_use` | | | `continuous_min` (10, 1-240): minutes in one session; `opens` (3, 2-20) opens within `within_min` (30, 1-240) minutes. |
+| `heavy_use` | | | `continuous_min` (30, 1-240): minutes in one session that close the app ("ENOUGH FOR NOW"); `break_min` (15, 0-240): the break that follows. |
 | `bail_out` | | | `extra_lock_min` (120, 0-720): pool lock added per bail-out (stacking); `daily_cap_min` (360, 0-1440): most penalty minutes added per day. |
 
-The rules, exactly as the engine applies them (design section 3):
+The v2.0 fields `wait_step_min`, `wait_cap_min`, `cooldown_factor`, `cooldown_cap_min`, `windows` and
+`heavy_use.opens`/`within_min` are gone; a file that still has them loads with an unknown-field warning.
+
+The rules, exactly as the engine applies them:
 
 1. **Blocked** (in this order, every reason that applies is reported with its end time): a screen or pool lock of an
    active run; the friends or walking switch; the night lock ([sleep](#sleep-wind-down-night-lock-sleep-shifting));
-   outside every free window; the open window's
-   cap used up; a cooldown; a bail-out penalty; a heavy-use cooldown. While VIGIL is suspended (kill switch)
-   everything is open and nothing counts: a live session ends when the suspension starts (its minutes and cooldown
-   count as usual), and a pool app still in front without a session when the suspension ends gets the wait or block
-   screen at once.
-2. Not blocked and **no session**: wait `min(wait_cap_min, wait_step_min x (opens today + 1))` minutes on the wait
-   screen. Leaving the wait screen abandons the wait; the next wait is the same length. A wait that would end after
-   every open window with minutes left has closed is refused at once (outside the window); a wait already running
-   opens the pool if nothing blocks when it ends.
+   today's `daily_budget_min` used up ("TODAY'S 90 MINUTES ARE USED", until the day ends); a bail-out penalty; the
+   break after heavy use. A call pauses run timers and locks but never opens the pool: a lock stays a lock for the
+   whole call (its end moves on by the call's length). While VIGIL is suspended (kill switch) everything is open and
+   nothing counts: a live session ends when the suspension starts (its minutes count as usual), and a pool app still
+   in front without a session when the suspension ends gets the wait or block screen at once.
+2. Not blocked and **no session**: wait `wait_min` minutes on the wait screen. Leaving the wait screen abandons the
+   wait; the next wait is the same length. A wait already running opens the pool if nothing blocks when it ends.
 3. A completed wait starts a **session** (opens today + 1). Switching between pool apps keeps the session; leaving the
    pool for less than `session_gap_s` keeps it; otherwise it ends at the moment the pool was left. Its minutes count
-   for the day and for the window it was opened in, and the cooldown is `min(cooldown_cap_min, cooldown_factor x minutes
-   used)`, counted from the moment the pool was left.
-4. **Heavy use**: a session reaching `continuous_min` minutes (short gaps do not reset it), or the `opens`th open within
-   `within_min` minutes, ends the session at once and closes the app. Its cooldown starts now and is
-   `min(cooldown_cap_min, cooldown_factor x the pool minutes used in the last within_min minutes)`, shown as HEAVY USE.
-   After the `opens` case it lasts at least until enough of those opens have left the `within_min` span that the next
-   open would not be heavy use again (otherwise every wait would end in another kick).
-5. A live session also ends (and the app closes) as soon as anything blocks: its window closes or reaches its cap, a
-   lock starts, a switch goes on, a penalty is added.
+   against today's budget (a live session counts as it goes). Nothing follows a session: the next open only waits.
+4. **Heavy use**: a session reaching `continuous_min` minutes (short gaps do not reset it) ends at once, the app closes
+   ("ENOUGH FOR NOW") and the pool rests for `break_min` minutes (block reason `heavy_use`, journaled as `cooldown` with
+   reason `heavy_use`).
+5. A live session also ends (and the app closes) as soon as anything blocks: the budget runs out, a lock starts, a
+   switch goes on, a penalty is added.
 6. **Bail-out penalty**: quitting a lock or run early adds `extra_lock_min` minutes of pool lock, stacking on a running
    penalty, at most `daily_cap_min` minutes added per day.
-7. When the day ends, a live session ends with it (its minutes count for the day that ends, its cooldown starts; still
-   in the app, the app closes), then the counters (opens, minutes, window minutes, penalty minutes added) reset.
-   Running cooldowns and penalties keep their end times.
+7. When the day ends, the counters (opens, minutes used, penalty minutes added) reset. A session out of the pool ends
+   then; one still in the app goes on, its minutes so far counted for the day that ended. Running penalties and breaks
+   keep their end times.
 
-### windows
-
-Each window: `{"id": "morning", "opens": "<anchor>", "closes": "<anchor>", "cap_min": 30}` (all four required).
-
-| Field | Meaning |
-|---|---|
-| `id` | Unique among windows. |
-| `opens` | An anchor (below); `next` is not allowed here. |
-| `closes` | An anchor, or `next`. |
-| `cap_min` | 1-600: pool minutes usable inside this window per day. |
-
-A window is open from `opens` (inclusive) to `closes` (exclusive). If an anchor does not exist that day (no dinner in
-MY TIMES, no class), the window does not open that day. When windows overlap, a new session uses the first open window
-in file order that still has minutes left; a session stays tied to the window it was opened in.
-
-## Anchors and time expressions
+## Time expressions
 
 A **time expression** is resolved against the day's MY TIMES:
 
@@ -112,19 +92,6 @@ belongs to the night after the day: `00:30` is half past midnight at the end of 
 exception (always the day's morning). Times are DST-safe: a time skipped by the spring-forward gap happens at the end of
 the gap, and a time that happens twice when the clocks go back happens once, the first time.
 
-An **anchor** is one of:
-
-| Anchor | Meaning |
-|---|---|
-| `<expr>` | The time expression. |
-| `done:<protocol-id>\|<expr>` | The moment that protocol's run completed today (after the day's wake time: the night before it does not count); else (or if that protocol is not in the file) the expression. |
-| `start:<protocol-id>\|<expr>` | The moment that protocol's run first started today, after the day's wake time; else (or if absent) the expression. |
-| `max(<anchor>,<anchor>)` | The later of the two anchors (no spaces; neither may be `next` or another `max`). If either does not exist that day, the window does not open. The morning window: `max(done:morning\|woke+60,woke+60)` = when the morning routine is done, but not before an hour after waking. |
-| `next` | (`closes` only) The next timeline start after the window opened (a time or slot trigger, or a prayer's adhan or its estimate), else the day's latest end (`fallback_end`). |
-
-A `done:`/`start:` reference to a protocol that is not in the file is a warning (it catches typos, and the
-reference falls back to its expression).
-
 ## apps_button
 
 The whitelist the takeover's APPS button offers in every lock (emergency calls always work). Each entry has exactly one
@@ -134,7 +101,11 @@ of:
 |---|---|
 | `role` | `dialer` (default phone app), `adhan` (the adhan app chosen in SETUP), `clock` (alarms). |
 | `package` | A package name, e.g. `com.google.android.apps.maps`, `com.whatsapp`. |
-| `label_contains` | The first launcher app whose label contains this text, case-insensitive (e.g. `PoliTO`). |
+| `label_contains` | The first launcher app whose label contains this text, case-insensitive (e.g. `PoliTO`, `Prayer`, `Calculator`). |
+
+An app found by two entries is listed once (the first one). The bundled list: the phone app, the adhan app chosen in
+SETUP and any app labelled "Prayer" (so the Prayer Times app works without choosing it), the clock, Google Maps,
+WhatsApp, PoliTO, Keep Notes (`com.google.android.keep`) and the calculator.
 
 ## day
 
@@ -142,7 +113,7 @@ of:
 |---|---|---|---|
 | `idle_end_min` | `120` | 10-720 | Once wind-down has started, this many minutes of screen off end the day, at the moment the screen went off (or wind-down started, if later). Only unlocking the phone starts the count again: a wake that shows just the lock screen (a notification, lifting the phone) pauses it while the screen is on. Wind-down = the start of the sleep protocol's run after the day's wake time (a start in the night before it belongs to that night), or `bedtime-60` while the file has no sleep protocol. |
 | `fallback_end` | `06:00` | HH:MM | The day ends at this time the morning after at the latest. |
-| `night_edge` | `05:00` | HH:MM | See [night edge](#anchors-and-time-expressions). |
+| `night_edge` | `05:00` | HH:MM | See [night edge](#time-expressions). |
 
 A day ends at the first of: GOING TO SLEEP, idle (above), the wake alarm the morning after, `fallback_end` the morning
 after. A new day starts at once; its key is the calendar date of (end + 6 hours), always later than the day that
@@ -257,7 +228,7 @@ weekday) is skipped. Each tap restarts at the first step of the new version; the
 | `slot:study`, `slot:meal`, `slot:gym`, `slot:call`, `slot:commute` | At the start of every MY TIMES row of that list on the day's weekday (the run carries the row's label, end and minutes). A meal protocol never starts at breakfast while the file has a morning protocol (the morning's breakfast step covers it). A call protocol must use `slot:call` ([call](#call)); the walk protocol starts at the commute rows by itself ([walk](#walk-and-commute)). |
 | `slot:meal:<label>` | Like `slot:meal`, only the rows labelled `breakfast`, `lunch` or `dinner` (one meal protocol per meal: `slot:meal:lunch`). |
 | `slot:jummah` | Fridays: the Jummah sequence, from its leave-by time ([jummah](#jummah-friday)). Jummah kind only, and a jummah protocol must use it. It still starts late (the phone was off at leave-by) at whatever part is due, until its missed time; skipped while VIGIL is suspended, it starts when the suspension ends. |
-| `time:<expr>` | At the time the [expression](#anchors-and-time-expressions) resolves to each day (skipped on days its anchor does not exist). |
+| `time:<expr>` | At the time the [expression](#time-expressions) resolves to each day (skipped on days it does not exist). |
 | `toggle:walking`, `toggle:friends` | When that home switch goes on; the run completes when it goes off. Walk protocols must use `toggle:walking` (it also goes on by itself at every MY TIMES commute row), friends protocols `toggle:friends`. The friends switch goes off by itself after the friends protocol's `cap_min` (240 without one); the walking switch when the steps stop ([walk](#walk-and-commute)). Both go off when the day ends. |
 | `manual` | Only from a button (home or TEST). Any protocol can also be started from TEST as a preview that counts for nothing. Nudge protocols must use it: they come at their own times ([nudges](#wellness-nudges)). |
 
@@ -369,9 +340,7 @@ The protocol of kind `sleep` (bundled: `sleep`, trigger `time:bedtime-60`, scree
 2. **Morning routine** (bundled `morning`, pool lock: the screen is free, the morning notification shows the current
    step and opens the takeover, which also shows the first to-do): get up, sun 5 min, bathroom and brush 5, skincare or
    shower 15, breakfast, chores 20, walk 15 (`skip_on_class_days`); weekday versions for Thursday (shorter) and Friday
-   (a shower for Jummah). The pool stays blocked while it runs; the morning window opens at
-   `max(done:morning|woke+60,woke+60)`. Left early (LEAVE): the usual penalty, and the window opens an hour after waking
-   (the penalty still applies).
+   (a shower for Jummah). The pool stays blocked while it runs. Left early (LEAVE): the usual penalty.
 
 ### jummah (Friday)
 
@@ -490,8 +459,7 @@ breakfast run, the morning routine has its breakfast step), intensity `subtle`, 
 1. **Steps**: go to the kitchen, take out the ingredients, cook, eat at the table (phone face-down), clean up the
    kitchen (`unlock`: the pool lock ends here), walk 10 minutes (a timer). Without a screen lock the meal is a
    notification (POOL LOCKED until the cleanup) that opens its takeover.
-2. **Ends** when the walk is over. Dinner's id is `dinner`, so the evening window's `done:dinner` opens when dinner is
-   done.
+2. **Ends** when the walk is over.
 3. **No dishes**: the app does not plan meals. `fallback` (a list of simple meals, empty by default) is shown under the
    steps of the short and minimal versions when it has something.
 4. **Step-down**: short = a simple meal, eaten at the table, then the cleanup (no walk); minimal = eat something simple
@@ -567,7 +535,8 @@ calls row, each on its own (MOM and DAD are two runs). The row's `label` is who,
 ### wellness nudges
 
 The protocol of kind `nudge` (bundled: `nudge`, trigger `manual`, intensity `full`, screen lock): short takeovers that
-feel random. Each holds the screen for `seconds` (a movement nudge `move_seconds`) with one big line and a countdown,
+feel random. **Off in the bundled file since v2.1** (`per_day` 0 and an empty `move_nudges`): none fires by itself, and
+TEST can still show one. Set them back to switch the nudges on. Each holds the screen for `seconds` (a movement nudge `move_seconds`) with one big line and a countdown,
 then ends by itself (`nudge_done` reason `time`). NOT OKAY or LEAVE end it at once at no cost; any protocol that needs
 the screen ends it (`gave_way`), so does a call. A nudge is never a miss, never a bail-out, never counted for stages,
 resets or the report's protocol table.
@@ -594,7 +563,7 @@ enforced beyond the pool.
 
 ## Validation rules (errors fail the build)
 
-Known kinds, step types, lock types, intensities, triggers and anchors; unique protocol and window ids; references
+Known kinds, step types, lock types, intensities, triggers and time expressions; unique protocol ids; references
 that exist (`event:after:`); one protocol per prayer; prayer kind <-> adhan trigger; ladder versions only where the
 kind allows them, `single` with exactly one step, at most one `done` step per version (a prayer: exactly one, since
 tapping it confirms the prayer); `todos` only on text steps; `reenter` only in reset protocols, as the last step;
@@ -607,7 +576,6 @@ with `toggle:friends` and a `pool` lock, call with `slot:call`, a `none` lock an
 with `manual` and a `screen` lock, and at most one protocol of each of these four kinds (and of the sleep and jummah
 kinds);
 every number in its range; package names that look like package names; each `apps_button` entry with exactly one key. Warnings: unknown fields and params, long titles and step texts,
-`min`/`lines` on step types that ignore them, a `none` lock with minutes, `done:`/`start:` references to protocols not
-in the file, an empty pool, an empty APPS button, a weekday entry that changes nothing, `todos` outside a sleep protocol,
+`min`/`lines` on step types that ignore them, a `none` lock with minutes, a `daily_budget_min` of 0, an empty pool, an empty APPS button, a weekday entry that changes nothing, `todos` outside a sleep protocol,
 `optional` on a step that is not a text step, `break_min`/`break_text` outside a rounds step, `chime` outside a timer or
 rounds step, `unlock` in a protocol without a lock, a nudge protocol without `nudges`.

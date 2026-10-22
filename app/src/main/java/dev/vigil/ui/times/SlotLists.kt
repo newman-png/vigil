@@ -59,7 +59,7 @@ internal enum class SlotListSpec(
     MEALS(
         "meals", "MEALS", "MEAL",
         "Breakfast, lunch and dinner. Lunch and dinner start their meal (kitchen, eat at the table, clean up, a short " +
-            "walk); breakfast is part of the morning routine. Dinner done opens the evening free window (until wind-down).",
+            "walk); breakfast is part of the morning routine. The pool stays blocked until the kitchen is clean.",
         "+ ADD MEAL", "AT",
     ),
     STUDY(

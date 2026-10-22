@@ -81,16 +81,16 @@ class MealTest {
     }
 
     @Test
-    fun dinnerDoneOpensTheEveningWindow() {
+    fun dinnerBlocksThePoolUntilItsCleanup() {
         val sim = Sim(file = full)
-        assertEquals(rome("2026-10-19T20:15"), Machine.windows(sim.state, sim.env).single { it.id == "evening" }.opensAt)
         sim.at("2026-10-19T19:30")
         val r = sim.run("dinner")!!
+        assertEquals(BlockReason.RUN_LOCK, (sim.decision() as PoolDecision.Blocked).reason)
         for (i in 0..4) sim.after(3, Input.StepDone(r.id, i))
+        // The kitchen is clean: the pool opens (after its wait); the walk goes on without a lock.
+        assertTrue(sim.decision() is PoolDecision.Wait)
         sim.after(10)
         assertNull(sim.run("dinner"))
-        assertEquals(rome("2026-10-19T19:55"), Machine.windows(sim.state, sim.env).single { it.id == "evening" }.opensAt)
-        // Inside the window now: the pool waits instead of being closed.
         assertTrue(sim.decision() is PoolDecision.Wait)
     }
 
@@ -130,7 +130,7 @@ class MealTest {
         sim.step(Input.BailOut(sim.runId("lunch")))
         assertNull(sim.run("lunch"))
         assertEquals("lunch", sim.lastOf(EntryType.BAILED)!!.protocol)
-        assertEquals(BlockReason.PENALTY, (sim.decision() as PoolDecision.Blocked).blocks.first { it.reason != BlockReason.OUTSIDE_WINDOW }.reason)
+        assertEquals(BlockReason.PENALTY, (sim.decision() as PoolDecision.Blocked).reason)
     }
 
     @Test
@@ -159,13 +159,12 @@ class MealTest {
         val r = sim.run("lunch")!!
         assertEquals(rome("2026-10-25T13:00"), r.planned)
         assertEquals("2026-10-25T13:00:00+01:00", sim.lastOf(EntryType.FIRED)!!.scheduled)
-        // VIGIL suspended at dinner: nothing starts, and the evening window opens at its time from MY TIMES.
+        // VIGIL suspended at dinner: nothing starts.
         val off = Sim(file = full)
         off.at("2026-10-19T19:00", Input.Suspend(60))
         off.at("2026-10-19T19:30")
         assertNull(off.run("dinner"))
         assertEquals("suspended", off.lastOf(EntryType.SKIPPED)!!.reason)
-        assertEquals(rome("2026-10-19T20:15"), Machine.windows(off.state, off.env).single { it.id == "evening" }.opensAt)
         // A meal running when the kill switch comes is dropped, its notification with it.
         val running = Sim(file = full)
         running.at("2026-10-19T13:00")

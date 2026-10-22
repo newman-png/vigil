@@ -42,45 +42,30 @@ data class ProtocolFile(
     }
 }
 
-/** The blocked apps with one shared counter, and the friction rules around them (design section 3). */
+/**
+ * The blocked apps with one shared counter (v2.1): [dailyBudgetMin] minutes of use a day, at any time nothing else
+ * blocks the pool, each open after a flat [waitMin]-minute wait, and a break after one long session ([heavyUse]).
+ */
 @Serializable
 data class PoolConfig(
     /** Package names in the pool. Every installed browser is added when [allBrowsers] is true. */
     val apps: List<String> = emptyList(),
     @SerialName("all_browsers") val allBrowsers: Boolean = true,
-    /** The Nth open of the day waits N x this many minutes ... */
-    @SerialName("wait_step_min") val waitStepMin: Int = 1,
-    /** ... but never more than this. */
-    @SerialName("wait_cap_min") val waitCapMin: Int = 10,
-    /** After a session the pool locks for this many times the minutes used ... */
-    @SerialName("cooldown_factor") val cooldownFactor: Double = 2.0,
-    /** ... but never longer than this. */
-    @SerialName("cooldown_cap_min") val cooldownCapMin: Int = 60,
+    /** Minutes of pool use a day; once they are used the pool stays blocked until the day ends. */
+    @SerialName("daily_budget_min") val dailyBudgetMin: Int = 90,
+    /** Every open waits this many minutes on the wait screen first (leaving it: the same wait next time). */
+    @SerialName("wait_min") val waitMin: Int = 1,
     /** Leaving the pool for less than this keeps the session going. */
     @SerialName("session_gap_s") val sessionGapS: Int = 60,
-    /** The only times the pool can be opened at all. */
-    val windows: List<FreeWindowConfig> = emptyList(),
     @SerialName("heavy_use") val heavyUse: HeavyUseConfig = HeavyUseConfig(),
     @SerialName("bail_out") val bailOut: BailOutConfig = BailOutConfig(),
 )
 
-/** A free window: opens and closes at anchors resolved each day, with a cap on the pool minutes used inside it. */
-@Serializable
-data class FreeWindowConfig(
-    val id: String,
-    /** An anchor: `<expr>`, `done:<protocol-id>|<expr>` or `start:<protocol-id>|<expr>`. */
-    val opens: String,
-    /** An anchor like [opens], or `next` (the next timeline start after the window opened, else the day's end). */
-    val closes: String,
-    @SerialName("cap_min") val capMin: Int,
-)
-
-/** When a session counts as heavy use: [continuousMin] minutes in one session, or [opens] opens within [withinMin] minutes. */
+/** Heavy use: one session reaching [continuousMin] minutes closes the app ("ENOUGH FOR NOW") for a [breakMin]-minute break. */
 @Serializable
 data class HeavyUseConfig(
-    @SerialName("continuous_min") val continuousMin: Int = 10,
-    val opens: Int = 3,
-    @SerialName("within_min") val withinMin: Int = 30,
+    @SerialName("continuous_min") val continuousMin: Int = 30,
+    @SerialName("break_min") val breakMin: Int = 15,
 )
 
 /** A bail-out locks the pool for [extraLockMin] more minutes (stacking), at most [dailyCapMin] minutes of penalty a day. */

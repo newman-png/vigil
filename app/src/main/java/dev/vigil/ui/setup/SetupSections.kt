@@ -190,8 +190,8 @@ internal fun PoolSection() {
     val whitelist = remember { Vigil.whitelistApps() }
 
     PixelText(
-        "The pool: these apps share one counter and open only in a free window, after a short wait. Calls and the " +
-            "apps below always work.",
+        "The pool: these apps share one counter of minutes a day, each open after a short wait. Calls and the apps " +
+            "below always work.",
         Type.Small,
     )
     Label("POOL APPS")
@@ -213,14 +213,11 @@ internal fun PoolSection() {
     }
 
     Label("RULES")
-    val windows = pool.windows.joinToString(", ") { "${it.id.uppercase()} (${it.capMin} MIN)" }
     PixelText(
         listOf(
-            "Free windows: ${windows.ifEmpty { "none" }}.",
-            "The Nth open of the day waits N × ${pool.waitStepMin} min (at most ${pool.waitCapMin}).",
-            "After a session the pool locks for ${formatFactor(pool.cooldownFactor)} × the minutes used (at most ${pool.cooldownCapMin}).",
-            "${pool.heavyUse.continuousMin} minutes in a row, or ${pool.heavyUse.opens} opens within ${pool.heavyUse.withinMin} " +
-                "minutes, closes the app and starts the cooldown early.",
+            "${pool.dailyBudgetMin} minutes a day, at any time nothing else blocks the pool.",
+            "Every open waits ${pool.waitMin} min first.",
+            "${pool.heavyUse.continuousMin} minutes in a row closes the app for a ${pool.heavyUse.breakMin}-minute break.",
             "Leaving a protocol early locks the pool ${pool.bailOut.extraLockMin / 60} more hours (at most ${pool.bailOut.dailyCapMin / 60} a day).",
         ).joinToString(" "),
         Type.Small,
@@ -233,13 +230,10 @@ internal fun PoolSection() {
     }
     PixelText(
         "The phone app and emergency calls always work. The adhan app joins once you pick it in ADHAN (or once it " +
-            "announces a prayer).",
+            "announces a prayer); an app named Prayer (Prayer Times) is in the list anyway.",
         Type.Small,
     )
 }
-
-/** 2.0 -> "2", 1.5 -> "1.5". */
-private fun formatFactor(f: Double): String = if (f == Math.floor(f)) f.toLong().toString() else f.toString()
 
 /** TAKEOVER: what a full-intensity takeover may use on this phone. */
 @Composable

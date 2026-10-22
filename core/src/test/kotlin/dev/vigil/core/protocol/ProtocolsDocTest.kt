@@ -23,8 +23,8 @@ class ProtocolsDocTest {
     @Test
     fun everyFieldIsDocumented() {
         val objects = listOf(
-            ProtocolFile.serializer().descriptor, PoolConfig.serializer().descriptor, FreeWindowConfig.serializer().descriptor,
-            HeavyUseConfig.serializer().descriptor, BailOutConfig.serializer().descriptor, AppsButtonEntry.serializer().descriptor,
+            ProtocolFile.serializer().descriptor, PoolConfig.serializer().descriptor, HeavyUseConfig.serializer().descriptor,
+            BailOutConfig.serializer().descriptor, AppsButtonEntry.serializer().descriptor,
             DayConfig.serializer().descriptor, TakeoverConfig.serializer().descriptor, StagesConfig.serializer().descriptor,
             Protocol.serializer().descriptor, Lock.serializer().descriptor, Step.serializer().descriptor,
         )
@@ -46,11 +46,10 @@ class ProtocolsDocTest {
     fun everyTriggerAndAnchorIsDocumented() {
         assertDocumented(
             "triggers",
-            listOf("event:wake_alarm", "event:after:<protocol-id>", "event:misses:<n>", "time:<expr>", "manual", "next") +
+            listOf("event:wake_alarm", "event:after:<protocol-id>", "event:misses:<n>", "time:<expr>", "manual") +
                 SlotType.entries.map { "slot:${it.json}" } + listOf("toggle:walking", "toggle:friends"),
         )
         assertTrue("event:adhan:<prayer>" in doc)
-        assertTrue("done:<protocol-id>" in doc && "start:<protocol-id>" in doc)
         assertDocumented("time bases", listOf("wake", "bedtime", "meal:breakfast", "meal:lunch", "meal:dinner", "class_start", "class_end"))
     }
 }

@@ -132,31 +132,31 @@ class ProtocolParserTest {
 
     @Test
     fun wrongTypesArePlainErrors() {
-        assertError(pool("wait_step_min", JsonPrimitive("1")), "pool.wait_step_min", "whole number")
+        assertError(pool("wait_min", JsonPrimitive("1")), "pool.wait_min", "whole number")
         assertError(pool("all_browsers", JsonPrimitive("yes")), "pool.all_browsers", "true or false")
         assertError(pool("apps", JsonPrimitive("com.x.y")), "pool.apps", "list")
-        assertError(pool("cooldown_factor", JsonPrimitive("2")), "pool.cooldown_factor", "number")
-        assertError(pool("wait_step_min", JsonPrimitive(1.5)), "pool.wait_step_min", "whole number")
+        assertError(pool("daily_budget_min", JsonPrimitive("90")), "pool.daily_budget_min", "whole number")
+        assertError(pool("wait_min", JsonPrimitive(1.5)), "pool.wait_min", "whole number")
     }
 
     // ------------------------------------------------------------------ pool
 
     @Test
     fun poolNumbersInRange() {
-        assertError(pool("wait_step_min", JsonPrimitive(0)), "pool.wait_step_min", "from 1 to 60")
-        assertError(pool("wait_cap_min", JsonPrimitive(121)), "pool.wait_cap_min", "from 1 to 120")
-        assertError(
-            with("pool", with("wait_cap_min", JsonPrimitive(2), with("wait_step_min", JsonPrimitive(5), base["pool"]!!.jsonObject))),
-            "pool.wait_cap_min", "at least wait_step_min",
-        )
-        assertError(pool("cooldown_factor", JsonPrimitive(11)), "pool.cooldown_factor", "from 0 to 10")
-        assertError(pool("cooldown_cap_min", JsonPrimitive(-1)), "pool.cooldown_cap_min")
+        assertError(pool("daily_budget_min", JsonPrimitive(1441)), "pool.daily_budget_min", "from 0 to 1440")
+        assertError(pool("daily_budget_min", JsonPrimitive(-1)), "pool.daily_budget_min")
+        assertTrue(warnings(pool("daily_budget_min", JsonPrimitive(0))).any { it.message.contains("never be opened") })
+        assertError(pool("wait_min", JsonPrimitive(0)), "pool.wait_min", "from 1 to 60")
+        assertError(pool("wait_min", JsonPrimitive(61)), "pool.wait_min", "from 1 to 60")
         assertError(pool("session_gap_s", JsonPrimitive(601)), "pool.session_gap_s")
         assertError(pool("heavy_use", obj("continuous_min" to 0)), "pool.heavy_use.continuous_min")
-        assertError(pool("heavy_use", obj("opens" to 1)), "pool.heavy_use.opens", "from 2 to 20")
-        assertError(pool("heavy_use", obj("within_min" to 999)), "pool.heavy_use.within_min")
+        assertError(pool("heavy_use", obj("break_min" to 241)), "pool.heavy_use.break_min", "from 0 to 240")
         assertError(pool("bail_out", obj("extra_lock_min" to 721)), "pool.bail_out.extra_lock_min")
         assertError(pool("bail_out", obj("daily_cap_min" to 2000)), "pool.bail_out.daily_cap_min")
+        // The v2.0 free-window fields are gone: an old file still loads, with a warning for each.
+        val old = pool("windows", el(emptyList<Any>()))
+        assertOk(old)
+        assertTrue(warnings(old).any { it.path == "pool.windows" && it.message.contains("unknown field") })
     }
 
     @Test
@@ -169,36 +169,6 @@ class ProtocolParserTest {
         assertTrue(!ProtocolParser.looksLikePackage("com"))
         assertTrue(!ProtocolParser.looksLikePackage("com..x"))
         assertTrue(!ProtocolParser.looksLikePackage("a." + "b.".repeat(200) + "c"))
-    }
-
-    @Test
-    fun windows() {
-        fun win(opens: String, closes: String, id: String = "w", cap: Int = 30) = el(listOf(obj("id" to id, "opens" to opens, "closes" to closes, "cap_min" to cap)))
-        assertOk(pool("windows", win("12:00", "13:00")))
-        assertOk(pool("windows", win("class_end+15", "next")))
-        assertError(pool("windows", win("next", "13:00")), "opens", "only close")
-        assertError(pool("windows", win("noon", "13:00")), "opens", "not a time")
-        assertError(pool("windows", win("done:morning", "13:00")), "opens", "fallback time after |")
-        assertError(pool("windows", win("done:Morning|wake", "13:00")), "opens", "not a protocol id")
-        assertError(pool("windows", win("12:00", "meal:supper")), "closes", "not a meal")
-        assertError(pool("windows", win("12:00", "13:00", cap = 0)), "cap_min", "from 1 to 600")
-        assertError(pool("windows", win("12:00", "13:00", id = "Bad Id")), ".id", "not a valid id")
-        val two = el(listOf(obj("id" to "a", "opens" to "12:00", "closes" to "13:00", "cap_min" to 5), obj("id" to "a", "opens" to "14:00", "closes" to "15:00", "cap_min" to 5)))
-        assertError(pool("windows", two), "pool.windows[1]", "more than one window")
-        assertError(pool("windows", el(listOf(obj("id" to "a", "opens" to "12:00")))), "closes", "missing")
-        assertTrue(warnings(pool("windows", el(emptyList<Any>()))).any { it.message.contains("never be opened") })
-        // A reference to a protocol not (yet) in the file is fine but noted (inside max(...) too).
-        assertTrue(warnings(pool("windows", win("done:nap|wake+60", "next"))).any { it.message.contains("no protocol \"nap\"") })
-        assertTrue(warnings(pool("windows", win("max(start:nap|wake,woke+60)", "next"))).any { it.message.contains("no protocol \"nap\"") })
-        assertTrue(warnings(base).none { it.message.contains("no protocol \"morning\"") || it.message.contains("no protocol \"sleep\"") })
-        // max(<anchor>,<anchor>): the later of two anchors; woke = when the wake alarm was dismissed.
-        assertOk(pool("windows", win("max(done:morning|woke+60,woke+60)", "next")))
-        assertOk(pool("windows", win("12:00", "max(meal:dinner+45,start:sleep|bedtime-60)")))
-        assertError(pool("windows", win("max(12:00)", "13:00")), "opens", "two anchors")
-        assertError(pool("windows", win("max(12:00,13:00", "14:00")), "opens", "two anchors")
-        assertError(pool("windows", win("max(12:00,max(13:00,14:00))", "15:00")), "opens", "two anchors")
-        assertError(pool("windows", win("12:00", "max(next,13:00)")), "closes", "two anchors")
-        assertError(pool("windows", win("max(12:00,noon)", "13:00")), "opens", "not a time")
     }
 
     // ------------------------------------------------------------------ globals
@@ -493,17 +463,6 @@ class ProtocolParserTest {
     }
 
     @Test
-    fun anchors() {
-        assertEquals(Anchor.Next, (Anchor.parse("next", true) as Parsed.Ok).value)
-        assertTrue(Anchor.parse("next", false) is Parsed.Error)
-        assertEquals(Anchor.Done("morning", TimeExpr(TimeBase.Wake, 60)), (Anchor.parse("done:morning|wake+60", false) as Parsed.Ok).value)
-        assertEquals(Anchor.Start("sleep", TimeExpr(TimeBase.Bedtime, -60)), (Anchor.parse("start:sleep|bedtime-60", true) as Parsed.Ok).value)
-        assertEquals(Anchor.At(TimeExpr(TimeBase.Clock(LocalTime.NOON), 0)), (Anchor.parse("12:00", false) as Parsed.Ok).value)
-        assertTrue(Anchor.parse("done:|wake", false) is Parsed.Error)
-        assertTrue(Anchor.parse("start:sleep|", false) is Parsed.Error)
-    }
-
-    @Test
     fun triggers() {
         assertEquals(Trigger.Adhan(Prayer.MAGHRIB), (Trigger.parse("event:adhan:maghrib") as Parsed.Ok).value)
         assertEquals(Trigger.Misses(2), (Trigger.parse("event:misses:2") as Parsed.Ok).value)
@@ -526,14 +485,9 @@ class ProtocolParserTest {
     }
 
     @Test
-    fun wokeAndMaxAnchors() {
+    fun wokeTimeBase() {
         assertEquals(TimeExpr(TimeBase.Woke, 60), (TimeExpr.parse("woke+60") as Parsed.Ok).value)
         assertEquals("woke+60", TimeExpr(TimeBase.Woke, 60).toString())
-        assertEquals(
-            Anchor.Max(Anchor.Done("morning", TimeExpr(TimeBase.Woke, 60)), Anchor.At(TimeExpr(TimeBase.Woke, 60))),
-            (Anchor.parse("max(done:morning|woke+60,woke+60)", false) as Parsed.Ok).value,
-        )
-        assertTrue(Anchor.parse("max(12:00, 13:00)", false) is Parsed.Error)
     }
 
     @Test

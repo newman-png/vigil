@@ -5,156 +5,90 @@ import dev.vigil.core.machine.rome
 import dev.vigil.core.protocol.BailOutConfig
 import dev.vigil.core.protocol.PoolConfig
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.time.Instant
 
+/** v2.1: the pool is a daily budget (90 minutes), a flat 1-minute wait, and a break after one long session. */
 class PoolRulesTest {
     private val cfg = PoolConfig()
     private val now = rome("2026-10-19T09:00")
-    private val morning = WindowSpan("morning", rome("2026-10-19T08:00"), rome("2026-10-19T12:00"), 30)
-    private val evening = WindowSpan("evening", rome("2026-10-19T20:15"), rome("2026-10-19T22:00"), 30)
-    private val windows = listOf(morning, evening)
 
     private fun blocked(d: PoolDecision): PoolDecision.Blocked = d as PoolDecision.Blocked
 
     @Test
-    fun waitGrowsByOneMinutePerOpenUpToTheCap() {
-        assertEquals(listOf(1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10), (0..11).map { PoolRules.waitMinutes(cfg, it) })
-        assertEquals(6, PoolRules.waitMinutes(PoolConfig(waitStepMin = 2, waitCapMin = 6), 5))
+    fun theDefaultsAreTheBudgetModel() {
+        assertEquals(90, cfg.dailyBudgetMin)
+        assertEquals(1, cfg.waitMin)
+        assertEquals(30, cfg.heavyUse.continuousMin)
+        assertEquals(15, cfg.heavyUse.breakMin)
     }
 
     @Test
-    fun cooldownIsTwiceTheMinutesUsedCappedAtAnHour() {
-        assertEquals(0, PoolRules.cooldownSeconds(cfg, 0))
-        assertEquals(600, PoolRules.cooldownSeconds(cfg, 300))
-        assertEquals(3600, PoolRules.cooldownSeconds(cfg, 1800))
-        assertEquals(3600, PoolRules.cooldownSeconds(cfg, 7200))
-        assertEquals(450, PoolRules.cooldownSeconds(PoolConfig(cooldownFactor = 1.5), 300))
+    fun anyTimeOfDayWaitsTheSameMinute() {
+        for (t in listOf("2026-10-19T06:30", "2026-10-19T13:00", "2026-10-19T23:30")) {
+            assertEquals(PoolDecision.Wait(1), PoolRules.decide(cfg, PoolState(), rome(t), emptyList(), false))
+        }
+        // The wait never grows with the opens of the day.
+        assertEquals(PoolDecision.Wait(1), PoolRules.decide(cfg, PoolState(opens = 12), now, emptyList(), false))
+        assertEquals(PoolDecision.Wait(3), PoolRules.decide(cfg.copy(waitMin = 3), PoolState(), now, emptyList(), false))
     }
 
     @Test
-    fun noSessionMeansWait() {
-        assertEquals(PoolDecision.Wait(1), PoolRules.decide(cfg, PoolState(), now, windows, emptyList(), false))
-        assertEquals(PoolDecision.Wait(4), PoolRules.decide(cfg, PoolState(opens = 3), now, windows, emptyList(), false))
+    fun theBudgetUsedUpBlocksUntilTheDayEnds() {
+        // 89 minutes used: one minute left, still a wait.
+        assertTrue(PoolRules.decide(cfg, PoolState(usedSeconds = 89 * 60L), now, emptyList(), false) is PoolDecision.Wait)
+        assertEquals(60L, PoolRules.leftSeconds(cfg, PoolState(usedSeconds = 89 * 60L), now))
+        val d = blocked(PoolRules.decide(cfg, PoolState(usedSeconds = 90 * 60L), now, emptyList(), false))
+        assertEquals(BlockReason.BUDGET, d.reason)
+        assertEquals(null, d.until)
+        assertEquals("TODAY'S 90 MINUTES ARE USED", PoolText.block(d.blocks.first(), ROME))
+        assertEquals(0L, PoolRules.leftSeconds(cfg, PoolState(usedSeconds = 100 * 60L), now))
     }
 
     @Test
-    fun sessionMeansAllowed() {
-        val pool = PoolState(session = PoolSession(now.minusSeconds(60), "morning", "com.instagram.android"))
-        assertEquals(PoolDecision.Allowed, PoolRules.decide(cfg, pool, now, windows, emptyList(), false))
+    fun aLiveSessionCountsAgainstTheBudget() {
+        val s = PoolSession(now.minusSeconds(600), "com.instagram.android", usedSeconds = 0, inSince = now.minusSeconds(600))
+        val pool = PoolState(usedSeconds = 80 * 60L, session = s)
+        assertEquals(90 * 60L, pool.usedToday(now))
+        assertEquals(BlockReason.BUDGET, blocked(PoolRules.decide(cfg, pool, now, emptyList(), false)).reason)
+        // With minutes left a live session is simply allowed.
+        assertEquals(PoolDecision.Allowed, PoolRules.decide(cfg, pool.copy(usedSeconds = 0), now, emptyList(), false))
     }
 
     @Test
-    fun suspendedMeansEverythingOpen() {
-        val pool = PoolState(cooldownUntil = now.plusSeconds(600))
-        assertEquals(PoolDecision.Allowed, PoolRules.decide(cfg, pool, rome("2026-10-19T03:00"), windows, listOf(Block(BlockReason.RUN_LOCK, null)), true))
-    }
-
-    @Test
-    fun outsideEveryWindowUntilTheNextOne() {
-        val d = blocked(PoolRules.decide(cfg, PoolState(), rome("2026-10-19T13:00"), windows, emptyList(), false))
-        assertEquals(BlockReason.OUTSIDE_WINDOW, d.reason)
-        assertEquals(evening.opensAt, d.until)
-        val late = blocked(PoolRules.decide(cfg, PoolState(), rome("2026-10-19T22:00"), windows, emptyList(), false))
-        assertNull(late.until)
-        // Exactly at the opening it is open; exactly at the closing it is closed.
-        assertTrue(PoolRules.decide(cfg, PoolState(), rome("2026-10-19T08:00"), windows, emptyList(), false) is PoolDecision.Wait)
-        assertTrue(PoolRules.decide(cfg, PoolState(), rome("2026-10-19T12:00"), windows, emptyList(), false) is PoolDecision.Blocked)
-    }
-
-    @Test
-    fun aWaitThatWouldEndAfterTheWindowIsRefusedAtOnce() {
-        // The sixth open waits 6 minutes: from 11:54 it would end at 12:00 or later, when the morning window is closed.
-        val pool = PoolState(opens = 5)
-        assertEquals(PoolDecision.Wait(6), PoolRules.decide(cfg, pool, rome("2026-10-19T11:53"), windows, emptyList(), false))
-        val late = blocked(PoolRules.decide(cfg, pool, rome("2026-10-19T11:54"), windows, emptyList(), false))
-        assertEquals(BlockReason.OUTSIDE_WINDOW, late.reason)
-        assertEquals(evening.opensAt, late.until)
-        assertEquals("morning", late.blocks.single().detail)
-        // Another window still open when the wait ends is enough.
-        val overlapping = windows + WindowSpan("extra", rome("2026-10-19T11:00"), rome("2026-10-19T13:00"), 10)
-        assertEquals(PoolDecision.Wait(6), PoolRules.decide(cfg, pool, rome("2026-10-19T11:58"), overlapping, emptyList(), false))
-        // A live session is not affected.
-        val live = pool.copy(session = PoolSession(rome("2026-10-19T11:50"), "morning", "x.y"))
-        assertEquals(PoolDecision.Allowed, PoolRules.decide(cfg, live, rome("2026-10-19T11:58"), windows, emptyList(), false))
-    }
-
-    @Test
-    fun windowNotToday() {
-        val none = listOf(WindowSpan("evening", null, null, 30))
-        assertEquals(BlockReason.OUTSIDE_WINDOW, blocked(PoolRules.decide(cfg, PoolState(), now, none, emptyList(), false)).reason)
-        // A window that would close before it opens never opens.
-        val inverted = listOf(WindowSpan("x", rome("2026-10-19T10:00"), rome("2026-10-19T09:00"), 30))
-        assertEquals(BlockReason.OUTSIDE_WINDOW, blocked(PoolRules.decide(cfg, PoolState(), rome("2026-10-19T09:30"), inverted, emptyList(), false)).reason)
-        assertNull(PoolRules.nextOpening(inverted, PoolState(), rome("2026-10-19T08:00")))
-    }
-
-    @Test
-    fun windowCapUsedUntilTheNextWindow() {
-        val pool = PoolState(windowUsed = mapOf("morning" to 1800))
-        val d = blocked(PoolRules.decide(cfg, pool, now, windows, emptyList(), false))
-        assertEquals(BlockReason.WINDOW_CAP, d.reason)
-        assertEquals(evening.opensAt, d.until)
-        assertEquals("morning", d.blocks.first().detail)
-        // 29 minutes used: still one minute left.
-        assertTrue(PoolRules.decide(cfg, PoolState(windowUsed = mapOf("morning" to 1740)), now, windows, emptyList(), false) is PoolDecision.Wait)
-    }
-
-    @Test
-    fun liveSessionCountsAgainstItsWindow() {
-        val s = PoolSession(now.minusSeconds(600), "morning", "com.instagram.android", usedSeconds = 0, inSince = now.minusSeconds(600))
-        val pool = PoolState(windowUsed = mapOf("morning" to 1200), session = s)
-        assertEquals(1800, PoolRules.windowUsedSeconds("morning", pool, now))
-        assertEquals(BlockReason.WINDOW_CAP, blocked(PoolRules.decide(cfg, pool, now, windows, emptyList(), false)).reason)
-        // Its window closing blocks it too, even if another window were open.
-        val open = PoolState(session = s.copy(windowId = "morning"))
-        assertEquals(BlockReason.OUTSIDE_WINDOW, blocked(PoolRules.decide(cfg, open, rome("2026-10-19T12:00"), windows, emptyList(), false)).reason)
-    }
-
-    @Test
-    fun firstOpenWindowWithMinutesLeft() {
-        val overlapping = listOf(morning, WindowSpan("extra", rome("2026-10-19T08:30"), rome("2026-10-19T10:00"), 10))
-        assertEquals("morning", PoolRules.openWindow(overlapping, PoolState(), now)!!.id)
-        assertEquals("extra", PoolRules.openWindow(overlapping, PoolState(windowUsed = mapOf("morning" to 1800)), now)!!.id)
-        assertNull(PoolRules.openWindow(overlapping, PoolState(windowUsed = mapOf("morning" to 1800, "extra" to 600)), now))
-    }
-
-    @Test
-    fun cooldownPenaltyAndHeavyUse() {
-        val cooling = PoolState(cooldownUntil = now.plusSeconds(600), cooldownCause = PoolState.CAUSE_SESSION)
-        val c = blocked(PoolRules.decide(cfg, cooling, now, windows, emptyList(), false))
-        assertEquals(BlockReason.COOLDOWN, c.reason)
-        assertEquals(now.plusSeconds(600), c.until)
+    fun penaltyAndTheBreakAfterHeavyUse() {
         val penalty = PoolState(penaltyUntil = now.plusSeconds(7200))
-        assertEquals(BlockReason.PENALTY, blocked(PoolRules.decide(cfg, penalty, now, windows, emptyList(), false)).reason)
-        val heavy = PoolState(cooldownUntil = now.plusSeconds(1200), cooldownCause = PoolState.CAUSE_HEAVY_USE)
-        val h = blocked(PoolRules.decide(cfg, heavy, now, windows, emptyList(), false))
+        assertEquals(BlockReason.PENALTY, blocked(PoolRules.decide(cfg, penalty, now, emptyList(), false)).reason)
+        val rest = PoolState(breakUntil = now.plusSeconds(900))
+        val h = blocked(PoolRules.decide(cfg, rest, now, emptyList(), false))
         assertEquals(BlockReason.HEAVY_USE, h.reason)
-        assertEquals(now.plusSeconds(1200), h.until)
+        assertEquals(now.plusSeconds(900), h.until)
+        assertEquals("ENOUGH FOR NOW UNTIL 09:15", PoolText.block(h.blocks.first(), ROME))
         // Ended locks no longer block.
-        val over = PoolState(cooldownUntil = now, penaltyUntil = now.minusSeconds(1))
-        assertTrue(PoolRules.decide(cfg, over, now, windows, emptyList(), false) is PoolDecision.Wait)
+        val over = PoolState(breakUntil = now, penaltyUntil = now.minusSeconds(1))
+        assertEquals(PoolDecision.Wait(1), PoolRules.decide(cfg, over, now, emptyList(), false))
     }
 
     @Test
-    fun everyReasonInDesignOrder() {
-        val pool = PoolState(
-            windowUsed = mapOf("morning" to 1800),
-            cooldownUntil = now.plusSeconds(60), cooldownCause = PoolState.CAUSE_SESSION,
-            penaltyUntil = now.plusSeconds(120),
+    fun everyReasonInOrder() {
+        val pool = PoolState(usedSeconds = 90 * 60L, penaltyUntil = now.plusSeconds(120), breakUntil = now.plusSeconds(60))
+        val outer = listOf(
+            Block(BlockReason.RUN_LOCK, now.plusSeconds(30), "DHUHR"), Block(BlockReason.FRIENDS, null),
+            Block(BlockReason.WALKING, null), Block(BlockReason.NIGHT_LOCK, null),
         )
-        val outer = listOf(Block(BlockReason.RUN_LOCK, now.plusSeconds(30), "DHUHR"), Block(BlockReason.FRIENDS, null), Block(BlockReason.WALKING, null))
-        val d = blocked(PoolRules.decide(cfg, pool, now, windows, outer, false))
+        val d = blocked(PoolRules.decide(cfg, pool, now, outer, false))
         assertEquals(
-            listOf(BlockReason.RUN_LOCK, BlockReason.FRIENDS, BlockReason.WALKING, BlockReason.WINDOW_CAP, BlockReason.COOLDOWN, BlockReason.PENALTY),
+            listOf(
+                BlockReason.RUN_LOCK, BlockReason.FRIENDS, BlockReason.WALKING, BlockReason.NIGHT_LOCK, BlockReason.BUDGET,
+                BlockReason.PENALTY, BlockReason.HEAVY_USE,
+            ),
             d.blocks.map { it.reason },
         )
         assertEquals(BlockReason.RUN_LOCK, d.reason)
         assertEquals(now.plusSeconds(30), d.until)
-        val heavy = pool.copy(cooldownCause = PoolState.CAUSE_HEAVY_USE)
-        assertEquals(BlockReason.HEAVY_USE, blocked(PoolRules.decide(cfg, heavy, now, windows, emptyList(), false)).blocks.last().reason)
+        // Suspended: everything is open.
+        assertEquals(PoolDecision.Allowed, PoolRules.decide(cfg, pool, now, outer, true))
     }
 
     @Test
@@ -182,19 +116,8 @@ class PoolRulesTest {
     }
 
     @Test
-    fun heavyUseCounters() {
-        val pool = PoolState(
-            openTimes = listOf(now.minusSeconds(31 * 60), now.minusSeconds(20 * 60), now),
-            recentUse = listOf(UseMark(now.minusSeconds(40 * 60), 600), UseMark(now.minusSeconds(10 * 60), 240)),
-            session = PoolSession(now.minusSeconds(60), "morning", "x.y", inSince = now.minusSeconds(60)),
-        )
-        assertEquals(2, PoolRules.opensWithin(cfg, pool, now))
-        assertEquals(300, PoolRules.recentUsedSeconds(cfg, pool, now))
-    }
-
-    @Test
     fun sessionUse() {
-        val s = PoolSession(now.minusSeconds(300), "morning", "x.y", usedSeconds = 100, inSince = now.minusSeconds(50))
+        val s = PoolSession(now.minusSeconds(300), "x.y", usedSeconds = 100, inSince = now.minusSeconds(50))
         assertEquals(150, s.usedAt(now))
         assertEquals(100, s.copy(inSince = null, leftAt = now.minusSeconds(50)).usedAt(now))
     }
@@ -202,24 +125,20 @@ class PoolRulesTest {
     @Test
     fun newDayResetsCountersButKeepsLocks() {
         val pool = PoolState(
-            opens = 4, openTimes = listOf(now), usedSeconds = 900, windowUsed = mapOf("morning" to 900),
-            recentUse = listOf(UseMark(now, 900)), penaltyMinutesToday = 120, penaltyUntil = now.plusSeconds(60),
-            cooldownUntil = now.plusSeconds(30), cooldownCause = PoolState.CAUSE_SESSION,
+            opens = 4, usedSeconds = 900, penaltyMinutesToday = 120, penaltyUntil = now.plusSeconds(60), breakUntil = now.plusSeconds(30),
         )
         val fresh = pool.newDay()
         assertEquals(0, fresh.opens)
         assertEquals(0, fresh.usedSeconds)
-        assertTrue(fresh.windowUsed.isEmpty())
         assertEquals(0, fresh.penaltyMinutesToday)
         assertEquals(pool.penaltyUntil, fresh.penaltyUntil)
-        assertEquals(pool.cooldownUntil, fresh.cooldownUntil)
+        assertEquals(pool.breakUntil, fresh.breakUntil)
     }
 
     @Test
     fun texts() {
-        assertEquals("COOLDOWN UNTIL 09:10", PoolText.block(Block(BlockReason.COOLDOWN, now.plusSeconds(600)), ROME))
-        assertEquals("NO FREE WINDOW · NEXT WINDOW 20:15", PoolText.block(Block(BlockReason.OUTSIDE_WINDOW, evening.opensAt), ROME))
-        assertEquals("WINDOW USED UP · NO MORE WINDOWS TODAY", PoolText.block(Block(BlockReason.WINDOW_CAP, null), ROME))
+        assertEquals("BAIL-OUT PENALTY UNTIL 09:10", PoolText.block(Block(BlockReason.PENALTY, now.plusSeconds(600)), ROME))
+        assertEquals("TODAY'S MINUTES ARE USED", PoolText.block(Block(BlockReason.BUDGET, null), ROME))
         assertEquals("DHUHR UNTIL 13:20", PoolText.block(Block(BlockReason.RUN_LOCK, rome("2026-10-19T13:20"), "Dhuhr"), ROME))
         assertEquals("YOU'RE WITH FRIENDS", PoolText.block(Block(BlockReason.FRIENDS, null), ROME))
         BlockReason.entries.forEach { assertEquals(it, BlockReason.fromJson(it.json)) }

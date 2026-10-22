@@ -41,7 +41,7 @@ internal enum class GuardMode {
     /** The pool is blocked: why, until when, and HOME. */
     BLOCKED,
 
-    /** Heavy use closed the app (the engine's Kick): "ENOUGH FOR NOW" and the cooldown. */
+    /** Heavy use closed the app (the engine's Kick): "ENOUGH FOR NOW" and the break. */
     ENOUGH,
 
     /** VIGIL's own off switch: a 5-minute wait, then VIGIL is suspended for an hour. */
@@ -131,6 +131,7 @@ class BlockActivity : ComponentActivity() {
                     now = now,
                     wait = wait,
                     opensToday = opensToday,
+                    minutesLeft = Machine.poolMinutesLeft(Vigil.state.value, Graph.env()),
                     decision = decision,
                     killLeftMs = killLeftMs,
                     suspendedUntil = suspendedUntil,
@@ -155,8 +156,9 @@ class BlockActivity : ComponentActivity() {
     override fun onStart() {
         super.onStart()
         started = true
-        // Calls are never blocked: a Guard screen never shows over one.
-        if (Device.inCall(this)) {
+        // Calls are never blocked: a Guard screen never shows while the phone rings. (During a connected call it may
+        // stand over a pool app: a call does not open the pool. The call itself stays one tap away in the status bar.)
+        if (Device.ringing(this)) {
             finish()
             return
         }
@@ -231,8 +233,9 @@ class BlockActivity : ComponentActivity() {
     private fun tick() {
         ticks++
         now = Instant.now()
-        // Calls are never blocked: close as soon as one starts (ringing included).
-        if (ticks % CALL_CHECK_TICKS == 0L && Device.inCall(this)) {
+        // Calls are never blocked: close as soon as the phone rings. (A connected call does not open the pool, so the
+        // screen stays during one; closing it there would only bring the pool app back.)
+        if (ticks % CALL_CHECK_TICKS == 0L && Device.ringing(this)) {
             finish()
             return
         }

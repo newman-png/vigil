@@ -32,11 +32,11 @@ class ReportTest {
         sim.after(1, Input.PoolWaitDone("com.instagram.android"))
         sim.after(3, Input.Foreground("com.nothing.launcher", false))
         sim.after(2)
-        sim.step(Input.Foreground("com.instagram.android", true)) // cooldown: blocked
-        sim.step(Input.Foreground("com.nothing.launcher", false))
         // Prayers: Dhuhr confirmed, Asr missed.
         sim.at("2026-10-19T12:30", Input.Adhan(Prayer.DHUHR))
         val d = sim.runId("prayer-dhuhr")
+        sim.at("2026-10-19T12:31", Input.Foreground("com.instagram.android", true)) // the prayer's lock: blocked
+        sim.step(Input.Foreground("com.nothing.launcher", false))
         sim.at("2026-10-19T12:38", Input.Confirm(d))
         sim.at("2026-10-19T12:50")
         sim.at("2026-10-19T15:40", Input.Adhan(Prayer.ASR))
@@ -70,7 +70,7 @@ class ReportTest {
         assertEquals("2026-10-19T23:30:00+02:00", d1.endedAt)
         assertEquals(1, d1.poolOpens)
         assertEquals(180L, d1.poolSeconds)
-        assertEquals(mapOf("cooldown" to 1), d1.poolBlocks)
+        assertEquals(mapOf("run_lock" to 1), d1.poolBlocks)
         assertEquals(listOf("dhuhr"), d1.prayersConfirmed)
         assertEquals(listOf("asr"), d1.prayersMissed)
         assertEquals(1, d1.bailOuts.size)
@@ -113,7 +113,7 @@ class ReportTest {
         assertTrue(md.contains("## 2026-10-19 (Mon)"))
         assertTrue(md.contains("Started 2026-10-19 08:00 (first start) · ended 2026-10-19 23:30 (GOING TO SLEEP)"))
         assertTrue(md.contains("- **Prayers** confirmed: dhuhr · missed: asr"))
-        assertTrue(md.contains("- **Pool** 1 opens, 3 min · blocked 1 (cooldown 1) · waits abandoned 0 · heavy use 0 · penalty 120 min"))
+        assertTrue(md.contains("- **Pool** 1 opens, 3 min · blocked 1 (run lock 1) · waits abandoned 0 · heavy use 0 · penalty 120 min"))
         assertTrue(md.contains("| Protocol | Fired | Completed | Clean | Stepped down | Bailed | Missed | Not fired | Skipped |"))
         assertTrue(md.contains("| close | 2 | 1 | 1 | 0 | 1 | 0 | 0 | 0 |"))
         assertTrue(md.contains("- **Bail-outs**: 18:30 close"))

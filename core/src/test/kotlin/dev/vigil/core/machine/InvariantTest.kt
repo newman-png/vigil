@@ -34,7 +34,7 @@ class InvariantTest {
         // The whole bundled file: study, the attention reset, lunch, dinner and the gym run through these days too.
         base = dev.vigil.core.protocol.BundledProtocols.file,
     )
-    private val file = file0.copy(pool = file0.pool.copy(windows = listOf(dev.vigil.core.protocol.FreeWindowConfig("day", "05:00", "23:30", 60), dev.vigil.core.protocol.FreeWindowConfig("x", "12:00", "next", 20))))
+    private val file = file0
     private val times = MyTimes(
         classes = listOf(Slot(listOf("tue", "fri"), "13:00", "14:30", label = "Analysis")),
         // The M8 rows: two calls (mom, dad) and the commute on weekdays.
@@ -112,10 +112,10 @@ class InvariantTest {
         if (s.todos.keys.any { it < day.key }) broken("to-dos of an ended day")
         if (s.sleep.missedInARow < 0) broken("negative missed nights")
         if (s.pool.penaltyMinutesToday > file.pool.bailOut.dailyCapMin) broken("penalty over the daily cap")
-        s.pool.cooldownUntil?.let {
-            val longest = Duration.ofMinutes(maxOf(file.pool.cooldownCapMin, file.pool.heavyUse.withinMin).toLong())
-            if (Duration.between(now, it) > longest) broken("a cooldown longer than any rule allows")
+        s.pool.breakUntil?.let {
+            if (Duration.between(now, it) > Duration.ofMinutes(file.pool.heavyUse.breakMin.toLong())) broken("a break longer than the rule allows")
         }
+        if (s.pool.usedSeconds > file.pool.dailyBudgetMin * 60L + 120) broken("more pool minutes than the daily budget")
         // Do Not Disturb only inside a running Jummah lock; asking only while active or open; one promise; an offer
         // never for a protocol that is running.
         s.runs.filter { it.jummah?.dnd == true }.forEach {

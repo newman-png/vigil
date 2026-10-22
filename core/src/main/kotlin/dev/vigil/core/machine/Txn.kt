@@ -12,7 +12,6 @@ import dev.vigil.core.pool.PoolSession
 import dev.vigil.core.pool.PoolState
 import dev.vigil.core.pool.PoolText
 import dev.vigil.core.pool.PoolWait
-import dev.vigil.core.pool.UseMark
 import dev.vigil.core.protocol.LockType
 import dev.vigil.core.protocol.Prayer
 import dev.vigil.core.protocol.SlotType
@@ -167,7 +166,6 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         settleAlarm()
         settleDay()
         settleAlarm()
-        prunePool()
         settlePool()
         settleHeadsUps()
         fireDue()
@@ -338,17 +336,21 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
     }
 
     /**
-     * A pool session still alive when the day ends belongs to that day: it ends now (its minutes count for the day that
-     * ends and its cooldown starts), so it never eats into the new day's window caps. Still in the app: it closes.
+     * A pool session alive when the day ends: its minutes so far count for the day that ends. Out of the pool, it ends
+     * there; still in the app, it goes on and counts for the new day from [at] (the budget starts again, nothing closes).
      */
     private fun endSessionAtDayEnd(at: Instant) {
         val session = s.pool.session ?: return
-        val inApp = session.inSince != null
-        endSession(if (inApp) at else session.leftAt ?: at, cooldown = true)
-        if (inApp) {
-            log(EntryType.POOL_BLOCKED, at = at, app = session.app, reason = BlockReason.OUTSIDE_WINDOW.json, detail = "session ended: the day ended")
-            effects += Effect.Kick(session.app, BlockReason.OUTSIDE_WINDOW)
+        if (session.inSince == null) {
+            endSession(session.leftAt ?: at)
+            return
         }
+        val used = session.usedAt(at)
+        log(
+            EntryType.POOL_SESSION, at = at, app = session.app, minutes = WallClock.minutesCeil(used), seconds = used,
+            detail = "the day ended; the session goes on",
+        )
+        updatePool { it.copy(usedSeconds = it.usedSeconds + used, session = session.copy(startedAt = at, usedSeconds = 0, inSince = at)) }
     }
 
     private fun closeRunsAtDayEnd(at: Instant) {
@@ -1051,31 +1053,23 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
 
     // ------------------------------------------------------------------ pool
 
-    private fun prunePool() {
-        val since = now.minus(Duration.ofMinutes(cfg.heavyUse.withinMin.toLong()))
-        val pool = s.pool
-        if (pool.openTimes.any { !it.isAfter(since) } || pool.recentUse.any { !it.at.isAfter(since) }) {
-            updatePool { it.copy(openTimes = it.openTimes.filter { t -> t.isAfter(since) }, recentUse = it.recentUse.filter { u -> u.at.isAfter(since) }) }
-        }
-    }
-
     private fun settlePool() {
         val session = s.pool.session ?: return
         val inSince = session.inSince
         if (inSince == null) {
             val left = session.leftAt ?: return
-            if (!now.isBefore(left.plusSeconds(cfg.sessionGapS.toLong()))) endSession(left, cooldown = true)
+            if (!now.isBefore(left.plusSeconds(cfg.sessionGapS.toLong()))) endSession(left)
             return
         }
         if (suspended) return
         if (session.usedAt(now) >= cfg.heavyUse.continuousMin * 60L) {
-            heavyUse("continuous")
+            heavyUse()
             return
         }
-        val blocks = lockBlocks() + PoolRules.timeBlocks(cfg, s.pool, now, windows())
+        val blocks = lockBlocks() + PoolRules.timeBlocks(cfg, s.pool, now)
         if (blocks.isEmpty()) return
         val b = blocks.first()
-        endSession(now, cooldown = true)
+        endSession(now)
         log(
             EntryType.POOL_BLOCKED, app = session.app, reason = b.reason.json, until = b.until,
             detail = "session ended: ${PoolText.block(b, zone)}",
@@ -1083,52 +1077,28 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         effects += Effect.Kick(session.app, b.reason)
     }
 
-    private fun endSession(at: Instant, cooldown: Boolean) {
+    /** The live session ends at [at]: its minutes count for today. */
+    private fun endSession(at: Instant) {
         val session = s.pool.session ?: return
         val used = session.usedAt(at)
-        var pool = s.pool.copy(
-            session = null,
-            usedSeconds = s.pool.usedSeconds + used,
-            windowUsed = session.windowId?.let { s.pool.windowUsed + (it to (s.pool.windowUsed[it] ?: 0) + used) } ?: s.pool.windowUsed,
-            recentUse = s.pool.recentUse + UseMark(at, used),
-        )
-        log(
-            EntryType.POOL_SESSION, at = at, app = session.app, minutes = WallClock.minutesCeil(used), seconds = used,
-            detail = session.windowId?.let { "$it window" },
-        )
-        if (cooldown) {
-            val cool = PoolRules.cooldownSeconds(cfg, used)
-            if (cool > 0) {
-                val until = at.plusSeconds(cool)
-                pool = pool.copy(cooldownUntil = maxOf(pool.cooldownUntil ?: until, until), cooldownCause = PoolState.CAUSE_SESSION)
-                log(EntryType.COOLDOWN, at = at, minutes = WallClock.minutesCeil(cool), seconds = cool, until = until, reason = PoolState.CAUSE_SESSION)
-            }
-        }
-        s = s.copy(pool = pool)
+        updatePool { it.copy(session = null, usedSeconds = it.usedSeconds + used) }
+        log(EntryType.POOL_SESSION, at = at, app = session.app, minutes = WallClock.minutesCeil(used), seconds = used)
     }
 
-    private fun heavyUse(kind: String) {
+    /** One session reached `continuous_min`: it ends, the app closes ("ENOUGH FOR NOW") and a `break_min` break starts. */
+    private fun heavyUse() {
         val session = s.pool.session ?: return
-        val recent = PoolRules.recentUsedSeconds(cfg, s.pool, now)
-        val detail = if (kind == "continuous") {
-            "${cfg.heavyUse.continuousMin} minutes in one session"
-        } else {
-            "${cfg.heavyUse.opens} opens within ${cfg.heavyUse.withinMin} minutes"
-        }
-        log(EntryType.HEAVY_USE, app = session.app, reason = kind, minutes = WallClock.minutesCeil(recent), seconds = recent, detail = detail)
-        endSession(now, cooldown = false)
-        var cool = PoolRules.cooldownSeconds(cfg, recent)
-        if (kind == "opens") {
-            // Until enough of these opens leave the span, the next open would be heavy use again the moment its wait
-            // ends: keep the pool shut until then instead of making the user wait only to be kicked.
-            val times = s.pool.openTimes.sorted()
-            val clears = times.getOrNull(times.size - cfg.heavyUse.opens + 1)?.plus(Duration.ofMinutes(cfg.heavyUse.withinMin.toLong()))
-            if (clears != null) cool = maxOf(cool, Duration.between(now, clears).seconds)
-        }
-        if (cool > 0) {
-            val until = now.plusSeconds(cool)
-            updatePool { it.copy(cooldownUntil = maxOf(it.cooldownUntil ?: until, until), cooldownCause = PoolState.CAUSE_HEAVY_USE) }
-            log(EntryType.COOLDOWN, minutes = WallClock.minutesCeil(cool), seconds = cool, until = until, reason = PoolState.CAUSE_HEAVY_USE)
+        val used = session.usedAt(now)
+        log(
+            EntryType.HEAVY_USE, app = session.app, reason = "continuous", minutes = WallClock.minutesCeil(used), seconds = used,
+            detail = "${cfg.heavyUse.continuousMin} minutes in one session",
+        )
+        endSession(now)
+        val pause = cfg.heavyUse.breakMin * 60L
+        if (pause > 0) {
+            val until = now.plusSeconds(pause)
+            updatePool { it.copy(breakUntil = maxOf(it.breakUntil ?: until, until)) }
+            log(EntryType.COOLDOWN, minutes = cfg.heavyUse.breakMin, seconds = pause, until = until, reason = "heavy_use")
         }
         effects += Effect.Kick(session.app, BlockReason.HEAVY_USE)
     }
@@ -1190,8 +1160,8 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         }
         if (Duration.between(w.startedAt, now).seconds < w.minutes * 60L - Machine.WAIT_TOLERANCE_S) return
         updatePool { it.copy(wait = null) }
-        // The wait is over: only what blocks now counts (not whether a new wait would still end inside the window).
-        val blocks = if (suspended) emptyList() else lockBlocks() + PoolRules.timeBlocks(cfg, s.pool, now, windows())
+        // The wait is over: only what blocks now counts.
+        val blocks = if (suspended) emptyList() else lockBlocks() + PoolRules.timeBlocks(cfg, s.pool, now)
         if (blocks.isNotEmpty()) {
             val d = PoolDecision.Blocked(blocks)
             logBlocked(app, d)
@@ -1202,14 +1172,11 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
     }
 
     private fun startSession(app: String, w: PoolWait) {
-        val window = PoolRules.openWindow(windows(), s.pool, now)
         val opens = s.pool.opens + 1
-        updatePool {
-            it.copy(opens = opens, openTimes = it.openTimes + now, wait = null, session = PoolSession(now, window?.id, app))
-        }
+        updatePool { it.copy(opens = opens, wait = null, session = PoolSession(now, app)) }
         s = s.copy(foreground = app, foregroundIsPool = true)
-        log(EntryType.POOL_OPEN, app = app, minutes = w.minutes, detail = "open $opens today" + (window?.let { " (${it.id} window)" } ?: ""))
-        if (PoolRules.opensWithin(cfg, s.pool, now) >= cfg.heavyUse.opens) heavyUse("opens")
+        val left = WallClock.minutesCeil(PoolRules.leftSeconds(cfg, s.pool, now))
+        log(EntryType.POOL_OPEN, app = app, minutes = w.minutes, detail = "open $opens today ($left min left today)")
     }
 
     private fun onWaitAbandoned(app: String) {
@@ -1326,7 +1293,7 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
      * GOING TO SLEEP (home, or the wind-down's last step): Isha confirmed first when the user said so, the wind-down
      * completes, the day ends now and the night lock starts. Not before the day's own wake time: the day then started
      * last night (an earlier tap, idle, the first start), and ending it again would skip a whole day (its key, MY TIMES
-     * weekday and windows). Returns true when the day ended.
+     * weekday). Returns true when the day ended.
      */
     private fun goToSleep(ishaPrayed: Boolean): Boolean {
         val wake = dayTimes().wake
@@ -1745,9 +1712,9 @@ internal class Txn(state: MachineState, env: MachineEnv) : View(state, env) {
         }
         clearOffer("expired", "VIGIL was suspended")
         updatePool { it.copy(wait = null) }
-        // The pool is simply open while suspended: a live session ends now (its minutes and cooldown count as usual), so
-        // the suspended time is never counted, and never turns into heavy use the moment the suspension ends.
-        s.pool.session?.let { endSession(if (it.inSince != null) now else it.leftAt ?: now, cooldown = true) }
+        // The pool is simply open while suspended: a live session ends now (its minutes count as usual), so the
+        // suspended time is never counted, and never turns into heavy use the moment the suspension ends.
+        s.pool.session?.let { endSession(if (it.inSince != null) now else it.leftAt ?: now) }
     }
 
     // ------------------------------------------------------------------ Jummah (design M4)

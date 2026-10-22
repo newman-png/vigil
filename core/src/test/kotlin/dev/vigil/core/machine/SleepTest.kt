@@ -63,7 +63,7 @@ class SleepTest {
         assertEquals(rome("2026-10-20T09:00"), night.lockEndsAt)
         assertEquals(night, Machine.activeRun(sim.state, sim.env))
         assertNull(Machine.stepView(sim.state, night.id, sim.env))
-        assertEquals(listOf(BlockReason.NIGHT_LOCK, BlockReason.OUTSIDE_WINDOW), sim.blocks())
+        assertEquals(listOf(BlockReason.NIGHT_LOCK), sim.blocks())
         assertEquals("POOL BLOCKED · NIGHT LOCK", Machine.poolStatus(sim.state, sim.env))
         assertEquals("sleep_tap", sim.lastOf(EntryType.NIGHT_LOCK)!!.reason)
         // Slept 36 minutes before the target: a good night, so tonight's target is 20 minutes earlier.
@@ -246,7 +246,7 @@ class SleepTest {
         assertNull(sim.night())
         assertEquals("left", sim.lastOf(EntryType.NIGHT_LOCK)!!.reason)
         assertEquals(sleep, sim.lastOf(EntryType.PENALTY)!!.protocol)
-        assertEquals(listOf(BlockReason.OUTSIDE_WINDOW, BlockReason.PENALTY), sim.blocks())
+        assertEquals(listOf(BlockReason.PENALTY), sim.blocks())
         // The night lock counts for no stage.
         assertNull(sim.state.stages[sleep]?.recent?.lastOrNull { it == "bailed" })
         val killed = Sim()

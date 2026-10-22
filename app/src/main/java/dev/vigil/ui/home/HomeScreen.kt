@@ -17,6 +17,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -53,6 +54,7 @@ import dev.vigil.ui.components.PixelButton
 import dev.vigil.ui.components.PixelText
 import dev.vigil.ui.components.TextInput
 import dev.vigil.ui.components.TierPips
+import dev.vigil.ui.components.holdProgress
 import dev.vigil.ui.components.stagePips
 import dev.vigil.ui.components.tap
 import dev.vigil.ui.rememberNow
@@ -93,7 +95,7 @@ class HomeActions(
 fun HomeScreen(refreshKey: Int, laterRequest: Int, actions: HomeActions) {
     val context = LocalContext.current
     val state by Vigil.state.collectAsState()
-    // Minutes left, windows opening and planned starts going by change with the clock alone.
+    // Minutes left, breaks ending and planned starts going by change with the clock alone.
     val now = rememberNow()
     val status = remember(state, now) { Vigil.status() }
     val timeline = remember(state, now) { Vigil.timeline() }
@@ -672,34 +674,43 @@ private fun Item(label: String, hint: String?, hintColor: Color = Palette.Dim, o
 }
 
 /**
- * Like [Item], but it fires only after being held for [holdMillis]: while held, the hint counts down the seconds
- * left; letting go early does nothing.
+ * Like [Item], but it fires only after being held for [holdMillis]: while held, the hint counts down the seconds and
+ * a bar grows along the row; letting go early does nothing (and resets both).
  */
 @Composable
 private fun HoldItem(label: String, hint: String, holdMillis: Long, onComplete: () -> Unit) {
     var holding by remember { mutableStateOf(false) }
     var secondsLeft by remember { mutableIntStateOf(0) }
+    var progress by remember { mutableFloatStateOf(0f) }
     val complete by rememberUpdatedState(onComplete)
 
     LaunchedEffect(holding) {
-        if (!holding) return@LaunchedEffect
+        if (!holding) {
+            progress = 0f
+            return@LaunchedEffect
+        }
         val start = System.currentTimeMillis()
         while (holding) {
-            val left = holdMillis - (System.currentTimeMillis() - start)
+            val held = System.currentTimeMillis() - start
+            val left = holdMillis - held
             if (left <= 0) {
                 holding = false
+                progress = 0f
                 complete()
                 break
             }
             secondsLeft = ((left + 999) / 1000).toInt()
-            delay(50)
+            progress = held.toFloat() / holdMillis
+            delay(30)
         }
     }
 
     Line()
+    // While held, a red bar along the bottom of the row grows to its full width at the end of the hold.
     Row(
         Modifier
             .fillMaxWidth()
+            .holdProgress({ progress })
             .pointerInput(holdMillis) {
                 awaitEachGesture {
                     awaitFirstDown()

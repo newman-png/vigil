@@ -9,9 +9,8 @@ import kotlinx.serialization.UseSerializers
 import java.time.Duration
 import java.time.Instant
 import kotlin.math.min
-import kotlin.math.roundToLong
 
-/** Why the pool is blocked, in the order the decision checks them (design section 3). */
+/** Why the pool is blocked, in the order the decision checks them. */
 enum class BlockReason(val json: String) {
     /** A screen or pool lock of an active run. */
     RUN_LOCK("run_lock"),
@@ -25,19 +24,13 @@ enum class BlockReason(val json: String) {
     /** The sleep protocol's night lock (M2). */
     NIGHT_LOCK("night_lock"),
 
-    /** No free window is open now. */
-    OUTSIDE_WINDOW("outside_window"),
-
-    /** The open window's minutes are used up. */
-    WINDOW_CAP("window_cap"),
-
-    /** The lock after a session: factor x the minutes used, capped. */
-    COOLDOWN("cooldown"),
+    /** Today's minutes (`daily_budget_min`) are used up: blocked until the day ends. */
+    BUDGET("budget"),
 
     /** Bail-out penalty (stacking, daily cap). */
     PENALTY("penalty"),
 
-    /** A heavy-use takeover just happened; its cooldown is running. */
+    /** One long session closed the app ("ENOUGH FOR NOW"); its break is running. */
     HEAVY_USE("heavy_use"),
     ;
 
@@ -57,7 +50,7 @@ sealed interface PoolDecision {
     /** No session: wait this many minutes on the wait screen first. */
     data class Wait(val minutes: Int) : PoolDecision
 
-    /** Blocked: every reason that applies, first by design order. [reason] and [until] are the first one's. */
+    /** Blocked: every reason that applies, in order. [reason] and [until] are the first one's. */
     data class Blocked(val blocks: List<Block>) : PoolDecision {
         init {
             require(blocks.isNotEmpty())
@@ -79,8 +72,6 @@ data class PoolWait(val app: String, val startedAt: Instant, val minutes: Int)
 @Serializable
 data class PoolSession(
     val startedAt: Instant,
-    /** The free window it was opened in; its minutes count against that window's cap. */
-    val windowId: String?,
     /** The pool app in front most recently. */
     val app: String,
     /** Seconds in the pool before [inSince]. */
@@ -94,146 +85,63 @@ data class PoolSession(
     fun usedAt(now: Instant): Long = usedSeconds + (inSince?.let { seconds(it, now) } ?: 0)
 }
 
-/** A finished session: when it ended and how many seconds it used (for heavy use by recent minutes). */
-@Serializable
-data class UseMark(val at: Instant, val seconds: Long)
-
-/** Everything the pool remembers. Counters reset when the day ends ([newDay]); until-times are moments and carry over. */
+/**
+ * Everything the pool remembers (v2.1: a daily budget). Counters reset when the day ends ([newDay]); until-times are
+ * moments and carry over. A state saved by v2.0 (free windows, cooldowns) still reads: its old fields are ignored.
+ */
 @Serializable
 data class PoolState(
-    /** Opens (completed waits) today: the next open waits min(cap, step x (opens + 1)). */
+    /** Opens (completed waits) today, for the journal. */
     val opens: Int = 0,
-    /** Session starts within the heavy-use span, for "N opens within M minutes". */
-    val openTimes: List<Instant> = emptyList(),
-    /** Seconds used today. */
+    /** Seconds used today in finished sessions ([usedToday] adds the live one). */
     val usedSeconds: Long = 0,
-    /** Seconds used today per free window id. */
-    val windowUsed: Map<String, Long> = emptyMap(),
-    /** Finished sessions within the heavy-use span. */
-    val recentUse: List<UseMark> = emptyList(),
     val penaltyMinutesToday: Int = 0,
     val penaltyUntil: Instant? = null,
-    val cooldownUntil: Instant? = null,
-    /** [CAUSE_SESSION] or [CAUSE_HEAVY_USE]. */
-    val cooldownCause: String? = null,
+    /** The break after heavy use ends then. */
+    val breakUntil: Instant? = null,
     val wait: PoolWait? = null,
     val session: PoolSession? = null,
 ) {
-    /** Counters back to zero for a new day; running locks (cooldown, penalty) and a live session stay. */
-    fun newDay(): PoolState = copy(
-        opens = 0, openTimes = emptyList(), usedSeconds = 0, windowUsed = emptyMap(), recentUse = emptyList(),
-        penaltyMinutesToday = 0,
-    )
+    /** Seconds used today up to [now], the live session included. */
+    fun usedToday(now: Instant): Long = usedSeconds + (session?.usedAt(now) ?: 0)
 
-    companion object {
-        const val CAUSE_SESSION = "session"
-        const val CAUSE_HEAVY_USE = "heavy_use"
-    }
+    /** Counters back to zero for a new day; running locks (break, penalty) and a live session stay. */
+    fun newDay(): PoolState = copy(opens = 0, usedSeconds = 0, penaltyMinutesToday = 0)
 }
 
-/** A free window placed on today: open from [opensAt] until [closesAt] (either null = not today). */
-data class WindowSpan(val id: String, val opensAt: Instant?, val closesAt: Instant?, val capMin: Int) {
-    fun isOpen(now: Instant): Boolean =
-        opensAt != null && closesAt != null && !now.isBefore(opensAt) && now.isBefore(closesAt)
-
-    val capSeconds: Long get() = capMin * 60L
-}
-
-/** The pool arithmetic of design section 3, as pure functions. The machine owns the state changes and the journal. */
+/** The pool arithmetic (v2.1: a daily budget), as pure functions. The machine owns the state changes and the journal. */
 object PoolRules {
-    /** The Nth open of the day waits min(cap, step x N) minutes, N = [opens] + 1. */
-    fun waitMinutes(cfg: PoolConfig, opens: Int): Int = min(cfg.waitCapMin, cfg.waitStepMin * (opens + 1))
+    /** The day's budget in seconds. */
+    fun budgetSeconds(cfg: PoolConfig): Long = cfg.dailyBudgetMin * 60L
 
-    /** The cooldown after using the pool for [usedSeconds]: min(cap, factor x used). */
-    fun cooldownSeconds(cfg: PoolConfig, usedSeconds: Long): Long =
-        min(cfg.cooldownCapMin * 60L, (cfg.cooldownFactor * usedSeconds).roundToLong())
+    /** Seconds of today's budget left at [now] (never below 0). */
+    fun leftSeconds(cfg: PoolConfig, pool: PoolState, now: Instant): Long = maxOf(0L, budgetSeconds(cfg) - pool.usedToday(now))
 
-    /** Seconds used in window [id] today, counting a live session opened in it. */
-    fun windowUsedSeconds(id: String, pool: PoolState, now: Instant): Long {
-        val live = pool.session?.takeIf { it.windowId == id }?.usedAt(now) ?: 0
-        return (pool.windowUsed[id] ?: 0) + live
-    }
-
-    /** The first open window (in file order) with minutes left, or null. */
-    fun openWindow(windows: List<WindowSpan>, pool: PoolState, now: Instant): WindowSpan? =
-        windows.firstOrNull { it.isOpen(now) && windowUsedSeconds(it.id, pool, now) < it.capSeconds }
-
-    /** The next moment after [now] a window with minutes left opens, or null. */
-    fun nextOpening(windows: List<WindowSpan>, pool: PoolState, now: Instant): Instant? = windows
-        .filter { it.opensAt != null && it.opensAt.isAfter(now) && it.closesAt != null && it.closesAt.isAfter(it.opensAt) }
-        .filter { windowUsedSeconds(it.id, pool, now) < it.capSeconds }
-        .minOfOrNull { it.opensAt!! }
-
-    /** Seconds used in the pool within the last `heavy_use.within_min` minutes (finished sessions and the live one). */
-    fun recentUsedSeconds(cfg: PoolConfig, pool: PoolState, now: Instant): Long {
-        val since = now.minus(Duration.ofMinutes(cfg.heavyUse.withinMin.toLong()))
-        return pool.recentUse.filter { it.at.isAfter(since) }.sumOf { it.seconds } + (pool.session?.usedAt(now) ?: 0)
-    }
-
-    /** Session starts within the last `heavy_use.within_min` minutes (inclusive of [now]). */
-    fun opensWithin(cfg: PoolConfig, pool: PoolState, now: Instant): Int {
-        val since = now.minus(Duration.ofMinutes(cfg.heavyUse.withinMin.toLong()))
-        return pool.openTimes.count { it.isAfter(since) && !it.isAfter(now) }
-    }
-
-    /**
-     * The time-based blocks, in design order: outside every free window, window cap used, cooldown, bail penalty, a
-     * just-triggered heavy use. A live session is judged by its own window (closed or full = blocked).
-     */
-    fun timeBlocks(cfg: PoolConfig, pool: PoolState, now: Instant, windows: List<WindowSpan>): List<Block> {
+    /** The time-based blocks, in order: today's budget used up, a bail-out penalty, the break after heavy use. */
+    fun timeBlocks(cfg: PoolConfig, pool: PoolState, now: Instant): List<Block> {
         val out = mutableListOf<Block>()
-        val session = pool.session
-        val own = session?.windowId?.let { id -> windows.firstOrNull { it.id == id } }
-        if (session != null && own != null) {
-            when {
-                !own.isOpen(now) -> out += Block(BlockReason.OUTSIDE_WINDOW, nextOpening(windows, pool, now), own.id)
-                windowUsedSeconds(own.id, pool, now) >= own.capSeconds ->
-                    out += Block(BlockReason.WINDOW_CAP, nextOpening(windows, pool, now), own.id)
-            }
-        } else {
-            val open = windows.filter { it.isOpen(now) }
-            when {
-                open.isEmpty() -> out += Block(BlockReason.OUTSIDE_WINDOW, nextOpening(windows, pool, now))
-                open.none { windowUsedSeconds(it.id, pool, now) < it.capSeconds } ->
-                    out += Block(BlockReason.WINDOW_CAP, nextOpening(windows, pool, now), open.first().id)
-            }
-        }
-        val cooling = pool.cooldownUntil?.takeIf { it.isAfter(now) }
-        if (cooling != null && pool.cooldownCause != PoolState.CAUSE_HEAVY_USE) out += Block(BlockReason.COOLDOWN, cooling)
+        if (leftSeconds(cfg, pool, now) <= 0) out += Block(BlockReason.BUDGET, null, cfg.dailyBudgetMin.toString())
         pool.penaltyUntil?.takeIf { it.isAfter(now) }?.let { out += Block(BlockReason.PENALTY, it) }
-        if (cooling != null && pool.cooldownCause == PoolState.CAUSE_HEAVY_USE) out += Block(BlockReason.HEAVY_USE, cooling)
+        pool.breakUntil?.takeIf { it.isAfter(now) }?.let { out += Block(BlockReason.HEAVY_USE, it) }
         return out
     }
 
     /**
-     * The pool decision (design section 3). [lockBlocks] are the run, toggle and night-lock blocks the machine found,
-     * already in design order. Suspended = everything open. A wait that would end after every usable window has closed
-     * could only end in a refusal, so it is refused at once (outside the window, until the next one opens).
+     * The pool decision. [lockBlocks] are the run, toggle and night-lock blocks the machine found, already in order.
+     * Suspended = everything open. Otherwise blocked by any of those or by [timeBlocks]; else a live session goes on,
+     * and a new open first waits `wait_min` minutes.
      */
-    fun decide(
-        cfg: PoolConfig,
-        pool: PoolState,
-        now: Instant,
-        windows: List<WindowSpan>,
-        lockBlocks: List<Block>,
-        suspended: Boolean,
-    ): PoolDecision {
+    fun decide(cfg: PoolConfig, pool: PoolState, now: Instant, lockBlocks: List<Block>, suspended: Boolean): PoolDecision {
         if (suspended) return PoolDecision.Allowed
-        val blocks = lockBlocks + timeBlocks(cfg, pool, now, windows)
+        val blocks = lockBlocks + timeBlocks(cfg, pool, now)
         if (blocks.isNotEmpty()) return PoolDecision.Blocked(blocks)
         if (pool.session != null) return PoolDecision.Allowed
-        val minutes = waitMinutes(cfg, pool.opens)
-        val waitEnds = now.plusSeconds(minutes * 60L)
-        val usable = windows.filter { it.isOpen(now) && windowUsedSeconds(it.id, pool, now) < it.capSeconds }
-        if (usable.none { it.isOpen(waitEnds) }) {
-            return PoolDecision.Blocked(listOf(Block(BlockReason.OUTSIDE_WINDOW, nextOpening(windows, pool, now), usable.firstOrNull()?.id)))
-        }
-        return PoolDecision.Wait(minutes)
+        return PoolDecision.Wait(cfg.waitMin)
     }
 
     /**
-     * A bail-out's penalty: [BailOutConfig.extraLockMin] more minutes of pool lock, stacking on a running penalty,
-     * but at most `daily_cap_min` minutes added per day. Returns the new state and the minutes actually added.
+     * A bail-out's penalty: [dev.vigil.core.protocol.BailOutConfig.extraLockMin] more minutes of pool lock, stacking on
+     * a running penalty, but at most `daily_cap_min` minutes added per day. Returns the new state and the minutes added.
      */
     fun penalty(cfg: PoolConfig, pool: PoolState, now: Instant): Pair<PoolState, Int> {
         val added = min(cfg.bailOut.extraLockMin, maxOf(0, cfg.bailOut.dailyCapMin - pool.penaltyMinutesToday))

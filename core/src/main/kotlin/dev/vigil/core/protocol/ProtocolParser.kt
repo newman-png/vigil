@@ -28,7 +28,7 @@ sealed interface ProtocolParseResult {
 
 /**
  * Reads and validates protocols.json: kotlinx.serialization for the shape, then the semantic rules of design 2.1
- * (known kinds, step types, triggers and anchors; unique ids; references that exist; ladder versions only where the
+ * (known kinds, step types, triggers and time expressions; unique ids; references that exist; ladder versions only where the
  * kind allows them; every number in range; package names that look like package names).
  *
  * It never throws. Errors make the file unusable (the bundled-file unit test fails on any error, so CI rejects a bad
@@ -170,24 +170,17 @@ object ProtocolParser {
         ),
         required = setOf("id", "kind", "title", "trigger", "steps"),
     )
-    private val WINDOW = Shape.Obj(
-        mapOf("id" to Shape.Text, "opens" to Shape.Text, "closes" to Shape.Text, "cap_min" to Shape.Whole),
-        required = setOf("id", "opens", "closes", "cap_min"),
-    )
     private val POOL = Shape.Obj(
         mapOf(
             "apps" to Shape.ListOf(Shape.Text),
             "all_browsers" to Shape.Bool,
-            "wait_step_min" to Shape.Whole,
-            "wait_cap_min" to Shape.Whole,
-            "cooldown_factor" to Shape.Number,
-            "cooldown_cap_min" to Shape.Whole,
+            "daily_budget_min" to Shape.Whole,
+            "wait_min" to Shape.Whole,
             "session_gap_s" to Shape.Whole,
-            "windows" to Shape.ListOf(WINDOW),
-            "heavy_use" to Shape.Obj(mapOf("continuous_min" to Shape.Whole, "opens" to Shape.Whole, "within_min" to Shape.Whole)),
+            "heavy_use" to Shape.Obj(mapOf("continuous_min" to Shape.Whole, "break_min" to Shape.Whole)),
             "bail_out" to Shape.Obj(mapOf("extra_lock_min" to Shape.Whole, "daily_cap_min" to Shape.Whole)),
         ),
-        required = setOf("apps", "windows"),
+        required = setOf("apps"),
     )
     private val ROOT = Shape.Obj(
         mapOf(
@@ -276,7 +269,7 @@ object ProtocolParser {
             ctx.error("version", "must be ${ProtocolFile.SUPPORTED_VERSION} (this app reads version ${ProtocolFile.SUPPORTED_VERSION} files).")
         }
         val ids = file.protocols.map { it.id }.toSet()
-        checkPool(file.pool, ids, ctx)
+        checkPool(file.pool, ctx)
         checkAppsButton(file.appsButton, ctx)
         checkDay(file.day, ctx)
         range(ctx, "takeover.glyph_off_after_s", file.takeover.glyphOffAfterS, 0, 600)
@@ -310,51 +303,21 @@ object ProtocolParser {
         if (file.protocols.isEmpty()) ctx.warn("protocols", "there are no protocols.")
     }
 
-    private fun checkPool(pool: PoolConfig, ids: Set<String>, ctx: Ctx) {
+    private fun checkPool(pool: PoolConfig, ctx: Ctx) {
         val seenApps = mutableSetOf<String>()
         pool.apps.forEachIndexed { i, app ->
             if (!looksLikePackage(app)) ctx.error("pool.apps[$i]", "\"$app\" does not look like a package name (e.g. com.instagram.android).")
             if (!seenApps.add(app)) ctx.warn("pool.apps[$i]", "\"$app\" is listed twice.")
         }
         if (pool.apps.isEmpty() && !pool.allBrowsers) ctx.warn("pool.apps", "the pool is empty: nothing is ever blocked.")
-        range(ctx, "pool.wait_step_min", pool.waitStepMin, 1, 60)
-        range(ctx, "pool.wait_cap_min", pool.waitCapMin, 1, 120)
-        if (pool.waitCapMin < pool.waitStepMin) ctx.error("pool.wait_cap_min", "must be at least wait_step_min (${pool.waitStepMin}).")
-        if (pool.cooldownFactor < 0.0 || pool.cooldownFactor > 10.0) ctx.error("pool.cooldown_factor", "must be from 0 to 10.")
-        range(ctx, "pool.cooldown_cap_min", pool.cooldownCapMin, 0, 480)
+        range(ctx, "pool.daily_budget_min", pool.dailyBudgetMin, 0, 1440)
+        if (pool.dailyBudgetMin == 0) ctx.warn("pool.daily_budget_min", "0 minutes a day: the pool can never be opened.")
+        range(ctx, "pool.wait_min", pool.waitMin, 1, 60)
         range(ctx, "pool.session_gap_s", pool.sessionGapS, 0, 600)
-        val windowIds = mutableSetOf<String>()
-        pool.windows.forEachIndexed { i, w ->
-            val path = "pool.windows[$i] (${w.id})"
-            if (!ID_PATTERN.matches(w.id)) ctx.error("$path.id", "\"${w.id}\" is not a valid id: use lowercase letters, digits, - and _.")
-            if (!windowIds.add(w.id)) ctx.error("$path.id", "\"${w.id}\" is used by more than one window.")
-            checkAnchor(w.opens, allowNext = false, "$path.opens", ids, ctx)
-            checkAnchor(w.closes, allowNext = true, "$path.closes", ids, ctx)
-            range(ctx, "$path.cap_min", w.capMin, 1, 600)
-        }
-        if (pool.windows.isEmpty()) ctx.warn("pool.windows", "there are no free windows: the pool can never be opened.")
         range(ctx, "pool.heavy_use.continuous_min", pool.heavyUse.continuousMin, 1, 240)
-        range(ctx, "pool.heavy_use.opens", pool.heavyUse.opens, 2, 20)
-        range(ctx, "pool.heavy_use.within_min", pool.heavyUse.withinMin, 1, 240)
+        range(ctx, "pool.heavy_use.break_min", pool.heavyUse.breakMin, 0, 240)
         range(ctx, "pool.bail_out.extra_lock_min", pool.bailOut.extraLockMin, 0, 720)
         range(ctx, "pool.bail_out.daily_cap_min", pool.bailOut.dailyCapMin, 0, 1440)
-    }
-
-    private fun checkAnchor(text: String, allowNext: Boolean, path: String, ids: Set<String>, ctx: Ctx) {
-        when (val a = Anchor.parse(text, allowNext)) {
-            is Parsed.Error -> ctx.error(path, a.message)
-            is Parsed.Ok -> {
-                fun refs(v: Anchor): List<String> = when (v) {
-                    is Anchor.Done -> listOf(v.protocolId)
-                    is Anchor.Start -> listOf(v.protocolId)
-                    is Anchor.Max -> refs(v.first) + refs(v.second)
-                    else -> emptyList()
-                }
-                for (ref in refs(a.value).filter { it !in ids }) {
-                    ctx.warn(path, "no protocol \"$ref\" in the file (yet), so the time after | is used.")
-                }
-            }
-        }
     }
 
     private fun checkAppsButton(entries: List<AppsButtonEntry>, ctx: Ctx) {

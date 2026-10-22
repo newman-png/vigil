@@ -2,7 +2,7 @@
   "_readme": "VIGIL v2 protocols. Every behaviour of the app is a fixed rule from this file plus the user's MY TIMES. Edit it only with Claude Code; spec/PROTOCOLS.md documents every field. The core unit test BundledProtocolsTest fails on any error, so a bad edit never ships.",
   "version": 2,
   "pool": {
-    "_note": "One shared counter for all of these apps. all_browsers adds every installed browser (apps that open https links).",
+    "_note": "One shared counter for all of these apps (v2.1): daily_budget_min minutes a day, at any time nothing else blocks the pool (a protocol's lock, the night lock, friends or walking, a bail-out penalty). Every open waits wait_min minutes first. One session of heavy_use.continuous_min minutes closes the app (ENOUGH FOR NOW) for a break_min break. all_browsers adds every installed browser (apps that open https links).",
     "apps": [
       "com.zhiliaoapp.musically",
       "com.ss.android.ugc.trill",
@@ -11,28 +11,26 @@
       "com.google.android.youtube",
       "com.instagram.android",
       "com.pinterest",
-      "com.brave.browser"
+      "com.brave.browser",
+      "com.reddit.frontpage"
     ],
     "all_browsers": true,
-    "wait_step_min": 1,
-    "wait_cap_min": 10,
-    "cooldown_factor": 2,
-    "cooldown_cap_min": 60,
+    "daily_budget_min": 90,
+    "wait_min": 1,
     "session_gap_s": 60,
-    "windows": [
-      { "id": "morning", "opens": "max(done:morning|woke+60,woke+60)", "closes": "next", "cap_min": 30 },
-      { "id": "evening", "opens": "done:dinner|meal:dinner+45", "closes": "start:sleep|bedtime-60", "cap_min": 30 }
-    ],
-    "heavy_use": { "continuous_min": 10, "opens": 3, "within_min": 30 },
+    "heavy_use": { "continuous_min": 30, "break_min": 15 },
     "bail_out": { "extra_lock_min": 120, "daily_cap_min": 360 }
   },
   "apps_button": [
     { "role": "dialer" },
     { "role": "adhan" },
+    { "label_contains": "Prayer" },
     { "role": "clock" },
     { "package": "com.google.android.apps.maps" },
     { "package": "com.whatsapp" },
-    { "label_contains": "PoliTO" }
+    { "label_contains": "PoliTO" },
+    { "package": "com.google.android.keep" },
+    { "label_contains": "Calculator" }
   ],
   "day": { "idle_end_min": 120, "fallback_end": "06:00", "night_edge": "05:00" },
   "takeover": { "glyph_off_after_s": 30, "full_seconds": 30 },
@@ -55,7 +53,7 @@
     },
     {
       "id": "morning",
-      "_note": "Starts when the wake alarm is dismissed. Pool lock: the screen is free, the morning card shows the step and opens the takeover. The morning window opens when every step is done and an hour has passed since waking.",
+      "_note": "Starts when the wake alarm is dismissed. Pool lock: the screen is free, the morning card shows the step and opens the takeover. The pool stays blocked until every step is done.",
       "kind": "morning",
       "title": "MORNING",
       "trigger": "event:wake_alarm",
@@ -472,7 +470,7 @@
     },
     {
       "id": "nudge",
-      "_note": "Wellness nudges: per_day short takeovers at times that feel random (fixed per day), from wake + after_wake_min until the wind-down, at least min_gap_min apart, each seconds long; and a movement nudge after still_min without steps while the phone is in use. Only while the phone is in use and nothing else is going on (no run, class, QUIET, night lock, call, friends or walking): otherwise skipped. NOT OKAY or LEAVE end one at no cost; never a miss.",
+      "_note": "Off since v2.1 (per_day 0 and no move_nudges): no nudge fires by itself; TEST can still show one. Wellness nudges: per_day short takeovers at times that feel random (fixed per day), from wake + after_wake_min until the wind-down, at least min_gap_min apart, each seconds long; and a movement nudge after still_min without steps while the phone is in use. Only while the phone is in use and nothing else is going on (no run, class, QUIET, night lock, call, friends or walking): otherwise skipped. NOT OKAY or LEAVE end one at no cost; never a miss.",
       "kind": "nudge",
       "title": "NUDGE",
       "trigger": "manual",
@@ -483,10 +481,10 @@
       ],
       "params": {
         "nudges": ["Drink a glass of water.", "Look at something far away for 20 seconds.", "Stand up and stretch."],
-        "move_nudges": ["Stand up and walk for a minute."],
+        "move_nudges": [],
         "seconds": 45,
         "move_seconds": 60,
-        "per_day": 4,
+        "per_day": 0,
         "min_gap_min": 90,
         "still_min": 90,
         "after_wake_min": 90

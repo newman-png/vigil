@@ -57,6 +57,7 @@ internal fun GuardScreen(
     now: Instant,
     wait: PoolWait?,
     opensToday: Int,
+    minutesLeft: Int,
     decision: PoolDecision?,
     killLeftMs: Long,
     suspendedUntil: Instant?,
@@ -67,7 +68,7 @@ internal fun GuardScreen(
 ) {
     val app = appLabel.uppercase()
     val text = when (request.mode) {
-        GuardMode.WAIT -> waitText(app, now, wait, opensToday)
+        GuardMode.WAIT -> waitText(app, now, wait, opensToday, minutesLeft)
         GuardMode.BLOCKED -> blockedText(app, now, decision, zone)
         GuardMode.ENOUGH -> enoughText(app, now, decision, zone, heavyUse)
         GuardMode.KILL -> killText(killLeftMs, suspendedUntil, zone)
@@ -131,13 +132,13 @@ private data class GuardText(
     val tier: Int = 1,
 )
 
-private fun waitText(app: String, now: Instant, wait: PoolWait?, opensToday: Int): GuardText {
+private fun waitText(app: String, now: Instant, wait: PoolWait?, opensToday: Int, minutesLeft: Int): GuardText {
     val left = wait?.let { w -> Duration.between(now, w.startedAt.plusSeconds(w.minutes * 60L)).seconds.coerceAtLeast(0L) }
     return GuardText(
         label = "WAIT · $app",
         headline = left?.let { clockText(it) } ?: "-:--",
         countdown = true,
-        details = listOf("OPEN NO. ${opensToday + 1} TODAY"),
+        details = listOf("OPEN NO. ${opensToday + 1} TODAY · $minutesLeft MIN LEFT TODAY"),
         note = "STAY ON THIS SCREEN. AT ZERO $app OPENS. LEAVING MEANS THE SAME WAIT NEXT TIME.",
         button = "NOT NOW",
     )
@@ -146,7 +147,7 @@ private fun waitText(app: String, now: Instant, wait: PoolWait?, opensToday: Int
 private fun blockedText(app: String, now: Instant, decision: PoolDecision?, zone: ZoneId): GuardText {
     val blocked = decision as? PoolDecision.Blocked ?: return openText(app)
     val first = blocked.blocks.first()
-    val closed = first.reason == BlockReason.OUTSIDE_WINDOW || first.reason == BlockReason.WINDOW_CAP
+    val closed = first.reason == BlockReason.BUDGET
     // A promise that came due holds the pool: what was promised, in the user's own words.
     val promise = Vigil.state.value.runs.firstOrNull { it.promise != null && it.phase == RunPhase.ACTIVE }?.promise
         ?.takeIf { first.reason == BlockReason.RUN_LOCK }
@@ -155,15 +156,15 @@ private fun blockedText(app: String, now: Instant, decision: PoolDecision?, zone
         headline = PoolText.reason(first),
         details = listOf(untilText(first, now, zone)) + blocked.blocks.drop(1).map { "ALSO ${PoolText.block(it, zone)}" },
         note = promise?.let { "YOU SAID: ${it.text.uppercase()}. THE POOL OPENS AT DONE (HOME OR THE NOTIFICATION)." }
-            ?: noteFor(first.reason),
+            ?: noteFor(first),
     )
 }
 
 private fun enoughText(app: String, now: Instant, decision: PoolDecision?, zone: ZoneId, heavyUse: HeavyUseConfig): GuardText {
     val blocks = (decision as? PoolDecision.Blocked)?.blocks.orEmpty()
-    val cooldown = blocks.firstOrNull { it.reason == BlockReason.HEAVY_USE && it.until != null }
+    val pause = blocks.firstOrNull { it.reason == BlockReason.HEAVY_USE && it.until != null }
     val details = when {
-        cooldown != null -> listOf("COOLDOWN · ${untilText(cooldown, now, zone)}")
+        pause != null -> listOf("BREAK · ${untilText(pause, now, zone)}")
         blocks.isNotEmpty() -> listOf(PoolText.block(blocks.first(), zone))
         else -> emptyList()
     }
@@ -172,8 +173,8 @@ private fun enoughText(app: String, now: Instant, decision: PoolDecision?, zone:
         headline = "ENOUGH FOR NOW",
         urgent = true,
         details = details,
-        note = "${heavyUse.continuousMin} MINUTES IN A ROW, OR ${heavyUse.opens} OPENS WITHIN ${heavyUse.withinMin} MINUTES. " +
-            "THE COOLDOWN STARTED EARLY.",
+        note = "${heavyUse.continuousMin} MINUTES IN A ROW. A ${heavyUse.breakMin}-MINUTE BREAK, THEN THE POOL OPENS AGAIN " +
+            "AFTER ITS WAIT, WHILE TODAY'S MINUTES LAST.",
         tier = 3,
     )
 }
@@ -201,19 +202,18 @@ private fun killText(leftMs: Long, suspendedUntil: Instant?, zone: ZoneId): Guar
         )
     }
 
-/** The blocked screens once the engine no longer blocks (a cooldown ran out while the screen was up). */
+/** The blocked screens once the engine no longer blocks (a break ran out while the screen was up). */
 private fun openText(app: String) = GuardText(
     label = "POOL · $app",
     headline = "NOT BLOCKED NOW",
     details = listOf("OPEN THE APP AGAIN TO START ITS WAIT"),
 )
 
-/** How long a block lasts, e.g. "24 MIN · UNTIL 14:20", or when the next free window opens. */
+/** How long a block lasts, e.g. "24 MIN · UNTIL 14:20", or "UNTIL THE DAY ENDS" for today's budget. */
 private fun untilText(block: Block, now: Instant, zone: ZoneId): String {
     val until = block.until
     return when (block.reason) {
-        BlockReason.OUTSIDE_WINDOW, BlockReason.WINDOW_CAP ->
-            if (until != null) "NEXT WINDOW ${WallClock.hhmm(until, zone)} · IN ${minutesText(now, until)}" else "NO MORE WINDOWS TODAY"
+        BlockReason.BUDGET -> "UNTIL THE DAY ENDS"
         BlockReason.FRIENDS -> until?.let { "${minutesText(now, it)} · UNTIL ${WallClock.hhmm(it, zone)}" } ?: "UNTIL YOU SWITCH IT OFF"
         BlockReason.WALKING -> "UNTIL THE WALK ENDS: SWITCH IT OFF, OR STOP MOVING"
         else -> until?.let { "${minutesText(now, it)} · UNTIL ${WallClock.hhmm(it, zone)}" } ?: "UNTIL IT ENDS"
@@ -229,16 +229,14 @@ private fun minutesText(now: Instant, until: Instant): String {
 /** Seconds as m:ss. */
 private fun clockText(seconds: Long): String = "${seconds / 60}:${(seconds % 60).toString().padStart(2, '0')}"
 
-private fun noteFor(reason: BlockReason): String = when (reason) {
+private fun noteFor(block: Block): String = when (block.reason) {
     BlockReason.RUN_LOCK -> "A PROTOCOL IS RUNNING. THE POOL STAYS SHUT UNTIL ITS LOCK ENDS."
     BlockReason.FRIENDS -> "NO WAIT OPTION WHILE YOU'RE WITH FRIENDS."
     BlockReason.WALKING -> "LOOK AROUND. THE POOL OPENS WHEN THE WALK ENDS."
     BlockReason.NIGHT_LOCK -> "THE NIGHT LOCK HOLDS UNTIL YOUR WAKE ALARM."
-    BlockReason.OUTSIDE_WINDOW -> "THE POOL OPENS ONLY IN A FREE WINDOW."
-    BlockReason.WINDOW_CAP -> "THIS WINDOW'S MINUTES ARE USED UP."
-    BlockReason.COOLDOWN -> "AFTER A SESSION THE POOL RESTS FOR LONGER THAN YOU USED IT."
+    BlockReason.BUDGET -> "THE POOL HAS ${block.detail ?: "ITS"} MINUTES A DAY. THEY COME BACK WHEN THE DAY ENDS (GOING TO SLEEP)."
     BlockReason.PENALTY -> "LEAVING A PROTOCOL EARLY KEEPS THE POOL SHUT FOR LONGER."
-    BlockReason.HEAVY_USE -> "THE COOLDOWN AFTER HEAVY USE."
+    BlockReason.HEAVY_USE -> "A SHORT BREAK AFTER A LONG SESSION."
 }
 
 // ------------------------------------------------------------------ look (black, white, red; monospace, wide tracking)

@@ -117,60 +117,6 @@ class TimelineTest {
     }
 
     @Test
-    fun nextClosesTheWindowAtTheNextStart() {
-        val early = testProtocol("early", trigger = "time:10:00", lock = Lock(LockType.NONE))
-        val sim = Sim(file = fileWith(early))
-        val morning = Machine.windows(sim.state, sim.env).first()
-        assertEquals(rome("2026-10-19T08:00"), morning.opensAt)
-        assertEquals(rome("2026-10-19T10:00"), morning.closesAt)
-        // Nothing planned after the window opens: it lasts until the day's latest end.
-        val bare = Sim(file = PRAYERS_ONLY)
-        assertEquals(rome("2026-10-20T06:00"), Machine.windows(bare.state, bare.env).first().closesAt)
-    }
-
-    @Test
-    fun theMorningWindowNeedsTheMorningDoneAndAnHourSinceWaking() {
-        // max(done:morning|woke+60,woke+60): the later of the morning's completion and an hour after waking.
-        val morning = testProtocol("morning", kind = ProtocolKind.MORNING, lock = Lock(LockType.NONE), steps = listOf(Step("Up.")))
-        val sim = Sim("2026-10-19T07:00", file = fileWith(morning))
-        assertEquals(rome("2026-10-19T08:00"), Machine.windows(sim.state, sim.env).first().opensAt)
-        sim.at("2026-10-19T07:30", Input.Manual("morning"))
-        sim.at("2026-10-19T07:40", Input.StepDone(sim.runId("morning"), 0))
-        // Done at 07:40, but not yet an hour after waking (no alarm dismissed: MY TIMES wake 07:00).
-        assertEquals(rome("2026-10-19T08:00"), Machine.windows(sim.state, sim.env).first().opensAt)
-        sim.at("2026-10-19T07:45")
-        assertTrue(sim.decision() is PoolDecision.Blocked)
-        sim.at("2026-10-19T08:00")
-        assertEquals(PoolDecision.Wait(1), sim.decision())
-        // Done later than an hour after waking: the window opens at the completion.
-        val slow = Sim("2026-10-19T07:00", file = fileWith(morning))
-        slow.at("2026-10-19T07:30", Input.Manual("morning"))
-        slow.at("2026-10-19T08:20", Input.StepDone(slow.runId("morning"), 0))
-        assertEquals(rome("2026-10-19T08:20"), Machine.windows(slow.state, slow.env).first().opensAt)
-    }
-
-    @Test
-    fun startAnchorClosesTheEveningWindowWhenSleepStarts() {
-        val sleep = testProtocol("sleep", kind = ProtocolKind.SLEEP, lock = Lock(LockType.POOL))
-        val sim = Sim(file = fileWith(sleep))
-        // With a sleep protocol, bedtime is tonight's target: the first night MY TIMES bedtime_start (00:30).
-        assertEquals(rome("2026-10-19T23:30"), Machine.windows(sim.state, sim.env)[1].closesAt)
-        sim.at("2026-10-19T21:00", Input.Manual("sleep"))
-        assertEquals(rome("2026-10-19T21:00"), Machine.windows(sim.state, sim.env)[1].closesAt)
-    }
-
-    @Test
-    fun anAnchorThatDoesNotExistTodayKeepsTheWindowShut() {
-        val noDinner = MyTimes(meals = listOf(Slot(listOf("tue"), "19:30", label = "dinner")))
-        val sim = Sim(file = PRAYERS_ONLY, times = noDinner)
-        val evening = Machine.windows(sim.state, sim.env)[1]
-        assertNull(evening.opensAt)
-        sim.at("2026-10-19T21:00")
-        // The morning window is still open (nothing planned closes it): only that one counts.
-        assertTrue(sim.decision() is PoolDecision.Wait)
-    }
-
-    @Test
     fun prayerEstimatesAreWholeDaysAfterTheLastAdhan() {
         assertEquals(rome("2026-10-19T12:30"), Timeline.estimate(rome("2026-10-18T12:30"), rome("2026-10-19T06:00")))
         assertEquals(rome("2026-10-19T12:30"), Timeline.estimate(rome("2026-10-15T12:30"), rome("2026-10-19T06:00")))

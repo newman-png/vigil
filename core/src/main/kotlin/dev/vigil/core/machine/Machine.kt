@@ -1,11 +1,9 @@
 package dev.vigil.core.machine
 
 import dev.vigil.core.common.WallClock
-import dev.vigil.core.pool.BlockReason
 import dev.vigil.core.pool.PoolDecision
 import dev.vigil.core.pool.PoolRules
 import dev.vigil.core.pool.PoolText
-import dev.vigil.core.pool.WindowSpan
 import dev.vigil.core.protocol.Intensity
 import dev.vigil.core.protocol.Prayer
 import dev.vigil.core.protocol.ProtocolKind
@@ -209,32 +207,23 @@ object Machine {
     /** May a pool app open now? [isPool] false = not a pool app = always allowed. */
     fun poolDecision(state: MachineState, env: MachineEnv, isPool: Boolean = true): PoolDecision = View(state, env).decision(isPool)
 
-    /** Today's free windows (opening and closing moments, caps). */
-    fun windows(state: MachineState, env: MachineEnv): List<WindowSpan> = View(state, env).windows()
+    /** Minutes of today's pool budget left (rounded up; the live session counted). */
+    fun poolMinutesLeft(state: MachineState, env: MachineEnv): Int =
+        WallClock.minutesCeil(PoolRules.leftSeconds(env.protocols.pool, state.pool, env.now))
 
-    /** One line for the home screen, e.g. "POOL BLOCKED · COOLDOWN UNTIL 14:20". */
+    /** One line for the home screen, e.g. "POOL · 52 MIN LEFT TODAY" or "POOL BLOCKED · TODAY'S 90 MINUTES ARE USED". */
     fun poolStatus(state: MachineState, env: MachineEnv): String {
         val v = View(state, env)
         val zone = env.zone
         if (v.suspended) return "POOL OPEN · VIGIL SUSPENDED UNTIL ${WallClock.hhmm(state.suspendedUntil!!, zone)}"
-        val windows = v.windows()
+        val left = poolMinutesLeft(state, env)
         val session = state.pool.session
         return when (val d = v.decision(true)) {
-            is PoolDecision.Blocked -> {
-                val b = d.blocks.first()
-                val head = if (b.reason == BlockReason.OUTSIDE_WINDOW) "POOL CLOSED" else "POOL BLOCKED"
-                "$head · ${PoolText.block(b, zone)}"
-            }
-            is PoolDecision.Wait -> {
-                val w = PoolRules.openWindow(windows, state.pool, env.now)
-                val left = w?.let { WallClock.minutesCeil(it.capSeconds - PoolRules.windowUsedSeconds(it.id, state.pool, env.now)) }
-                "POOL OPEN" + (w?.let { " · ${it.id.uppercase()} $left MIN LEFT" } ?: "") + " · WAIT ${d.minutes} MIN"
-            }
+            is PoolDecision.Blocked -> "POOL BLOCKED · ${PoolText.block(d.blocks.first(), zone)}"
+            is PoolDecision.Wait -> "POOL · $left MIN LEFT TODAY"
             PoolDecision.Allowed -> {
                 val used = session?.let { WallClock.minutesCeil(it.usedAt(env.now)) } ?: 0
-                val w = session?.windowId?.let { id -> windows.firstOrNull { it.id == id } }
-                val left = w?.let { WallClock.minutesCeil(it.capSeconds - PoolRules.windowUsedSeconds(it.id, state.pool, env.now)) }
-                "POOL IN USE · $used MIN" + (w?.let { " · ${it.id.uppercase()} $left MIN LEFT" } ?: "")
+                "POOL IN USE · $used MIN · $left MIN LEFT TODAY"
             }
         }
     }

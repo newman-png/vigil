@@ -23,7 +23,18 @@ import java.time.Instant
 
 /** Design M8 (extras): wellness nudges, at times that feel random, and the movement nudge. */
 class NudgeTest {
-    private val nudge: Protocol = BundledProtocols.file.find("nudge")!!
+    /**
+     * The bundled nudge protocol with its v2.0 numbers: the bundled file has the nudges off since v2.1 (per_day 0, no
+     * move_nudges), but the rules stay tested.
+     */
+    private val nudge: Protocol = BundledProtocols.file.find("nudge")!!.let {
+        it.copy(
+            params = JsonObject(
+                it.params + ("per_day" to JsonPrimitive(4)) +
+                    ("move_nudges" to kotlinx.serialization.json.JsonArray(listOf(JsonPrimitive("Stand up and walk for a minute.")))),
+            ),
+        )
+    }
     private val file = fileWith(nudge)
 
     /** The nudge protocol without timed nudges (the movement tests). */

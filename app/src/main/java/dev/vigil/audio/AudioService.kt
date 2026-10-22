@@ -12,6 +12,8 @@ import android.media.MediaPlayer
 import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
+import android.os.PowerManager
+import android.os.Process
 import android.os.SystemClock
 import android.util.Log
 import dev.vigil.core.machine.Effect
@@ -44,6 +46,9 @@ class AudioService : Service() {
     private var player: MediaPlayer? = null
 
     private val noiseLimit = Runnable { ended("white noise stops after 8 hours") }
+
+    /** Keeps the CPU running while a sound plays with the screen locked (VIGIL's own thread writes the generated ones). */
+    private var wakeLock: PowerManager.WakeLock? = null
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -82,6 +87,7 @@ class AudioService : Service() {
         }
         handler.removeCallbacks(noiseLimit)
         if (sound == Effect.Audio.WHITE_NOISE) handler.postDelayed(noiseLimit, NOISE_MAX_MS)
+        holdAwake()
         _playing.value = Playing(sound, if (sound == Effect.Audio.METRONOME) bpm else null, loop)
         return START_NOT_STICKY
     }
@@ -98,6 +104,22 @@ class AudioService : Service() {
         stream = null
         player?.let { p -> runCatching { p.stop() }; runCatching { p.release() } }
         player = null
+        wakeLock?.let { runCatching { if (it.isHeld) it.release() } }
+        wakeLock = null
+    }
+
+    /** A partial wake lock for as long as a sound may play (released with the sound), so it goes on with the screen off. */
+    private fun holdAwake() {
+        if (wakeLock?.isHeld == true) return
+        wakeLock = try {
+            getSystemService(PowerManager::class.java)?.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "vigil:audio")?.also {
+                it.setReferenceCounted(false)
+                it.acquire(NOISE_MAX_MS + WAKE_EXTRA_MS)
+            }
+        } catch (e: RuntimeException) {
+            Log.w(TAG, "No wake lock for the audio: ${e.message}")
+            null
+        }
     }
 
     /** A file from [AudioFiles], again from the start when it ends with [loop]; otherwise its end is the end. */
@@ -160,6 +182,9 @@ class AudioService : Service() {
 
         /** White noise stops by itself after this long (it is for falling asleep). */
         const val NOISE_MAX_MS = 8 * 60 * 60_000L
+
+        /** The wake lock outlasts the longest white noise by this much (each PLAY that changes the sound renews it). */
+        private const val WAKE_EXTRA_MS = 10 * 60_000L
 
         private val _playing = MutableStateFlow<Playing?>(null)
 
@@ -238,6 +263,7 @@ private class ToneStream(private val noise: Boolean, @Volatile var bpm: Int, pri
     }
 
     private fun run() {
+        runCatching { Process.setThreadPriority(Process.THREAD_PRIORITY_AUDIO) }
         val track = try {
             val min = AudioTrack.getMinBufferSize(RATE, AudioFormat.CHANNEL_OUT_MONO, AudioFormat.ENCODING_PCM_16BIT)
             AudioTrack.Builder()
@@ -250,7 +276,7 @@ private class ToneStream(private val noise: Boolean, @Volatile var bpm: Int, pri
                         .build(),
                 )
                 .setTransferMode(AudioTrack.MODE_STREAM)
-                .setBufferSizeInBytes(max(min, RATE / 2))
+                .setBufferSizeInBytes(bufferBytes(min))
                 .build()
         } catch (e: RuntimeException) {
             Log.e(TAG, "Could not open the audio track", e)
@@ -258,11 +284,29 @@ private class ToneStream(private val noise: Boolean, @Volatile var bpm: Int, pri
             onFailed()
             return
         }
+        if (track.state != AudioTrack.STATE_INITIALIZED) {
+            Log.e(TAG, "The audio track did not initialise")
+            runCatching { track.release() }
+            running = false
+            onFailed()
+            return
+        }
         try {
             track.play()
             if (noise) noise(track) else clicks(track)
+            // The loops end on STOP, or when the output refuses the sound (a write error): that one is reported.
+            if (running) {
+                Log.e(TAG, "The audio output stopped taking the sound")
+                running = false
+                onFailed()
+            }
         } catch (e: RuntimeException) {
             Log.e(TAG, "The sound stopped", e)
+            // Not a STOP: the engine still thinks it plays, so it is told (the AUDIO screen then shows NOTHING PLAYS).
+            if (running) {
+                running = false
+                onFailed()
+            }
         } finally {
             runCatching { track.stop() }
             runCatching { track.release() }
@@ -277,8 +321,10 @@ private class ToneStream(private val noise: Boolean, @Volatile var bpm: Int, pri
         track.setVolume(0f)
         while (running) {
             for (i in buffer.indices) {
-                level = (level + 0.02 * (random.nextDouble() * 2 - 1)) / 1.02
-                buffer[i] = (level * 3.5 * NOISE_AMPLITUDE).coerceIn(-32767.0, 32767.0).toInt().toShort()
+                // White noise through a gentle one-pole low-pass (about 1.5 kHz): soft, but still in the range a phone
+                // speaker plays.
+                level += NOISE_SMOOTHING * ((random.nextDouble() * 2 - 1) - level)
+                buffer[i] = (level * NOISE_AMPLITUDE).coerceIn(-32767.0, 32767.0).toInt().toShort()
             }
             track.setVolume(min(1f, (SystemClock.elapsedRealtime() - started) / FADE_IN_MS.toFloat()) * NOISE_VOLUME)
             if (track.write(buffer, 0, buffer.size) < 0) break
@@ -308,7 +354,21 @@ private class ToneStream(private val noise: Boolean, @Volatile var bpm: Int, pri
         const val TAG = "VigilAudio"
         const val RATE = 22_050
         const val CHUNK = 2_048
-        const val NOISE_AMPLITUDE = 18_000.0
+
+        /** Half a second of 16-bit mono sound, in bytes (always a whole number of 2-byte frames). */
+        const val HALF_SECOND_BYTES = RATE * 2 / 2
+
+        /**
+         * The stream's buffer: at least the system's minimum ([min], an error code when negative) and half a second,
+         * rounded up to whole 16-bit frames. AudioTrack refuses a buffer that is not a whole number of frames.
+         */
+        fun bufferBytes(min: Int): Int {
+            val bytes = max(min, HALF_SECOND_BYTES)
+            return bytes + bytes % 2
+        }
+
+        const val NOISE_SMOOTHING = 0.35
+        const val NOISE_AMPLITUDE = 30_000.0
         const val NOISE_VOLUME = 0.8f
         const val FADE_IN_MS = 4_000L
         const val CLICK_MS = 30

@@ -74,7 +74,7 @@ fun MyTimesScreen(onSaved: () -> Unit) {
     Column(Modifier.fillMaxWidth()) {
         ScreenTitle(
             "MY TIMES",
-            "When you wake, eat, study and sleep. Protocols and free windows are placed on your day from these.",
+            "When you wake, eat, study and sleep. Protocols are placed on your day from these.",
         )
         AppliesNote(firstSave = !store.edited)
         if (store.pending != null) {
@@ -100,8 +100,7 @@ fun MyTimesScreen(onSaved: () -> Unit) {
         Section("WAKE", hint = wakeHint(draft), hintColor = errorColor(showErrors && problems.any { it.startsWith("Wake") }), initiallyOpen = true) {
             PixelText(
                 "Your wake time on each day (04:00 to 11:00). VIGIL's wake alarm rings then and the morning routine " +
-                    "starts when you hold I'M UP. The morning free window opens when the routine is done, at least an " +
-                    "hour after you got up.",
+                    "starts when you hold I'M UP. The pool stays blocked until the routine is done.",
                 Type.Small,
             )
             Spacer(Modifier.height(6.dp))

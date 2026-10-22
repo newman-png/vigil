@@ -23,6 +23,7 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.produceState
@@ -35,6 +36,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.unit.dp
 import dev.vigil.engine.WhitelistApp
+import dev.vigil.ui.components.holdProgress
 import dev.vigil.ui.theme.Palette
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
@@ -89,8 +91,9 @@ private fun TapWord(label: String, onTap: () -> Unit) {
 }
 
 /**
- * A word that must be held for [holdMs]; while held it shows only the seconds left. Releasing early resets it.
- * [onHolding] says when a hold starts and ends (also when the word goes away mid-hold).
+ * A word that must be held for [holdMs]; while held it shows only the seconds left over a red bar that grows to the
+ * end of the hold. Releasing early resets both. [onHolding] says when a hold starts and ends (also when the word goes
+ * away mid-hold).
  */
 @Composable
 private fun HoldWord(label: String, holdMs: Long, onComplete: () -> Unit, onHolding: (Boolean) -> Unit = {}) {
@@ -98,19 +101,26 @@ private fun HoldWord(label: String, holdMs: Long, onComplete: () -> Unit, onHold
     val holding by rememberUpdatedState(onHolding)
     var heldSince by remember { mutableLongStateOf(0L) }
     var secondsLeft by remember { mutableIntStateOf(0) }
+    var progress by remember { mutableFloatStateOf(0f) }
 
     LaunchedEffect(heldSince) {
         // This hold's start, read once: after an early release the state is already 0 before this loop is cancelled.
         val since = heldSince
-        if (since == 0L) return@LaunchedEffect
+        if (since == 0L) {
+            progress = 0f
+            return@LaunchedEffect
+        }
         while (heldSince == since) {
-            val remaining = holdMs - (SystemClock.uptimeMillis() - since)
+            val held = SystemClock.uptimeMillis() - since
+            val remaining = holdMs - held
             if (remaining <= 0) {
                 heldSince = 0L
+                progress = 0f
                 complete()
                 break
             }
             secondsLeft = ((remaining + 999) / 1000).toInt()
+            progress = held.toFloat() / holdMs
             delay(HOLD_POLL_MS)
         }
     }
@@ -122,6 +132,7 @@ private fun HoldWord(label: String, holdMs: Long, onComplete: () -> Unit, onHold
     val held = heldSince != 0L
     // The label always takes its space (invisible while held), so the target never shrinks under the finger
     // when the countdown replaces it; a press that slid off a shrinking target would cancel itself.
+    // While held, a red bar under the word grows to its full width at the end of the hold.
     Box(
         Modifier
             .pointerInput(Unit) {
@@ -135,7 +146,8 @@ private fun HoldWord(label: String, holdMs: Long, onComplete: () -> Unit, onHold
                     holding(false)
                 }
             }
-            .padding(horizontal = WORD_PAD, vertical = 14.dp),
+            .padding(horizontal = WORD_PAD, vertical = 14.dp)
+            .holdProgress({ progress }),
         contentAlignment = Alignment.Center,
     ) {
         TakeoverText(label, TakeoverType.Strip, color = if (held) Color.Transparent else TakeoverType.Faint)
@@ -206,5 +218,5 @@ internal fun AppsSheet(load: () -> List<WhitelistApp>, onOpen: (WhitelistApp) ->
 
 private const val NOT_OKAY_HOLD_MS = 3_000L
 private const val LEAVE_HOLD_MS = 10_000L
-private const val HOLD_POLL_MS = 50L
+private const val HOLD_POLL_MS = 30L
 private val WORD_PAD = 8.dp

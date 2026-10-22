@@ -58,15 +58,18 @@
         <package android:name="com.nothing.thirdparty" />
     </queries>
 
+    <!-- Auto backup of the state, journal, MY TIMES and settings (res/xml/backup_rules.xml and
+         data_extraction_rules.xml), so a reinstall restores progress. -->
     <application
         android:name=".VigilApp"
-        android:allowBackup="false"
+        android:allowBackup="true"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:fullBackupContent="@xml/backup_rules"
         android:icon="@mipmap/ic_launcher"
         android:label="@string/app_name"
         android:roundIcon="@mipmap/ic_launcher"
         android:supportsRtl="false"
-        android:theme="@style/Theme.Vigil"
-        tools:ignore="DataExtractionRules">
+        android:theme="@style/Theme.Vigil">
 
         <!-- Glyph SDK: "test" is Nothing's debug key; on Android 16 with targetSdk 36 no key is needed. -->
         <meta-data android:name="NothingKey" android:value="test" />

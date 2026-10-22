@@ -218,7 +218,8 @@ private fun baseItems(context: Context, requestNotifications: () -> Unit, reques
     return listOf(
         SetupItem(
             "GUARD (ACCESSIBILITY)",
-            "Required. The Guard keeps the pool apps closed outside your free windows and during locks. It only sees " +
+            "Required. The Guard keeps the pool apps closed during locks and once today's minutes are used, and opens " +
+                "takeovers full screen while you use the phone. It only sees " +
                 "which app is in front, never what is on the screen. Turn on \"VIGIL Guard\" under Accessibility (see " +
                 "RESTRICTED SETTINGS if it is greyed out).",
             Guard.accessibilityEnabled(context),

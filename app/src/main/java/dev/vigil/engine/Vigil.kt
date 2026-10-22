@@ -40,6 +40,7 @@ import dev.vigil.core.run.RunPhase
 import dev.vigil.core.timeline.TimelineItem
 import dev.vigil.core.times.MyTimes
 import dev.vigil.core.times.MyTimesStore
+import dev.vigil.guard.GuardService
 import dev.vigil.service.VigilService
 import dev.vigil.takeover.TakeoverActivity
 import dev.vigil.takeover.TakeoverLauncher
@@ -356,7 +357,7 @@ object Vigil {
     /** Today's planned starts with what happened to them and when each protocol last fired. */
     fun timeline(): List<TimelineItem> = Machine.timeline(state.value, Graph.env())
 
-    /** One line about the pool, e.g. "POOL BLOCKED · COOLDOWN UNTIL 14:20". */
+    /** One line about the pool, e.g. "POOL · 52 MIN LEFT TODAY". */
     fun poolStatus(): String = Machine.poolStatus(state.value, Graph.env())
 
     /** Everything the home screen shows, in one read. */
@@ -427,8 +428,11 @@ object Vigil {
     /** Opens the takeover of [runId], a run without a screen lock (the morning). Never over a call. */
     fun openTakeover(context: Context, runId: String) {
         if (Device.inCall(context)) return
+        val intent = TakeoverActivity.intent(context, runId)
+        // Through the Guard while it runs: it may start the takeover from the background (see TakeoverLauncher).
+        if (GuardService.startActivity(intent)) return
         try {
-            context.startActivity(TakeoverActivity.intent(context, runId))
+            context.startActivity(intent)
         } catch (e: RuntimeException) {
             Log.w(TAG, "Could not open the takeover of $runId: ${e.message}")
         }

@@ -3,8 +3,9 @@ package dev.vigil.core.machine
 import dev.vigil.core.journal.EntryType
 import dev.vigil.core.pool.BlockReason
 import dev.vigil.core.pool.PoolDecision
-import dev.vigil.core.protocol.BundledProtocols
-import dev.vigil.core.protocol.FreeWindowConfig
+import dev.vigil.core.pool.PoolRules
+import dev.vigil.core.pool.PoolSession
+import dev.vigil.core.pool.PoolState
 import dev.vigil.core.protocol.Lock
 import dev.vigil.core.protocol.LockType
 import dev.vigil.core.protocol.Prayer
@@ -17,7 +18,9 @@ import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.Instant
 
+/** v2.1: the pool is a daily budget of 90 minutes, a flat 1-minute wait before each open, and a break after 30 minutes in a row. */
 class PoolMachineTest {
     private val ig = "com.instagram.android"
     private val yt = "com.google.android.youtube"
@@ -31,10 +34,15 @@ class PoolMachineTest {
         afterSeconds(wait * 60L, Input.PoolWaitDone(app))
     }
 
-    private fun Sim.blocked(): PoolDecision.Blocked = decision() as PoolDecision.Blocked
+    /** Uses the pool for [minutes], then leaves it until the session is over. */
+    private fun Sim.use(minutes: Long) {
+        open()
+        after(minutes, Input.Foreground(home, false))
+        after(1)
+        assertNull(state.pool.session)
+    }
 
-    private fun windowsFile(vararg windows: FreeWindowConfig) =
-        M5_FILE.copy(pool = M5_FILE.pool.copy(windows = windows.toList()))
+    private fun Sim.blocked(): PoolDecision.Blocked = decision() as PoolDecision.Blocked
 
     @Test
     fun enteringThePoolAsksForTheWait() {
@@ -47,6 +55,7 @@ class PoolMachineTest {
         assertTrue(sim.last!!.effects.isEmpty())
         // A non-pool app is always allowed.
         assertEquals(PoolDecision.Allowed, sim.decision(isPool = false))
+        assertEquals("POOL · 90 MIN LEFT TODAY", Machine.poolStatus(sim.state, sim.env))
     }
 
     @Test
@@ -62,15 +71,16 @@ class PoolMachineTest {
         val open = sim.lastOf(EntryType.POOL_OPEN)!!
         assertEquals(ig, open.app)
         assertEquals(1, open.minutes)
-        assertEquals("open 1 today (morning window)", open.detail)
+        assertEquals("open 1 today (90 min left today)", open.detail)
         assertEquals(1, sim.state.pool.opens)
-        assertEquals("morning", sim.state.pool.session!!.windowId)
         assertEquals(PoolDecision.Allowed, sim.decision())
-        assertEquals("POOL IN USE · 0 MIN · MORNING 30 MIN LEFT", Machine.poolStatus(sim.state, sim.env))
+        assertEquals("POOL IN USE · 0 MIN · 90 MIN LEFT TODAY", Machine.poolStatus(sim.state, sim.env))
+        sim.after(12)
+        assertEquals("POOL IN USE · 12 MIN · 78 MIN LEFT TODAY", Machine.poolStatus(sim.state, sim.env))
     }
 
     @Test
-    fun sessionSurvivesAppSwitchesAndShortGapsThenEndsWithACooldown() {
+    fun sessionSurvivesAppSwitchesAndShortGapsAndNoCooldownFollows() {
         val sim = Sim()
         sim.now = rome("2026-10-19T08:30")
         sim.open()
@@ -91,19 +101,12 @@ class PoolMachineTest {
         assertEquals(360L, session.seconds)
         assertEquals(6, session.minutes)
         assertEquals(ig, session.app)
-        val cool = sim.lastOf(EntryType.COOLDOWN)!!
-        assertEquals(12, cool.minutes)
-        assertEquals("session", cool.reason)
-        // The cooldown counts from the moment the pool was left.
-        val left = rome("2026-10-19T08:37").plusSeconds(59)
-        assertEquals(left.plusSeconds(720), sim.state.pool.cooldownUntil)
-        assertEquals(360L, sim.state.pool.windowUsed["morning"])
         assertEquals(360L, sim.state.pool.usedSeconds)
-        assertEquals(BlockReason.COOLDOWN, sim.blocked().reason)
-        assertEquals("POOL BLOCKED · COOLDOWN UNTIL 08:49", Machine.poolStatus(sim.state, sim.env))
-        sim.at("2026-10-19T08:50", Input.Screen(on = true))
-        assertEquals(PoolDecision.Wait(2), sim.decision())
-        assertEquals("POOL OPEN · MORNING 24 MIN LEFT · WAIT 2 MIN", Machine.poolStatus(sim.state, sim.env))
+        // No cooldown: the next open only waits its minute.
+        assertTrue(sim.of(EntryType.COOLDOWN).isEmpty())
+        sim.step(Input.Screen(on = true))
+        assertEquals(PoolDecision.Wait(1), sim.decision())
+        assertEquals("POOL · 84 MIN LEFT TODAY", Machine.poolStatus(sim.state, sim.env))
     }
 
     @Test
@@ -123,97 +126,79 @@ class PoolMachineTest {
     }
 
     @Test
-    fun outsideEveryWindowIsBlockedAndLogged() {
+    fun thePoolOpensAtAnyTimeNothingBlocksIt() {
         val sim = Sim(file = PRAYERS_ONLY)
-        // Yesterday's Dhuhr puts today's estimate at 12:30, where the morning window closes ("next").
-        sim.state = sim.state.copy(prayers = sim.state.prayers.copy(lastAdhan = mapOf(Prayer.DHUHR to rome("2026-10-18T12:30"))))
-        val windows = Machine.windows(sim.state, sim.env)
-        assertEquals(rome("2026-10-19T08:00"), windows[0].opensAt)
-        assertEquals(rome("2026-10-19T12:30"), windows[0].closesAt)
-        assertEquals(rome("2026-10-19T20:15"), windows[1].opensAt)
-        assertEquals(rome("2026-10-19T22:00"), windows[1].closesAt)
-        sim.at("2026-10-19T13:00", Input.Foreground(ig, true))
-        val gate = sim.lastEffects<Effect.PoolGate>().single()
-        assertEquals(BlockReason.OUTSIDE_WINDOW, (gate.decision as PoolDecision.Blocked).reason)
-        val e = sim.lastOf(EntryType.POOL_BLOCKED)!!
-        assertEquals("outside_window", e.reason)
-        assertEquals("2026-10-19T20:15:00+02:00", e.until)
-        assertEquals(ig, e.app)
-        assertEquals("POOL CLOSED · NO FREE WINDOW · NEXT WINDOW 20:15", Machine.poolStatus(sim.state, sim.env))
-        sim.at("2026-10-19T22:00")
-        assertEquals("POOL CLOSED · NO FREE WINDOW · NO MORE WINDOWS TODAY", Machine.poolStatus(sim.state, sim.env))
+        for (t in listOf("2026-10-19T08:10", "2026-10-19T13:00", "2026-10-19T17:45", "2026-10-19T21:30")) {
+            sim.at(t)
+            assertEquals(t, PoolDecision.Wait(1), sim.decision())
+        }
+        // Every open waits the same minute, however many came before.
+        sim.now = rome("2026-10-19T14:00")
+        repeat(4) { sim.use(2) }
+        assertEquals(4, sim.state.pool.opens)
+        assertEquals(PoolDecision.Wait(1), sim.decision())
     }
 
     @Test
-    fun windowCapReachedMidSessionKicks() {
-        val sim = Sim(file = windowsFile(FreeWindowConfig("w", "08:00", "12:00", 5)))
+    fun theDailyBudgetRunsOutAndClosesTheApp() {
+        val sim = Sim()
         sim.now = rome("2026-10-19T08:30")
-        sim.open()
-        assertEquals(rome("2026-10-19T08:36"), Machine.nextWake(sim.state, sim.env))
-        sim.after(4)
+        repeat(3) { sim.use(25) }
+        assertEquals(75 * 60L, sim.state.pool.usedSeconds)
+        assertEquals("POOL · 15 MIN LEFT TODAY", Machine.poolStatus(sim.state, sim.env))
+        sim.open() // 09:51, wait until 09:52
+        assertEquals(rome("2026-10-19T10:07"), Machine.nextWake(sim.state, sim.env))
+        sim.after(14)
         assertNotNull(sim.state.pool.session)
         sim.after(1)
         assertNull(sim.state.pool.session)
-        assertEquals(listOf(Effect.Kick(ig, BlockReason.WINDOW_CAP)), sim.lastEffects<Effect.Kick>())
+        assertEquals(listOf(Effect.Kick(ig, BlockReason.BUDGET)), sim.lastEffects<Effect.Kick>())
         val b = sim.lastOf(EntryType.POOL_BLOCKED)!!
-        assertEquals("window_cap", b.reason)
-        assertTrue(b.detail!!.startsWith("session ended"))
-        assertEquals(300L, sim.lastOf(EntryType.POOL_SESSION)!!.seconds)
-        assertEquals(BlockReason.WINDOW_CAP, sim.blocked().reason)
+        assertEquals("budget", b.reason)
+        assertEquals("session ended: TODAY'S 90 MINUTES ARE USED", b.detail)
+        assertEquals(900L, sim.lastOf(EntryType.POOL_SESSION)!!.seconds)
+        assertEquals(90 * 60L, sim.state.pool.usedSeconds)
+        assertEquals(BlockReason.BUDGET, sim.blocked().reason)
+        assertNull(sim.blocked().until)
+        assertEquals("POOL BLOCKED · TODAY'S 90 MINUTES ARE USED", Machine.poolStatus(sim.state, sim.env))
+        // Coming back is refused at once, all day.
+        sim.after(3, Input.Foreground(home, false))
+        sim.step(Input.Foreground(ig, true))
+        assertEquals(BlockReason.BUDGET, (sim.lastEffects<Effect.PoolGate>().single().decision as PoolDecision.Blocked).reason)
+        sim.at("2026-10-19T21:00")
+        assertEquals(BlockReason.BUDGET, sim.blocked().reason)
+        // A new day has its 90 minutes again.
+        sim.at("2026-10-19T23:40", Input.GoingToSleep())
+        assertEquals(0L, sim.state.pool.usedSeconds)
+        assertEquals(90 * 60L, PoolRules.leftSeconds(sim.file.pool, sim.state.pool, sim.now))
+        assertTrue(sim.blocked().blocks.none { it.reason == BlockReason.BUDGET })
     }
 
     @Test
-    fun windowClosingMidSessionKicks() {
-        val sim = Sim(file = windowsFile(FreeWindowConfig("w", "08:00", "09:00", 30)))
-        sim.now = rome("2026-10-19T08:54")
-        sim.open()
-        sim.at("2026-10-19T09:00")
-        assertEquals(listOf(Effect.Kick(ig, BlockReason.OUTSIDE_WINDOW)), sim.lastEffects<Effect.Kick>())
-        assertEquals(10, sim.lastOf(EntryType.COOLDOWN)!!.minutes)
-    }
-
-    @Test
-    fun noWaitThatWouldOutlastTheWindow() {
-        val sim = Sim(file = windowsFile(FreeWindowConfig("w", "08:00", "09:00", 30)))
-        sim.state = sim.state.copy(pool = sim.state.pool.copy(opens = 4))
-        // A 5-minute wait from 08:50 ends at 08:55, inside the window: it opens, even though another 5-minute wait
-        // would no longer fit when it ends.
-        sim.at("2026-10-19T08:50", Input.Foreground(ig, true))
-        assertEquals(listOf(Effect.PoolGate(ig, PoolDecision.Wait(5))), sim.lastEffects<Effect.PoolGate>())
-        sim.step(Input.PoolWaitStarted(ig))
-        sim.after(5, Input.PoolWaitDone(ig))
-        assertNotNull(sim.state.pool.session)
-        assertEquals("open 5 today (w window)", sim.lastOf(EntryType.POOL_OPEN)!!.detail)
-        sim.after(1, Input.Foreground(home, false)) // a minute used: cooldown until 08:58
-        // At 08:58 the next wait (6 minutes) would end after 09:00: refused at once instead of waited for in vain.
-        sim.at("2026-10-19T08:58", Input.Foreground(ig, true))
-        val gate = sim.lastEffects<Effect.PoolGate>().single().decision as PoolDecision.Blocked
-        assertEquals(BlockReason.OUTSIDE_WINDOW, gate.reason)
-        assertEquals("POOL CLOSED · NO FREE WINDOW · NO MORE WINDOWS TODAY", Machine.poolStatus(sim.state, sim.env))
-    }
-
-    @Test
-    fun tenContinuousMinutesIsHeavyUse() {
+    fun thirtyContinuousMinutesIsEnoughForNowAndABreak() {
         val sim = Sim()
         sim.now = rome("2026-10-19T08:30")
         sim.open()
-        assertEquals(rome("2026-10-19T08:41"), Machine.nextWake(sim.state, sim.env))
-        sim.after(9)
+        assertEquals(rome("2026-10-19T09:01"), Machine.nextWake(sim.state, sim.env))
+        sim.after(29)
         assertNotNull(sim.state.pool.session)
         sim.after(1)
         assertNull(sim.state.pool.session)
         val h = sim.lastOf(EntryType.HEAVY_USE)!!
         assertEquals("continuous", h.reason)
-        assertEquals(10, h.minutes)
+        assertEquals(30, h.minutes)
         assertEquals(listOf(Effect.Kick(ig, BlockReason.HEAVY_USE)), sim.lastEffects<Effect.Kick>())
-        val cool = sim.lastOf(EntryType.COOLDOWN)!!
-        assertEquals("heavy_use", cool.reason)
-        assertEquals(20, cool.minutes)
-        assertEquals(1, sim.of(EntryType.COOLDOWN).size)
+        val rest = sim.lastOf(EntryType.COOLDOWN)!!
+        assertEquals("heavy_use", rest.reason)
+        assertEquals(15, rest.minutes)
         val b = sim.blocked()
         assertEquals(BlockReason.HEAVY_USE, b.reason)
-        assertEquals(rome("2026-10-19T09:01"), b.until)
-        assertEquals("POOL BLOCKED · HEAVY USE UNTIL 09:01", Machine.poolStatus(sim.state, sim.env))
+        assertEquals(rome("2026-10-19T09:16"), b.until)
+        assertEquals("POOL BLOCKED · ENOUGH FOR NOW UNTIL 09:16", Machine.poolStatus(sim.state, sim.env))
+        assertEquals(30 * 60L, sim.state.pool.usedSeconds)
+        sim.at("2026-10-19T09:16")
+        assertEquals(PoolDecision.Wait(1), sim.decision())
+        assertEquals("POOL · 60 MIN LEFT TODAY", Machine.poolStatus(sim.state, sim.env))
     }
 
     @Test
@@ -221,45 +206,16 @@ class PoolMachineTest {
         val sim = Sim()
         sim.now = rome("2026-10-19T08:30")
         sim.open()
-        sim.after(5, Input.Foreground(home, false))
+        sim.after(15, Input.Foreground(home, false))
         sim.afterSeconds(30, Input.Foreground(ig, true))
-        sim.after(5)
+        sim.after(15)
         assertEquals("continuous", sim.lastOf(EntryType.HEAVY_USE)!!.reason)
-    }
-
-    @Test
-    fun thirdOpenWithinThirtyMinutesIsHeavyUse() {
-        val sim = Sim()
-        sim.now = rome("2026-10-19T08:00")
-        sim.open() // opens at 08:01
-        sim.after(1, Input.Foreground(home, false))
-        sim.after(1) // gap over: session ended at 08:02, cooldown 2 min
-        assertEquals(rome("2026-10-19T08:04"), sim.state.pool.cooldownUntil)
-        sim.at("2026-10-19T08:04")
-        sim.step(Input.Foreground(home, false))
-        sim.open() // 2-minute wait: opens at 08:06
-        sim.after(1, Input.Foreground(home, false))
-        sim.after(1)
-        sim.at("2026-10-19T08:09")
-        sim.open() // 3-minute wait: opens at 08:12, the third open in 11 minutes
-        val h = sim.lastOf(EntryType.HEAVY_USE)!!
-        assertEquals("opens", h.reason)
-        assertEquals(2, h.minutes)
-        assertNull(sim.state.pool.session)
-        assertEquals(listOf(Effect.Kick(ig, BlockReason.HEAVY_USE)), sim.lastEffects<Effect.Kick>())
-        // 2 x the 2 minutes used in the last 30 would end at 08:16, but any open before 08:36 (when the 08:06 open
-        // leaves the span) would be the third within 30 minutes again: kicked the moment its wait ended. So the pool
-        // stays shut, as HEAVY USE, until 08:36.
-        assertEquals(rome("2026-10-19T08:36"), sim.state.pool.cooldownUntil)
-        assertEquals(3, sim.state.pool.opens)
-        sim.at("2026-10-19T08:20")
-        val b = sim.blocked()
-        assertEquals(BlockReason.HEAVY_USE, b.reason)
-        assertEquals(rome("2026-10-19T08:36"), b.until)
-        sim.at("2026-10-19T08:36")
-        sim.open() // 4-minute wait: opens at 08:40, only the second open within 30 minutes
-        assertNotNull(sim.state.pool.session)
-        assertEquals(1, sim.of(EntryType.HEAVY_USE).size)
+        // Many short sessions are not heavy use: only the budget counts them.
+        val many = Sim()
+        many.now = rome("2026-10-19T08:30")
+        repeat(5) { many.use(10) }
+        assertTrue(many.of(EntryType.HEAVY_USE).isEmpty())
+        assertEquals(50 * 60L, many.state.pool.usedSeconds)
     }
 
     @Test
@@ -301,6 +257,53 @@ class PoolMachineTest {
     }
 
     @Test
+    fun aCallNeverOpensAPoolThatWasBlocked() {
+        // A pool lock of 10 minutes from 08:00; a call from 08:05 to 08:25 pauses it (it then ends at 08:30).
+        val sim = Sim(file = fileWith(testProtocol("study", lock = Lock(LockType.POOL, 10, null))))
+        sim.step(Input.Manual("study"))
+        sim.at("2026-10-19T08:05", Input.CallActive(true))
+        assertEquals(BlockReason.RUN_LOCK, sim.blocked().reason)
+        // Past the lock's own end, still in the call: still blocked, and a pool app is refused.
+        sim.at("2026-10-19T08:20")
+        assertEquals(BlockReason.RUN_LOCK, sim.blocked().reason)
+        sim.step(Input.Foreground(ig, true))
+        assertEquals(BlockReason.RUN_LOCK, (sim.lastEffects<Effect.PoolGate>().single().decision as PoolDecision.Blocked).reason)
+        assertEquals("run_lock", sim.lastOf(EntryType.POOL_BLOCKED)!!.reason)
+        sim.step(Input.Foreground(home, false))
+        sim.at("2026-10-19T08:25", Input.CallActive(false))
+        sim.at("2026-10-19T08:29")
+        assertEquals(BlockReason.RUN_LOCK, sim.blocked().reason)
+        sim.at("2026-10-19T08:31")
+        assertEquals(PoolDecision.Wait(1), sim.decision())
+
+        // The switches, a penalty and a used-up budget hold through a call just the same.
+        val friends = Sim()
+        friends.step(Input.Toggle(ToggleName.FRIENDS, true))
+        friends.after(1, Input.CallActive(true))
+        friends.after(30)
+        assertEquals(BlockReason.FRIENDS, friends.blocked().reason)
+        val bailed = Sim(file = fileWith(testProtocol("alpha")))
+        bailed.step(Input.Manual("alpha"))
+        bailed.after(1, Input.BailOut(bailed.runId("alpha")))
+        bailed.after(1, Input.CallActive(true))
+        bailed.after(20)
+        assertEquals(BlockReason.PENALTY, bailed.blocked().reason)
+        val spent = Sim()
+        spent.state = spent.state.copy(pool = spent.state.pool.copy(usedSeconds = 90 * 60L))
+        spent.after(1, Input.CallActive(true))
+        assertEquals(BlockReason.BUDGET, spent.blocked().reason)
+
+        // A lock that starts during a call closes a live session as usual.
+        val live = Sim(file = fileWith(testProtocol("study", lock = Lock(LockType.POOL, 10, null))))
+        live.now = rome("2026-10-19T08:30")
+        live.open()
+        live.after(2, Input.CallActive(true))
+        live.after(1, Input.Manual("study"))
+        assertNull(live.state.pool.session)
+        assertEquals(listOf(Effect.Kick(ig, BlockReason.RUN_LOCK)), live.lastEffects<Effect.Kick>())
+    }
+
+    @Test
     fun friendsAndWalkingBlock() {
         val sim = Sim()
         sim.step(Input.Toggle(ToggleName.FRIENDS, true))
@@ -324,6 +327,7 @@ class PoolMachineTest {
         assertEquals(listOf(120, 120, 120, 0), sim.of(EntryType.PENALTY).map { it.minutes })
         assertEquals(rome("2026-10-19T14:01"), sim.state.pool.penaltyUntil)
         assertEquals(BlockReason.PENALTY, sim.blocked().reason)
+        assertEquals("POOL BLOCKED · BAIL-OUT PENALTY UNTIL 14:01", Machine.poolStatus(sim.state, sim.env))
         assertEquals(4, sim.of(EntryType.BAILED).size)
     }
 
@@ -343,7 +347,7 @@ class PoolMachineTest {
 
     @Test
     fun aSessionAliveAtGoingToSleepCountsForThatDay() {
-        val sim = Sim(file = windowsFile(FreeWindowConfig("evening", "20:00", "23:00", 30)))
+        val sim = Sim()
         sim.now = rome("2026-10-19T22:00")
         sim.open() // from 22:01
         sim.after(4, Input.Foreground("dev.vigil", false)) // 4 minutes used; the 60-second gap starts at 22:05
@@ -352,27 +356,28 @@ class PoolMachineTest {
         val types = sim.types()
         assertTrue(types.lastIndexOf(EntryType.POOL_SESSION) < types.lastIndexOf(EntryType.DAY_END))
         assertEquals(240L, sim.lastOf(EntryType.POOL_SESSION)!!.seconds)
-        // The new day's evening window starts untouched; the cooldown (from 22:05) still runs.
+        // The new day starts with its whole budget.
         sim.after(1)
-        assertTrue(sim.state.pool.windowUsed.isEmpty())
         assertEquals(0L, sim.state.pool.usedSeconds)
-        assertEquals(rome("2026-10-19T22:13"), sim.state.pool.cooldownUntil)
     }
 
     @Test
-    fun aSessionInTheAppAtTheDayEndIsClosed() {
-        // A window that is open until the day's latest end (04:00 is the night after the day).
-        val sim = Sim(file = windowsFile(FreeWindowConfig("night", "04:00", "next", 30)))
+    fun aSessionInTheAppAtTheDayEndGoesOnIntoTheNewDay() {
+        val sim = Sim()
         sim.now = rome("2026-10-20T05:50")
         sim.open() // from 05:51
         sim.at("2026-10-20T06:00")
         assertEquals("2026-10-20", sim.state.day!!.key)
-        assertNull(sim.state.pool.session)
-        assertEquals(listOf(Effect.Kick(ig, BlockReason.OUTSIDE_WINDOW)), sim.lastEffects<Effect.Kick>())
-        assertEquals("session ended: the day ended", sim.lastOf(EntryType.POOL_BLOCKED)!!.detail)
-        assertEquals(540L, sim.lastOf(EntryType.POOL_SESSION)!!.seconds)
+        // Its 9 minutes count for the day that ended; the session itself goes on, counted for the new day.
+        val ended = sim.lastOf(EntryType.POOL_SESSION)!!
+        assertEquals(540L, ended.seconds)
+        assertEquals("the day ended; the session goes on", ended.detail)
         assertTrue(sim.types().lastIndexOf(EntryType.POOL_SESSION) < sim.types().lastIndexOf(EntryType.DAY_END))
-        assertTrue(sim.state.pool.windowUsed.isEmpty())
+        assertTrue(sim.lastEffects<Effect.Kick>().isEmpty())
+        assertNotNull(sim.state.pool.session)
+        assertEquals(0L, sim.state.pool.usedSeconds)
+        sim.after(5)
+        assertEquals(300L, sim.state.pool.usedToday(sim.now))
     }
 
     @Test
@@ -407,7 +412,6 @@ class PoolMachineTest {
         sim.after(8, Input.Suspend(60))
         assertNull(sim.state.pool.session)
         assertEquals(480L, sim.lastOf(EntryType.POOL_SESSION)!!.seconds)
-        assertEquals(rome("2026-10-19T08:55"), sim.state.pool.cooldownUntil)
         // Scrolling on while suspended counts for nothing ...
         sim.after(1, Input.Foreground(ig, true))
         assertTrue(sim.last!!.effects.isEmpty())
@@ -415,8 +419,8 @@ class PoolMachineTest {
         sim.at("2026-10-19T09:39")
         assertTrue(sim.of(EntryType.HEAVY_USE).isEmpty())
         assertTrue(sim.lastEffects<Effect.Kick>().isEmpty())
-        assertEquals(listOf(Effect.PoolGate(ig, PoolDecision.Wait(2))), sim.lastEffects<Effect.PoolGate>())
-        assertEquals(480L, sim.state.pool.windowUsed["morning"])
+        assertEquals(listOf(Effect.PoolGate(ig, PoolDecision.Wait(1))), sim.lastEffects<Effect.PoolGate>())
+        assertEquals(480L, sim.state.pool.usedSeconds)
     }
 
     @Test
@@ -453,9 +457,35 @@ class PoolMachineTest {
         sim.after(2, Input.Foreground(home, false))
         sim.after(2)
         assertEquals(1, sim.state.pool.opens)
+        assertEquals(120L, sim.state.pool.usedSeconds)
         sim.at("2026-10-19T23:30", Input.GoingToSleep())
         assertEquals(0, sim.state.pool.opens)
         assertEquals(0L, sim.state.pool.usedSeconds)
-        assertTrue(sim.state.pool.windowUsed.isEmpty())
+    }
+
+    @Test
+    fun aPoolStateSavedByV20StillReads() {
+        // v2.0 kept free-window minutes, open times, recent use and cooldowns; v2.1 reads what it still needs.
+        val old = """
+            {"version":1,"pool":{"opens":2,"openTimes":["2026-10-19T06:30:00Z"],"usedSeconds":1200,
+            "windowUsed":{"morning":1200},"recentUse":[{"at":"2026-10-19T06:31:00Z","seconds":600}],
+            "penaltyMinutesToday":120,"penaltyUntil":"2026-10-19T09:00:00Z","cooldownUntil":"2026-10-19T07:00:00Z",
+            "cooldownCause":"session","wait":null,"session":{"startedAt":"2026-10-19T06:40:00Z","windowId":"morning",
+            "app":"com.instagram.android","usedSeconds":120,"inSince":null,"leftAt":"2026-10-19T06:42:00Z"}}}
+        """.trimIndent()
+        val pool = MachineState.decode(old).pool
+        assertEquals(
+            PoolState(
+                opens = 2, usedSeconds = 1200, penaltyMinutesToday = 120, penaltyUntil = Instant.parse("2026-10-19T09:00:00Z"),
+                session = PoolSession(
+                    Instant.parse("2026-10-19T06:40:00Z"), "com.instagram.android", usedSeconds = 120, inSince = null,
+                    leftAt = Instant.parse("2026-10-19T06:42:00Z"),
+                ),
+            ),
+            pool,
+        )
+        // It keeps working: the old session ends after its gap with its 2 minutes.
+        val o = Machine.step(MachineState.decode(old), Input.Tick, MachineEnv(rome("2026-10-19T08:50"), ROME, M5_FILE))
+        assertNull(o.state.pool.session)
     }
 }

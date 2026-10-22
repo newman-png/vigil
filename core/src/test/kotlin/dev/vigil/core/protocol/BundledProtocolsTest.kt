@@ -27,23 +27,16 @@ class BundledProtocolsTest {
             listOf(
                 "com.zhiliaoapp.musically", "com.ss.android.ugc.trill", "com.facebook.katana", "com.facebook.lite",
                 "com.google.android.youtube", "com.instagram.android", "com.pinterest", "com.brave.browser",
+                "com.reddit.frontpage",
             ),
             pool.apps,
         )
         assertTrue(pool.allBrowsers)
-        assertEquals(1, pool.waitStepMin)
-        assertEquals(10, pool.waitCapMin)
-        assertEquals(2.0, pool.cooldownFactor, 0.0)
-        assertEquals(60, pool.cooldownCapMin)
+        // v2.1: 90 minutes a day at any time nothing blocks it, a 1-minute wait, a 15-minute break after 30 in a row.
+        assertEquals(90, pool.dailyBudgetMin)
+        assertEquals(1, pool.waitMin)
         assertEquals(60, pool.sessionGapS)
-        assertEquals(
-            listOf(
-                FreeWindowConfig("morning", "max(done:morning|woke+60,woke+60)", "next", 30),
-                FreeWindowConfig("evening", "done:dinner|meal:dinner+45", "start:sleep|bedtime-60", 30),
-            ),
-            pool.windows,
-        )
-        assertEquals(HeavyUseConfig(10, 3, 30), pool.heavyUse)
+        assertEquals(HeavyUseConfig(30, 15), pool.heavyUse)
         assertEquals(BailOutConfig(120, 360), pool.bailOut)
     }
 
@@ -52,9 +45,10 @@ class BundledProtocolsTest {
         assertEquals(2, file.version)
         assertEquals(
             listOf(
-                AppsButtonEntry(role = "dialer"), AppsButtonEntry(role = "adhan"), AppsButtonEntry(role = "clock"),
-                AppsButtonEntry(packageName = "com.google.android.apps.maps"), AppsButtonEntry(packageName = "com.whatsapp"),
-                AppsButtonEntry(labelContains = "PoliTO"),
+                AppsButtonEntry(role = "dialer"), AppsButtonEntry(role = "adhan"), AppsButtonEntry(labelContains = "Prayer"),
+                AppsButtonEntry(role = "clock"), AppsButtonEntry(packageName = "com.google.android.apps.maps"),
+                AppsButtonEntry(packageName = "com.whatsapp"), AppsButtonEntry(labelContains = "PoliTO"),
+                AppsButtonEntry(packageName = "com.google.android.keep"), AppsButtonEntry(labelContains = "Calculator"),
             ),
             file.appsButton,
         )
@@ -254,8 +248,6 @@ class BundledProtocolsTest {
         }
         // No breakfast protocol: the morning routine has its breakfast step.
         assertTrue(file.protocols.none { (it.parsedTrigger as? Trigger.Slot)?.label == "breakfast" })
-        // The evening window opens when dinner is done.
-        assertTrue(file.pool.windows.single { it.id == "evening" }.opens.startsWith("done:dinner|"))
     }
 
     @Test

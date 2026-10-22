@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 12 and later: what auto backup (cloud) and a device-to-device transfer take along. The same files as
+     backup_rules.xml: VIGIL's state, journal, MY TIMES and settings; never the cache (EXPORT) or the added audio files. -->
+<data-extraction-rules>
+    <cloud-backup>
+        <include domain="file" path="state/" />
+        <include domain="file" path="journal/" />
+        <include domain="sharedpref" path="settings.xml" />
+    </cloud-backup>
+    <device-transfer>
+        <include domain="file" path="state/" />
+        <include domain="file" path="journal/" />
+        <include domain="sharedpref" path="settings.xml" />
+    </device-transfer>
+</data-extraction-rules>

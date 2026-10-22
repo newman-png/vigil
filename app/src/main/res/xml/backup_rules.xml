@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android auto backup (Android 11 and older; data_extraction_rules.xml is the same for 12 and later): VIGIL's state,
+     journal, MY TIMES and settings, so reinstalling restores progress. Only what is listed is backed up: never the
+     cache (the EXPORT files) and not the audio files you added (they can be large). -->
+<full-backup-content>
+    <!-- state/machine.json (the engine: days, stages, the pool) and state/my_times.json (MY TIMES). -->
+    <include domain="file" path="state/" />
+    <!-- journal/journal.jsonl: every event, for the report. -->
+    <include domain="file" path="journal/" />
+    <!-- The settings: adhan app, takeover switches, metronome speed. -->
+    <include domain="sharedpref" path="settings.xml" />
+</full-backup-content>

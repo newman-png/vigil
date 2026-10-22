@@ -76,13 +76,12 @@ class DayTest {
         sim.at("2026-10-20T05:30")
         assertEquals("the 20th is not ended (and skipped) in its own night", "2026-10-20", sim.state.day!!.key)
         assertEquals(1, sim.of(EntryType.DAY_END).size)
-        // Nor does that start arm the idle rule for the day, or close the evening window at 03:00.
+        // Nor does that start arm the idle rule for the day.
         sim.at("2026-10-20T07:30", Input.Screen(on = true))
         sim.at("2026-10-20T14:00", Input.Screen(on = false))
         sim.at("2026-10-20T16:30")
         assertEquals("2026-10-20", sim.state.day!!.key)
         // Tonight's target: 00:30 last night, GOING TO SLEEP before it, so 20 minutes earlier: wind-down at 23:10.
-        assertEquals(rome("2026-10-20T23:10"), Machine.windows(sim.state, sim.env)[1].closesAt)
         // Tonight's wind-down is the evening start.
         sim.at("2026-10-20T21:00", Input.Screen(on = true))
         sim.at("2026-10-20T23:10")

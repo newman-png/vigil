@@ -27,11 +27,13 @@ import java.lang.ref.WeakReference
  * screen (canRetrieveWindowContent is off). Every change of the app in front goes to the engine
  * ([Vigil.onForeground]); when a pool app comes to the front the Guard asks the engine ([Vigil.poolDecision]) and
  * does what it says: nothing, the wait screen, or home plus the blocked screen ([BlockActivity]). The engine's Kick (a
- * session that ended: heavy use, a window that closed, a lock that began) closes the pool app the same way. The Guard
- * decides nothing itself.
+ * session that ended: heavy use, the day's budget used up, a lock that began) closes the pool app the same way. The
+ * Guard decides nothing itself.
  *
  * Safety rules, kept from v1.1:
- *  - calls are never blocked: nothing happens during a call (ringing included); it looks again once the call is over;
+ *  - calls are never blocked: nothing happens while the phone rings, the phone, dialer and call apps are never closed,
+ *    and neither is the app a call runs in (a pool app can host a video call: [Device.callOwners]). A connected call
+ *    does not open the pool, though (v2.1): another pool app opened during a call is closed as usual;
  *  - never over the phone, dialer or a call app (pool apps never are);
  *  - nothing on a locked or dark phone: it never wakes the screen and never covers the lock screen's emergency button;
  *  - VIGIL's own screens (home, the takeover) are never closed, and they never count as an app.
@@ -318,8 +320,9 @@ class GuardService : AccessibilityService() {
      */
     private fun enforce(pkg: String, kicked: BlockReason? = null) {
         if (!Device.isPresent(this) || !isPool(pkg) || Device.isCallApp(this, pkg)) return
-        if (Device.inCall(this)) {
-            // Calls are never blocked: look again once the call is over.
+        if (Device.ringing(this) || pkg in Device.callOwners()) {
+            // Calls are never blocked: nothing while the phone rings, and never the app the call runs in. Look again
+            // once that is over. (A connected call does not open the pool: other pool apps are judged as usual.)
             recheckIn(CALL_RECHECK_MS)
             return
         }
@@ -339,8 +342,8 @@ class GuardService : AccessibilityService() {
     private fun checkGate() {
         val pkg = gated ?: return
         gated = null
-        if (BlockActivity.inFront || pkg != current || !Device.isPresent(this) || Device.inCall(this)) return
-        if (Vigil.poolDecision(pkg) is PoolDecision.Allowed) return
+        if (BlockActivity.inFront || pkg != current || !Device.isPresent(this) || Device.ringing(this)) return
+        if (pkg in Device.callOwners() || Vigil.poolDecision(pkg) is PoolDecision.Allowed) return
         Log.w(TAG, "The wait screen for $pkg did not appear; going home")
         goHome()
     }
@@ -351,7 +354,8 @@ class GuardService : AccessibilityService() {
      */
     private fun close(pkg: String, heavy: Boolean, fromKick: Boolean) {
         val run = Vigil.activeRun()
-        if (!heavy && run != null && (fromKick || Machine.reasserts(run))) {
+        // During a call the takeover stays away (TakeoverLauncher), so it would never cover the app: close it here.
+        if (!heavy && run != null && !Device.inCall(this) && (fromKick || Machine.reasserts(run))) {
             // A run owns the screen: its takeover is coming up (a new run) or comes back over the pool app by itself
             // (stage 1, TakeoverLauncher), and a home press now would only hide it again. Make sure it did.
             leftToTakeover = pkg
@@ -377,8 +381,9 @@ class GuardService : AccessibilityService() {
         val p = pending ?: return
         pending = null
         handler.removeCallbacks(showPending)
-        // Not over a call, and not over VIGIL's own screens (the takeover explains itself).
-        if (!Device.isPresent(this) || Device.inCall(this) || current == OWN || Device.isCallApp(this, current)) return
+        // Not over a ringing phone or a call's own app, and not over VIGIL's own screens (the takeover explains itself).
+        if (!Device.isPresent(this) || Device.ringing(this) || current == OWN || Device.isCallApp(this, current)) return
+        if (current in Device.callOwners()) return
         GuardScreens.showBlocked(this, p.app, p.heavy)
     }
 
@@ -387,8 +392,8 @@ class GuardService : AccessibilityService() {
         val pkg = leftToTakeover ?: return
         leftToTakeover = null
         // Once the takeover is up, its window made VIGIL the app in front.
-        if (pkg != current || TakeoverLauncher.visible || !Device.isPresent(this) || Device.inCall(this)) return
-        if (Vigil.poolDecision(pkg) !is PoolDecision.Blocked) return
+        if (pkg != current || TakeoverLauncher.visible || !Device.isPresent(this) || Device.ringing(this)) return
+        if (pkg in Device.callOwners() || Vigil.poolDecision(pkg) !is PoolDecision.Blocked) return
         goHomeThenShow(pkg, heavy = false)
     }
 
@@ -507,6 +512,24 @@ class GuardService : AccessibilityService() {
          */
         internal fun recheckSoon() {
             instance.get()?.recheckIn(RECHECK_MS)
+        }
+
+        /**
+         * Starts [intent] from the Guard's own context while it runs. Android lets an app whose accessibility service is
+         * connected start activities from the background, so a takeover gets the whole screen on a phone in use, where
+         * a full-screen intent is only shown as a heads-up banner. False when the Guard is not running or the system
+         * refused: the caller then uses its usual way (the notification). Callers keep their own safety rules (never
+         * during a call, never over the dialer); this only says how the activity is started.
+         */
+        fun startActivity(intent: Intent): Boolean {
+            val guard = instance.get()?.takeIf { connected } ?: return false
+            return try {
+                guard.startActivity(Intent(intent).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
+                true
+            } catch (e: RuntimeException) {
+                Log.w(TAG, "The Guard could not start ${intent.component?.shortClassName}: ${e.message}")
+                false
+            }
         }
     }
 }

@@ -20,6 +20,7 @@ import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -28,6 +29,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -57,6 +59,29 @@ fun Modifier.scanlines(alpha: Float = 0.22f): Modifier = drawWithContent {
         y += step
     }
 }
+
+/**
+ * A hold's progress (0 to 1, read while drawing) behind the content: a bar along the bottom that grows from the left,
+ * or with [fill] the whole area filling from the left. Nothing at 0, so it is gone the moment the hold is let go.
+ */
+fun Modifier.holdProgress(progress: () -> Float, color: Color = Palette.Red, fill: Boolean = false): Modifier = drawBehind {
+    val p = progress().coerceIn(0f, 1f)
+    if (p <= 0f) return@drawBehind
+    if (fill) {
+        drawRect(color, size = Size(size.width * p, size.height))
+    } else {
+        val bar = HOLD_BAR.toPx()
+        drawRect(color, topLeft = Offset(0f, size.height - bar), size = Size(size.width * p, bar))
+    }
+}
+
+private val HOLD_BAR = 3.dp
+
+/** A held button's fill: its own colour, faint, so the countdown on it stays readable. */
+private const val HOLD_FILL_ALPHA = 0.35f
+
+/** How often a hold's countdown and progress move on. */
+internal const val HOLD_TICK_MS = 30L
 
 /** A tap target with no ripple or highlight: VIGIL answers a tap with a hard cut, never an animation. */
 fun Modifier.tap(enabled: Boolean = true, onClick: () -> Unit): Modifier =
@@ -107,7 +132,8 @@ fun PixelButton(
 
 /**
  * A button that must be held for [holdMillis] to fire. While it is held the label gives way to the seconds
- * left, counting down; releasing early resets it. For actions that must not happen by accident.
+ * left, counting down, and the button fills from the left; releasing early resets both. For actions that must not
+ * happen by accident.
  */
 @Composable
 fun HoldButton(
@@ -119,27 +145,35 @@ fun HoldButton(
 ) {
     var holding by remember { mutableStateOf(false) }
     var secondsLeft by remember { mutableIntStateOf(0) }
+    var progress by remember { mutableFloatStateOf(0f) }
     val complete by rememberUpdatedState(onComplete)
 
     LaunchedEffect(holding) {
-        if (!holding) return@LaunchedEffect
+        if (!holding) {
+            progress = 0f
+            return@LaunchedEffect
+        }
         val start = System.currentTimeMillis()
         while (holding) {
-            val left = holdMillis - (System.currentTimeMillis() - start)
+            val held = System.currentTimeMillis() - start
+            val left = holdMillis - held
             if (left <= 0) {
                 holding = false
+                progress = 0f
                 complete()
                 break
             }
             // 2.4 s left shows 3: the number is the seconds still to hold, rounded up.
             secondsLeft = ((left + 999) / 1000).toInt()
-            delay(50)
+            progress = held.toFloat() / holdMillis
+            delay(HOLD_TICK_MS)
         }
     }
 
     Box(
         modifier = modifier
             .border(1.dp, color, RectangleShape)
+            .holdProgress({ progress }, color.copy(alpha = HOLD_FILL_ALPHA), fill = true)
             .pointerInput(holdMillis) {
                 awaitEachGesture {
                     awaitFirstDown()

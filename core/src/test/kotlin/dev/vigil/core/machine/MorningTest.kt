@@ -85,17 +85,16 @@ class MorningTest {
         sim.after(15, Input.StepDone(id, 3))
         sim.after(4, Input.StepDone(id, 4))
         assertEquals(listOf(BlockReason.RUN_LOCK), sim.blocks().take(1))
-        // Chores 20, walk 15: done at 08:05. The window opens then (more than an hour after waking at 07:00).
+        // Chores 20, walk 15: done at 08:05. The pool opens then (after its wait).
         sim.after(20)
         sim.after(15)
         assertNull(sim.run(morning))
         assertEquals("clean", sim.lastOf(EntryType.COMPLETED)!!.reason)
-        assertEquals(rome("2026-10-20T08:05"), Machine.windows(sim.state, sim.env).first().opensAt)
         assertEquals(PoolDecision.Wait(1), sim.decision())
     }
 
     @Test
-    fun aQuickMorningStillWaitsForAnHourAfterWaking() {
+    fun aQuickMorningOpensThePoolAsSoonAsItIsDone() {
         val sim = asleep()
         sim.at("2026-10-20T07:10", Input.WakeAlarm())
         val id = sim.runId(morning)
@@ -106,21 +105,17 @@ class MorningTest {
         sim.after(5)
         assertNull(sim.run(morning))
         assertEquals("done", sim.lastOf(EntryType.COMPLETED)!!.reason)
-        // Done at 07:15, woke at 07:10: the window opens at 08:10.
-        assertEquals(rome("2026-10-20T08:10"), Machine.windows(sim.state, sim.env).first().opensAt)
-        sim.at("2026-10-20T08:00")
-        assertEquals(BlockReason.OUTSIDE_WINDOW, (sim.decision() as PoolDecision.Blocked).reason)
-        sim.at("2026-10-20T08:10")
+        // Done at 07:15: no free window to wait for any more, the pool opens after its minute.
+        sim.at("2026-10-20T07:16")
         assertEquals(PoolDecision.Wait(1), sim.decision())
     }
 
     @Test
-    fun leavingTheMorningCostsThePenaltyAndTheWindowOpensAnHourAfterWaking() {
+    fun leavingTheMorningCostsThePenalty() {
         val sim = asleep()
         sim.at("2026-10-20T07:00", Input.WakeAlarm())
         sim.after(5, Input.BailOut(sim.runId(morning)))
         assertEquals(120, sim.lastOf(EntryType.PENALTY)!!.minutes)
-        assertEquals(rome("2026-10-20T08:00"), Machine.windows(sim.state, sim.env).first().opensAt)
         sim.at("2026-10-20T08:30")
         assertEquals(listOf(BlockReason.PENALTY), sim.blocks())
         sim.at("2026-10-20T09:05")
