@@ -64,8 +64,15 @@ object TakeoverLauncher {
     private const val FRONT_LOOKBACK_MS = 2 * 60 * 60 * 1000L
     private const val CALL_STEP_ASIDE_MS = 10 * 60_000L
 
-    /** Apps a waiting takeover never covers: the file picker and the share sheet (export). */
-    private val PASS_THROUGH = setOf("com.android.documentsui", "com.google.android.documentsui", "com.android.intentresolver")
+    /**
+     * Apps a waiting takeover never covers: the file picker and the share sheet (export), and Settings, the permission
+     * pages, the package installer and the Play Store, so VIGIL never stands between the user and uninstalling it.
+     */
+    private val PASS_THROUGH = setOf(
+        "com.android.documentsui", "com.google.android.documentsui", "com.android.intentresolver",
+        "com.android.settings", "com.android.permissioncontroller", "com.google.android.permissioncontroller",
+        "com.android.packageinstaller", "com.google.android.packageinstaller", "com.android.vending",
+    )
 
     /** True while [TakeoverActivity] is visible. */
     @Volatile
@@ -258,7 +265,7 @@ object TakeoverLauncher {
                 return
             }
             // It comes back only where nothing allowed can be covered: an unlocked phone whose front app is known and
-            // is not VIGIL itself, the file picker or share sheet, or a whitelisted app (usable in every lock).
+            // is not VIGIL itself, the file picker, share sheet, Settings or the installer, or a whitelisted app.
             val allowedInFront = front == null || vigilInFront || front in PASS_THROUGH || Vigil.isWhitelisted(front)
             if (!present || allowedInFront) {
                 post(context, run, fullScreen = false, mayAlert = awake && mayAdd)
